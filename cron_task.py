@@ -19,11 +19,12 @@ from datetime import datetime
 try:
     from main import sheets_manager, processador, sistema_status
 except ImportError as e:
-    print(f"Erro: Não foi possível importar de \'main.py\': {e}. Certifique-se de que o arquivo existe e não há erros de importação circular.")
+    print(f"Erro: Não foi possível importar de 'main.py': {e}. Certifique-se de que o arquivo existe e não há erros de importação circular.")
     exit(1)
 
 # Configura um logger específico para a execução do Cron Job
-logging.basicConfig(level=logging.INFO, format=\"[%(asctime)s] [CRON JOB] [%(levelname)s] %(message)s\")
+# CORRIGIDO: Removidas barras invertidas extras no formato da string
+logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [CRON JOB] [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 def executar_tarefa_de_processamento():
@@ -39,7 +40,7 @@ def executar_tarefa_de_processamento():
     sistema_status["status"] = "Executando verificação agendada..."
 
     # Verifica a dependência mais crítica antes de começar
-    if not os.environ.get(\'GOOGLE_CREDENTIALS\'):
+    if not os.environ.get('GOOGLE_CREDENTIALS'):
         logger.error("🔥 ERRO CRÍTICO: Variável de ambiente GOOGLE_CREDENTIALS não encontrada! A tarefa não pode continuar.")
         sistema_status["status"] = "Erro: GOOGLE_CREDENTIALS não configurada no Cron Job."
         return
@@ -63,11 +64,11 @@ def executar_tarefa_de_processamento():
         erros_nesta_execucao = 0
 
         for produto in produtos_pendentes:
-            linha_num = produto[\'linha\']
-            nome_prod = produto[\'produto\']
-            url_prod = produto[\'url\']
+            linha_num = produto['linha']
+            nome_prod = produto['produto']
+            url_prod = produto['url']
             
-            logger.info(f"--- Processando: \'{nome_prod}\' (Linha {linha_num}) ---")
+            logger.info(f"--- Processando: '{nome_prod}' (Linha {linha_num}) ---")
             
             try:
                 # Executa o fluxo completo de processamento para um produto
@@ -77,21 +78,21 @@ def executar_tarefa_de_processamento():
                     # Se o processamento foi bem-sucedido, atualiza a planilha
                     sucesso_update = sheets_manager.atualizar_imagem_processada(linha_num, url_imagem_final)
                     if sucesso_update:
-                        logger.info(f"✔️ SUCESSO: Produto \'{nome_prod}\' processado e planilha atualizada.")
+                        logger.info(f"✔️ SUCESSO: Produto '{nome_prod}' processado e planilha atualizada.")
                         produtos_processados_nesta_execucao += 1
                     else:
-                        logger.error(f"❌ FALHA: Produto \'{nome_prod}\' processado, mas erro ao atualizar a planilha.")
+                        logger.error(f"❌ FALHA: Produto '{nome_prod}' processado, mas erro ao atualizar a planilha.")
                         erros_nesta_execucao += 1
                 else:
                     # Se o processamento da imagem falhou
-                    logger.error(f"❌ FALHA ao processar \'{nome_prod}\'. Motivo: {mensagem}")
+                    logger.error(f"❌ FALHA ao processar '{nome_prod}'. Motivo: {mensagem}")
                     erros_nesta_execucao += 1
                 
                 # Pausa para evitar sobrecarga e bloqueios
                 time.sleep(5)
 
             except Exception as e:
-                logger.error(f"🔥 ERRO INESPERADO ao processar o item \'{nome_prod}\': {e}", exc_info=True)
+                logger.error(f"🔥 ERRO INESPERADO ao processar o item '{nome_prod}': {e}", exc_info=True)
                 erros_nesta_execucao += 1
         
         # Atualiza o status global com o resultado da execução
@@ -111,6 +112,6 @@ def executar_tarefa_de_processamento():
         logger.info("==================================================")
 
 
-if __name__ == \'__main__\':
+if __name__ == '__main__':
     # Este bloco é executado quando o script é chamado diretamente pelo Render
     executar_tarefa_de_processamento()
