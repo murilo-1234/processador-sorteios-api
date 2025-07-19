@@ -46,7 +46,7 @@ CORS(app)
 
 # Configuração Google Sheets
 PLANILHA_ID = "1D84AsjVlCeXmW2hJEIVKBj6EHWe4xYfB6wd-JpHf_Ug"
-CREDENCIAIS_PATH = "credentials.json"
+CREDENCIAIS_PATH = "lithe-augury-466402-k6-52759a6c850c.json"
 
 # Status global do sistema
 sistema_status = {
