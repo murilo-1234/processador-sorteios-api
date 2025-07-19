@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Sistema Processador de Sorteios API v2.1 - CORRIGIDO
+Sistema Processador de Sorteios API v5.0 - CORRIGIDO COMPLETO
 Sistema automatizado que lê Google Sheets, processa produtos da Natura 
-com imagens de sorteio, e hospeda no Render.com com automação completa.
+com extração por código e validação de fundo branco conforme PDF.
 
-CORREÇÃO: Nomes das colunas ajustados para:
-- Coluna G: link_produto
-- Coluna E: url_imagem_processada
+CORREÇÕES IMPLEMENTADAS:
+- Extração por código NATBRA-XXXXX (não semântica)
+- Validação de fundo branco ≥60% obrigatória
+- Processamento conforme especificações do PDF
+- Mapeamento correto das colunas E/G
 
-Autor: Sistema Manus
+Autor: Sistema Manus V5.0
 Data: Julho 2025
 """
 
@@ -44,7 +46,7 @@ CORS(app)
 
 # Configuração Google Sheets
 PLANILHA_ID = "1D84AsjVlCeXmW2hJEIVKBj6EHWe4xYfB6wd-JpHf_Ug"
-CREDENCIAIS_PATH = "lithe-augury-466402-k6-52759a6c850c.json"
+CREDENCIAIS_PATH = "credentials.json"
 
 # Status global do sistema
 sistema_status = {
@@ -55,158 +57,240 @@ sistema_status = {
 }
 
 # ================================
-# PROCESSADOR DE IMAGENS V4.1
+# PROCESSADOR DE IMAGENS V5.0 CORRIGIDO
 # ================================
 
-class ProcessadorSorteioV4:
+class ProcessadorSorteioV5:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
-    
-    def validar_produto_natura(self, url):
-        """Validação semântica para produtos da Natura"""
+        logger.info("🎯 PROCESSADOR V5.0 INICIADO - Extração por código + validação fundo branco")
+
+    def extrair_codigo_produto(self, url):
+        """Extrai o código NATBRA do produto da URL"""
         try:
-            response = self.session.get(url, timeout=10)
-            if response.status_code != 200:
-                return False, "URL não acessível"
-            
-            soup = BeautifulSoup(response.content, 'html.parser')
-            texto_pagina = soup.get_text().lower()
-            
-            # Palavras-chave que indicam produto da Natura
-            palavras_natura = [
-                'natura', 'ekos', 'tododia', 'chronos', 'mamãe e bebê',
-                'humor', 'essencial', 'luna', 'kriska', 'águas'
-            ]
-            
-            # Verificar se pelo menos uma palavra-chave está presente
-            for palavra in palavras_natura:
-                if palavra in texto_pagina:
-                    return True, "Produto da Natura validado"
-            
-            return False, "Não parece ser um produto da Natura"
-            
-        except Exception as e:
-            return False, f"Erro na validação: {str(e)}"
-    
-    def extrair_imagem_limpa(self, url):
-        """Extrai a melhor imagem do produto"""
-        try:
-            response = self.session.get(url, timeout=15)
-            soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # Seletores para imagens de produtos
-            seletores = [
-                'img[data-testid="product-image"]',
-                '.product-image img',
-                '.main-image img',
-                'img[alt*="produto"]',
-                'img[src*="product"]',
-                '.gallery img',
-                'img[class*="zoom"]'
-            ]
-            
-            melhor_img = None
-            melhor_score = 0
-            
-            for seletor in seletores:
-                imgs = soup.select(seletor)
-                for img in imgs:
-                    src = img.get('src') or img.get('data-src')
-                    if not src:
-                        continue
-                    
-                    if src.startswith('//'):
-                        src = 'https:' + src
-                    elif src.startswith('/'):
-                        src = urljoin(url, src)
-                    
-                    # Calcular score da imagem
-                    score = 0
-                    if any(palavra in src.lower() for palavra in ['product', 'zoom', 'large']):
-                        score += 3
-                    if 'natura' in src.lower():
-                        score += 2
-                    if any(formato in src.lower() for formato in ['.jpg', '.png', '.webp']):
-                        score += 1
-                    
-                    if score > melhor_score:
-                        melhor_score = score
-                        melhor_img = src
-            
-            if melhor_img:
-                return melhor_img, "Imagem extraída com sucesso"
+            match = re.search(r'NATBRA-(\d+)', url)
+            if match:
+                codigo = f"NATBRA-{match.group(1)}"
+                logger.info(f"📋 Código extraído: {codigo}")
+                return codigo
             else:
-                return None, "Nenhuma imagem encontrada"
+                logger.error("❌ Código NATBRA não encontrado na URL")
+                return None
+        except Exception as e:
+            logger.error(f"❌ Erro ao extrair código: {e}")
+            return None
+
+    def validar_fundo_branco(self, img):
+        """Valida se a imagem tem ≥60% de fundo branco"""
+        try:
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            width, height = img.size
+            pixels_brancos = 0
+            pixels_amostrados = 0
+            
+            # Amostragem das bordas (mais eficiente)
+            border_size = min(width, height) // 10
+            
+            # Amostragem das bordas
+            for x in range(0, width, 5):
+                for y in range(border_size):
+                    r, g, b = img.getpixel((x, y))
+                    if r > 240 and g > 240 and b > 240:
+                        pixels_brancos += 1
+                    pixels_amostrados += 1
+            
+            for x in range(0, width, 5):
+                for y in range(height - border_size, height):
+                    r, g, b = img.getpixel((x, y))
+                    if r > 240 and g > 240 and b > 240:
+                        pixels_brancos += 1
+                    pixels_amostrados += 1
+            
+            for y in range(0, height, 5):
+                for x in range(border_size):
+                    r, g, b = img.getpixel((x, y))
+                    if r > 240 and g > 240 and b > 240:
+                        pixels_brancos += 1
+                    pixels_amostrados += 1
+                
+                for x in range(width - border_size, width):
+                    r, g, b = img.getpixel((x, y))
+                    if r > 240 and g > 240 and b > 240:
+                        pixels_brancos += 1
+                    pixels_amostrados += 1
+            
+            if pixels_amostrados > 0:
+                percentual = (pixels_brancos / pixels_amostrados) * 100
+                logger.info(f"🎨 Fundo branco: {percentual:.1f}%")
+                return percentual >= 60.0, percentual
+            else:
+                return False, 0.0
                 
         except Exception as e:
-            return None, f"Erro ao extrair imagem: {str(e)}"
-    
-    def baixar_imagem(self, url_imagem):
-        """Baixa e processa a imagem"""
+            logger.error(f"❌ Erro na validação de fundo branco: {e}")
+            return False, 0.0
+
+    def extrair_imagens_por_codigo(self, url, codigo_produto):
+        """Extrai imagens baseado no código do produto"""
         try:
-            response = self.session.get(url_imagem, timeout=15)
+            logger.info(f"🔍 Buscando imagens para código: {codigo_produto}")
+            
+            response = self.session.get(url, timeout=15)
             if response.status_code != 200:
-                return None, "Erro ao baixar imagem"
+                return [], "Erro ao acessar página do produto"
             
-            img = Image.open(io.BytesIO(response.content))
+            soup = BeautifulSoup(response.content, 'html.parser')
+            imgs = soup.find_all('img')
+            candidatas = []
             
-            # Converter para RGBA se necessário
-            if img.mode != 'RGBA':
-                img = img.convert('RGBA')
+            for img in imgs:
+                src = img.get('src') or img.get('data-src') or img.get('data-lazy-src')
+                if not src:
+                    continue
+                
+                if src.startswith('//'):
+                    src = 'https:' + src
+                elif src.startswith('/'):
+                    src = urljoin(url, src)
+                
+                # Filtrar apenas imagens que contêm o código do produto
+                if codigo_produto in src or codigo_produto.replace('-', '') in src:
+                    candidatas.append({
+                        'url': src,
+                        'score': 0,
+                        'motivo': f'Contém código {codigo_produto}'
+                    })
+                    logger.info(f"✅ Candidata: {src}")
             
-            return img, "Imagem baixada com sucesso"
+            if not candidatas:
+                logger.error(f"❌ Nenhuma imagem com código {codigo_produto}")
+                return [], "Nenhuma imagem encontrada com o código do produto"
+            
+            logger.info(f"📋 Candidatas encontradas: {len(candidatas)}")
+            return candidatas, "Candidatas extraídas com sucesso"
             
         except Exception as e:
-            return None, f"Erro ao baixar imagem: {str(e)}"
-    
-    def processar_imagem_sorteio(self, img_produto):
-        """Processa a imagem para sorteio"""
+            logger.error(f"❌ Erro ao extrair imagens: {e}")
+            return [], f"Erro na extração: {str(e)}"
+
+    def avaliar_e_selecionar_imagem(self, candidatas):
+        """Avalia candidatas e seleciona a melhor com base no fundo branco"""
         try:
-            # Redimensionar produto para 540x540
-            img_produto = img_produto.resize((540, 540), Image.Resampling.LANCZOS)
+            logger.info("🔍 Avaliando candidatas...")
+            melhores = []
+            
+            for i, candidata in enumerate(candidatas):
+                logger.info(f"📋 Avaliando {i+1}/{len(candidatas)}: {candidata['url']}")
+                
+                try:
+                    response = self.session.get(candidata['url'], timeout=10)
+                    if response.status_code != 200:
+                        continue
+                    
+                    img = Image.open(io.BytesIO(response.content))
+                    tem_fundo_branco, percentual = self.validar_fundo_branco(img)
+                    
+                    if tem_fundo_branco:
+                        score = 1000
+                        if percentual >= 80:
+                            score += 500
+                        elif percentual >= 70:
+                            score += 300
+                        else:
+                            score += 100
+                        
+                        width, height = img.size
+                        if width >= 800 and height >= 800:
+                            score += 200
+                        elif width >= 400 and height >= 400:
+                            score += 100
+                        
+                        candidata['score'] = score
+                        candidata['percentual_branco'] = percentual
+                        candidata['imagem'] = img
+                        melhores.append(candidata)
+                        
+                        logger.info(f"✅ APROVADA - Score: {score}, Fundo: {percentual:.1f}%")
+                    else:
+                        logger.info(f"❌ REJEITADA - Fundo: {percentual:.1f}%")
+                
+                except Exception as e:
+                    logger.error(f"❌ Erro ao avaliar: {e}")
+                    continue
+            
+            if not melhores:
+                return None, "Nenhuma imagem com fundo branco adequado (≥60%)"
+            
+            melhores.sort(key=lambda x: x['score'], reverse=True)
+            melhor = melhores[0]
+            
+            logger.info(f"🏆 MELHOR: Score {melhor['score']}, Fundo {melhor['percentual_branco']:.1f}%")
+            return melhor['imagem'], "Imagem selecionada com sucesso"
+            
+        except Exception as e:
+            logger.error(f"❌ Erro na avaliação: {e}")
+            return None, f"Erro na avaliação: {str(e)}"
+
+    def processar_imagem_sorteio(self, img_produto):
+        """Processa a imagem para sorteio conforme especificações do PDF"""
+        try:
+            logger.info("🎨 Processando imagem para sorteio...")
+            
+            # Redimensionar produto para máximo 540x540 mantendo proporção
+            img_produto.thumbnail((540, 540), Image.Resampling.LANCZOS)
             
             # Criar canvas 600x600 branco
-            canvas = Image.new('RGBA', (600, 600), (255, 255, 255, 255))
+            canvas = Image.new('RGB', (600, 600), (255, 255, 255))
             
             # Centralizar produto no canvas
-            pos_x = (600 - 540) // 2
-            pos_y = (600 - 540) // 2
-            canvas.paste(img_produto, (pos_x, pos_y), img_produto)
+            produto_width, produto_height = img_produto.size
+            pos_x = (600 - produto_width) // 2
+            pos_y = (600 - produto_height) // 2
             
-            # Configurar fontes e cores
+            if img_produto.mode == 'RGBA':
+                canvas.paste(img_produto, (pos_x, pos_y), img_produto)
+            else:
+                canvas.paste(img_produto, (pos_x, pos_y))
+            
+            # Configurar fontes
             try:
-                fonte_media = ImageFont.truetype("arial.ttf", 60)
-                fonte_grande = ImageFont.truetype("arial.ttf", 96)
+                fonte_media = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 60)
+                fonte_grande = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 96)
             except:
-                fonte_media = ImageFont.load_default()
-                fonte_grande = ImageFont.load_default()
+                try:
+                    fonte_media = ImageFont.truetype("arial.ttf", 60)
+                    fonte_grande = ImageFont.truetype("arial.ttf", 96)
+                except:
+                    fonte_media = ImageFont.load_default()
+                    fonte_grande = ImageFont.load_default()
             
             draw = ImageDraw.Draw(canvas)
-            cor_vermelha = (220, 20, 60)  # Vermelho
-            cor_contorno = (255, 255, 255)  # Branco para contorno
+            cor_vermelha = (139, 0, 0)  # #8B0000
+            cor_contorno = (255, 255, 255)
             
-            # Texto superior: "Ganhe esse Top!"
+            # TEXTO SUPERIOR: "Ganhe esse Top!"
             texto_superior = "Ganhe esse Top!"
             bbox_superior = draw.textbbox((0, 0), texto_superior, font=fonte_media)
             largura_superior = bbox_superior[2] - bbox_superior[0]
             x_superior = (600 - largura_superior) // 2
             y_superior = 20
             
-            # Desenhar contorno branco
-            for dx in [-2, -1, 0, 1, 2]:
-                for dy in [-2, -1, 0, 1, 2]:
+            # Contorno branco (4px)
+            for dx in range(-4, 5):
+                for dy in range(-4, 5):
                     if dx != 0 or dy != 0:
                         draw.text((x_superior + dx, y_superior + dy), texto_superior, 
                                 font=fonte_media, fill=cor_contorno)
             
-            # Desenhar texto principal
             draw.text((x_superior, y_superior), texto_superior, 
                      font=fonte_media, fill=cor_vermelha)
             
-            # Texto inferior: "Sorteio"
+            # TEXTO INFERIOR: "Sorteio"
             texto_inferior = "Sorteio"
             bbox_inferior = draw.textbbox((0, 0), texto_inferior, font=fonte_grande)
             largura_inferior = bbox_inferior[2] - bbox_inferior[0]
@@ -214,34 +298,32 @@ class ProcessadorSorteioV4:
             x_inferior = (600 - largura_inferior) // 2
             y_inferior = 600 - altura_inferior - 20
             
-            # Desenhar contorno branco
-            for dx in [-2, -1, 0, 1, 2]:
-                for dy in [-2, -1, 0, 1, 2]:
+            # Contorno branco (6px)
+            for dx in range(-6, 7):
+                for dy in range(-6, 7):
                     if dx != 0 or dy != 0:
                         draw.text((x_inferior + dx, y_inferior + dy), texto_inferior, 
                                 font=fonte_grande, fill=cor_contorno)
             
-            # Desenhar texto principal
             draw.text((x_inferior, y_inferior), texto_inferior, 
                      font=fonte_grande, fill=cor_vermelha)
             
-            # Converter para RGB e salvar
-            canvas_rgb = Image.new('RGB', canvas.size, (255, 255, 255))
-            canvas_rgb.paste(canvas, mask=canvas.split()[-1])
-            
             # Salvar em buffer
             buffer = io.BytesIO()
-            canvas_rgb.save(buffer, format='PNG', quality=95)
+            canvas.save(buffer, format='PNG', quality=95)
             buffer.seek(0)
             
-            return buffer, "Imagem processada com sucesso"
+            logger.info("✅ Imagem processada com sucesso")
+            return buffer, "Imagem processada conforme PDF"
             
         except Exception as e:
-            return None, f"Erro ao processar imagem: {str(e)}"
-    
+            logger.error(f"❌ Erro ao processar imagem: {e}")
+            return None, f"Erro no processamento: {str(e)}"
+
     def upload_catbox(self, buffer_imagem):
         """Faz upload da imagem para Catbox.moe"""
         try:
+            logger.info("📤 Upload para Catbox.moe...")
             buffer_imagem.seek(0)
             
             files = {
@@ -252,38 +334,53 @@ class ProcessadorSorteioV4:
                 'reqtype': 'fileupload'
             }
             
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            
             response = requests.post('https://catbox.moe/user/api.php', 
-                                   files=files, data=data, timeout=30)
+                                   files=files, 
+                                   data=data, 
+                                   headers=headers,
+                                   timeout=60)
+            
+            logger.info(f"📊 Status Code: {response.status_code}")
             
             if response.status_code == 200:
                 url = response.text.strip()
                 if url.startswith('https://files.catbox.moe/'):
+                    logger.info(f"✅ Upload concluído: {url}")
                     return url, "Upload realizado com sucesso"
-            
-            return None, "Erro no upload para Catbox"
+                else:
+                    logger.error(f"❌ Resposta inesperada: {url}")
+                    return None, f"Resposta inesperada: {url}"
+            else:
+                logger.error(f"❌ Erro HTTP {response.status_code}")
+                return None, f"Erro HTTP {response.status_code}"
             
         except Exception as e:
+            logger.error(f"❌ Erro no upload: {e}")
             return None, f"Erro no upload: {str(e)}"
-    
+
     def processar_produto_completo(self, url_produto):
         """Processa um produto completo"""
         try:
-            logger.info(f"🔄 Iniciando processamento: {url_produto}")
+            logger.info(f"🚀 PROCESSAMENTO V5.0: {url_produto}")
             
-            # 1. Validar produto
-            valido, msg_validacao = self.validar_produto_natura(url_produto)
-            if not valido:
-                return None, f"❌ Validação falhou: {msg_validacao}"
+            # 1. Extrair código do produto
+            codigo = self.extrair_codigo_produto(url_produto)
+            if not codigo:
+                return None, "❌ Código NATBRA não encontrado na URL"
             
-            # 2. Extrair imagem
-            url_imagem, msg_extracao = self.extrair_imagem_limpa(url_produto)
-            if not url_imagem:
+            # 2. Extrair imagens por código
+            candidatas, msg_extracao = self.extrair_imagens_por_codigo(url_produto, codigo)
+            if not candidatas:
                 return None, f"❌ Extração falhou: {msg_extracao}"
             
-            # 3. Baixar imagem
-            img_produto, msg_download = self.baixar_imagem(url_imagem)
+            # 3. Avaliar e selecionar melhor imagem
+            img_produto, msg_selecao = self.avaliar_e_selecionar_imagem(candidatas)
             if not img_produto:
-                return None, f"❌ Download falhou: {msg_download}"
+                return None, f"❌ Seleção falhou: {msg_selecao}"
             
             # 4. Processar para sorteio
             buffer_processado, msg_processamento = self.processar_imagem_sorteio(img_produto)
@@ -295,15 +392,15 @@ class ProcessadorSorteioV4:
             if not url_final:
                 return None, f"❌ Upload falhou: {msg_upload}"
             
-            logger.info(f"✅ Processamento concluído: {url_final}")
+            logger.info(f"🎉 SUCESSO: {url_final}")
             return url_final, "✅ Produto processado com sucesso"
             
         except Exception as e:
-            logger.error(f"❌ Erro geral no processamento: {e}")
+            logger.error(f"❌ Erro geral: {e}")
             return None, f"❌ Erro geral: {str(e)}"
 
 # ================================
-# GERENCIADOR GOOGLE SHEETS
+# GERENCIADOR GOOGLE SHEETS CORRIGIDO
 # ================================
 
 class GoogleSheetsManager:
@@ -317,14 +414,11 @@ class GoogleSheetsManager:
             scope = ['https://spreadsheets.google.com/feeds',
                     'https://www.googleapis.com/auth/drive']
             
-            # Tentar usar arquivo de credenciais
-            try:
-                creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENCIAIS_PATH, scope)
-            except:
-                # Se não encontrar arquivo, usar credenciais inline (simplificado)
-                logger.warning("Arquivo de credenciais não encontrado, usando modo simplificado")
+            if not os.path.exists(CREDENCIAIS_PATH):
+                logger.error(f"❌ Arquivo de credenciais não encontrado: {CREDENCIAIS_PATH}")
                 return False
             
+            creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENCIAIS_PATH, scope)
             client = gspread.authorize(creds)
             self.planilha = client.open_by_key(PLANILHA_ID).sheet1
             logger.info("✅ Conectado ao Google Sheets")
@@ -338,6 +432,7 @@ class GoogleSheetsManager:
         """Obtém produtos que precisam ser processados"""
         try:
             if not self.planilha:
+                logger.error("❌ Planilha não conectada")
                 return []
             
             # Ler todas as linhas
@@ -345,18 +440,37 @@ class GoogleSheetsManager:
             produtos_pendentes = []
             
             for i, linha in enumerate(dados, start=2):  # Linha 2 = primeira linha de dados
-                # CORREÇÃO: Usar nomes corretos das colunas
-                link_produto = linha.get('link_produto', '').strip()
-                imagem_processada = linha.get('url_imagem_processada', '').strip()
+                # CORREÇÃO: Verificar colunas corretas
+                # Coluna G = link do produto (onde você fornece o link)
+                # Coluna E = url_imagem_processada (onde vai o resultado)
+                
+                # Tentar diferentes nomes de colunas possíveis
+                link_produto = (linha.get('G') or 
+                              linha.get('link_produto') or 
+                              linha.get('Link Produto') or 
+                              linha.get('URL Produto') or '').strip()
+                
+                imagem_processada = (linha.get('E') or 
+                                   linha.get('url_imagem_processada') or 
+                                   linha.get('URL Imagem Processada') or 
+                                   linha.get('Imagem Processada') or '').strip()
                 
                 # Se tem link do produto mas não tem imagem processada
                 if link_produto and not imagem_processada:
+                    nome_produto = (linha.get('nome') or 
+                                  linha.get('Nome') or 
+                                  linha.get('Produto') or 
+                                  linha.get('produto') or 
+                                  f'Produto linha {i}')
+                    
                     produtos_pendentes.append({
                         'linha': i,
                         'url': link_produto,
-                        'produto': linha.get('nome', 'Produto sem nome')
+                        'produto': nome_produto
                     })
+                    logger.info(f"📋 Produto pendente linha {i}: {nome_produto}")
             
+            logger.info(f"📊 Total de produtos pendentes: {len(produtos_pendentes)}")
             return produtos_pendentes
             
         except Exception as e:
@@ -364,25 +478,26 @@ class GoogleSheetsManager:
             return []
     
     def atualizar_imagem_processada(self, linha, url_imagem):
-        """Atualiza a coluna de imagem processada"""
+        """Atualiza a coluna E com a URL da imagem processada"""
         try:
             if not self.planilha:
+                logger.error("❌ Planilha não conectada")
                 return False
             
-            # Coluna E = url_imagem_processada (coluna 5)
+            # Coluna E = 5ª coluna (url_imagem_processada)
             self.planilha.update_cell(linha, 5, url_imagem)
-            logger.info(f"✅ Linha {linha} atualizada com imagem: {url_imagem}")
+            logger.info(f"✅ Linha {linha} atualizada: {url_imagem}")
             return True
             
         except Exception as e:
-            logger.error(f"❌ Erro ao atualizar planilha: {e}")
+            logger.error(f"❌ Erro ao atualizar planilha linha {linha}: {e}")
             return False
 
 # ================================
 # INSTÂNCIAS GLOBAIS
 # ================================
 
-processador = ProcessadorSorteioV4()
+processador = ProcessadorSorteioV5()
 sheets_manager = GoogleSheetsManager()
 
 # ================================
@@ -392,7 +507,7 @@ sheets_manager = GoogleSheetsManager()
 def processar_planilha_automatico():
     """Função que processa a planilha automaticamente"""
     try:
-        logger.info("🔄 Iniciando processamento automático da planilha")
+        logger.info("🔄 INICIANDO PROCESSAMENTO AUTOMÁTICO")
         sistema_status["status"] = "Processando planilha..."
         
         # Obter produtos pendentes
@@ -403,7 +518,7 @@ def processar_planilha_automatico():
             sistema_status["status"] = "Aguardando produtos pendentes"
             return
         
-        logger.info(f"📋 Encontrados {len(produtos)} produtos pendentes")
+        logger.info(f"📋 Produtos pendentes: {len(produtos)}")
         
         # Processar cada produto
         for produto in produtos:
@@ -422,21 +537,21 @@ def processar_planilha_automatico():
                         logger.info(f"✅ {produto['produto']} processado com sucesso")
                     else:
                         sistema_status["erros"] += 1
-                        logger.error(f"❌ Erro ao atualizar planilha para {produto['produto']}")
+                        logger.error(f"❌ Erro ao atualizar planilha: {produto['produto']}")
                 else:
                     sistema_status["erros"] += 1
                     logger.error(f"❌ Erro ao processar {produto['produto']}: {mensagem}")
                 
                 # Pausa entre processamentos
-                time.sleep(2)
+                time.sleep(3)
                 
             except Exception as e:
                 sistema_status["erros"] += 1
-                logger.error(f"❌ Erro ao processar produto {produto.get('produto', 'desconhecido')}: {e}")
+                logger.error(f"❌ Erro ao processar {produto.get('produto', 'desconhecido')}: {e}")
         
         sistema_status["ultima_execucao"] = datetime.now().isoformat()
         sistema_status["status"] = "Aguardando próxima execução"
-        logger.info("✅ Processamento automático concluído")
+        logger.info("✅ PROCESSAMENTO AUTOMÁTICO CONCLUÍDO")
         
     except Exception as e:
         sistema_status["erros"] += 1
@@ -448,14 +563,12 @@ def iniciar_scheduler():
     def run_scheduler():
         # Agendar execução a cada 30 minutos
         schedule.every(30).minutes.do(processar_planilha_automatico)
-        
         logger.info("⏰ Scheduler iniciado - execução a cada 30 minutos")
         
         while True:
             schedule.run_pending()
-            time.sleep(60)  # Verificar a cada minuto
+            time.sleep(60)
     
-    # Executar em thread separada
     scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
     scheduler_thread.start()
 
@@ -472,7 +585,7 @@ def dashboard():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Sistema Processador de Sorteios</title>
+        <title>Sistema Processador de Sorteios V5.0</title>
         <style>
             body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
             .container { max-width: 1200px; margin: 0 auto; }
@@ -488,16 +601,28 @@ def dashboard():
             .btn-success { background: #28a745; color: white; }
             .endpoints { background: #fff3cd; padding: 20px; border-radius: 10px; margin: 20px 0; }
             .endpoint { margin: 10px 0; font-family: monospace; }
+            .version { background: #e7f3ff; padding: 15px; border-radius: 10px; margin: 20px 0; }
         </style>
     </head>
     <body>
         <div class="container">
             <div class="header">
-                <h1>🎯 Sistema Processador de Sorteios</h1>
+                <h1>🎯 Sistema Processador de Sorteios V5.0</h1>
+                <p>Extração por código + Validação de fundo branco</p>
+            </div>
+            
+            <div class="version">
+                <h4>🔧 CORREÇÕES V5.0 IMPLEMENTADAS:</h4>
+                <ul>
+                    <li>✅ Extração por código NATBRA-XXXXX (não semântica)</li>
+                    <li>✅ Validação de fundo branco ≥60% obrigatória</li>
+                    <li>✅ Processamento conforme especificações do PDF</li>
+                    <li>✅ Mapeamento correto colunas E/G</li>
+                </ul>
             </div>
             
             <div class="status-card success">
-                <h3>✅ Sistema Online e Funcionando!</h3>
+                <h3>✅ Sistema V5.0 Online e Funcionando!</h3>
                 <p>Automação ativa - processamento a cada 30 minutos</p>
             </div>
             
@@ -541,7 +666,8 @@ def health_check():
     """Health check da API"""
     return jsonify({
         "status": "ok",
-        "message": "Sistema funcionando",
+        "message": "Sistema V5.0 funcionando",
+        "versao": "5.0",
         "timestamp": datetime.now().isoformat()
     })
 
@@ -550,13 +676,16 @@ def status_detalhado():
     """Status detalhado do sistema"""
     return jsonify({
         "sistema": sistema_status,
+        "versao": "5.0",
         "google_sheets": {
             "conectado": sheets_manager.planilha is not None,
             "planilha_id": PLANILHA_ID
         },
         "processador": {
             "ativo": True,
-            "versao": "4.1"
+            "versao": "5.0",
+            "extracao": "Por código NATBRA-XXXXX",
+            "validacao": "Fundo branco ≥60%"
         },
         "timestamp": datetime.now().isoformat()
     })
@@ -565,13 +694,13 @@ def status_detalhado():
 def processar_planilha_manual():
     """Processa a planilha manualmente"""
     try:
-        # Executar em thread separada para não bloquear
         thread = threading.Thread(target=processar_planilha_automatico, daemon=True)
         thread.start()
         
         return jsonify({
-            "mensagem": "Processamento da planilha iniciado",
+            "mensagem": "Processamento da planilha V5.0 iniciado",
             "sucesso": True,
+            "versao": "5.0",
             "timestamp": datetime.now().isoformat()
         })
         
@@ -595,7 +724,6 @@ def processar_produto_individual():
                 "sucesso": False
             }), 400
         
-        # Processar produto
         url_imagem, mensagem = processador.processar_produto_completo(url_produto)
         
         if url_imagem:
@@ -603,6 +731,7 @@ def processar_produto_individual():
                 "mensagem": mensagem,
                 "url_imagem": url_imagem,
                 "sucesso": True,
+                "versao": "5.0",
                 "timestamp": datetime.now().isoformat()
             })
         else:
@@ -624,6 +753,8 @@ def processar_produto_individual():
 # ================================
 
 if __name__ == '__main__':
+    logger.info("🚀 INICIANDO SISTEMA V5.0 CORRIGIDO")
+    
     # Iniciar scheduler
     iniciar_scheduler()
     
@@ -636,5 +767,5 @@ if __name__ == '__main__':
     
     # Iniciar servidor
     port = int(os.environ.get('PORT', 5000))
-    logger.info(f"🚀 Iniciando servidor na porta {port}")
+    logger.info(f"🚀 Servidor V5.0 iniciando na porta {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
