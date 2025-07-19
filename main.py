@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Sistema Processador de Sorteios API v5.0 - CORRIGIDO COMPLETO
+Sistema Processador de Sorteios API v5.0 - COM GITHUB SECRETS
 Sistema automatizado que lê Google Sheets, processa produtos da Natura 
 com extração por código e validação de fundo branco conforme PDF.
 
@@ -10,6 +10,7 @@ CORREÇÕES IMPLEMENTADAS:
 - Validação de fundo branco ≥60% obrigatória
 - Processamento conforme especificações do PDF
 - Mapeamento correto das colunas E/G
+- USO DE GITHUB SECRETS para credenciais
 
 Autor: Sistema Manus V5.0
 Data: Julho 2025
@@ -32,6 +33,7 @@ import re
 from urllib.parse import urljoin, urlparse
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import tempfile
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -46,7 +48,6 @@ CORS(app)
 
 # Configuração Google Sheets
 PLANILHA_ID = "1D84AsjVlCeXmW2hJEIVKBj6EHWe4xYfB6wd-JpHf_Ug"
-CREDENCIAIS_PATH = "lithe-augury-466402-k6-52759a6c850c.json"
 
 # Status global do sistema
 sistema_status = {
@@ -400,7 +401,7 @@ class ProcessadorSorteioV5:
             return None, f"❌ Erro geral: {str(e)}"
 
 # ================================
-# GERENCIADOR GOOGLE SHEETS CORRIGIDO
+# GERENCIADOR GOOGLE SHEETS COM SECRETS
 # ================================
 
 class GoogleSheetsManager:
@@ -409,20 +410,35 @@ class GoogleSheetsManager:
         self.conectar()
     
     def conectar(self):
-        """Conecta ao Google Sheets"""
+        """Conecta ao Google Sheets usando credenciais da variável de ambiente"""
         try:
             scope = ['https://spreadsheets.google.com/feeds',
                     'https://www.googleapis.com/auth/drive']
             
-            if not os.path.exists(CREDENCIAIS_PATH):
-                logger.error(f"❌ Arquivo de credenciais não encontrado: {CREDENCIAIS_PATH}")
+            # Tentar obter credenciais da variável de ambiente
+            credentials_json = os.environ.get('GOOGLE_CREDENTIALS')
+            
+            if not credentials_json:
+                logger.error("❌ Variável GOOGLE_CREDENTIALS não encontrada")
                 return False
             
-            creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENCIAIS_PATH, scope)
-            client = gspread.authorize(creds)
-            self.planilha = client.open_by_key(PLANILHA_ID).sheet1
-            logger.info("✅ Conectado ao Google Sheets")
-            return True
+            # Criar arquivo temporário com as credenciais
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp_file:
+                temp_file.write(credentials_json)
+                temp_path = temp_file.name
+            
+            try:
+                creds = ServiceAccountCredentials.from_json_keyfile_name(temp_path, scope)
+                client = gspread.authorize(creds)
+                self.planilha = client.open_by_key(PLANILHA_ID).sheet1
+                logger.info("✅ Conectado ao Google Sheets via variável de ambiente")
+                return True
+            finally:
+                # Limpar arquivo temporário
+                try:
+                    os.unlink(temp_path)
+                except:
+                    pass
             
         except Exception as e:
             logger.error(f"❌ Erro ao conectar Google Sheets: {e}")
@@ -602,6 +618,7 @@ def dashboard():
             .endpoints { background: #fff3cd; padding: 20px; border-radius: 10px; margin: 20px 0; }
             .endpoint { margin: 10px 0; font-family: monospace; }
             .version { background: #e7f3ff; padding: 15px; border-radius: 10px; margin: 20px 0; }
+            .security { background: #d1ecf1; padding: 15px; border-radius: 10px; margin: 20px 0; }
         </style>
     </head>
     <body>
@@ -609,6 +626,15 @@ def dashboard():
             <div class="header">
                 <h1>🎯 Sistema Processador de Sorteios V5.0</h1>
                 <p>Extração por código + Validação de fundo branco</p>
+            </div>
+            
+            <div class="security">
+                <h4>🔐 SEGURANÇA IMPLEMENTADA:</h4>
+                <ul>
+                    <li>✅ Credenciais via GitHub Secrets</li>
+                    <li>✅ Sem arquivos sensíveis no repositório</li>
+                    <li>✅ Variáveis de ambiente seguras</li>
+                </ul>
             </div>
             
             <div class="version">
@@ -666,8 +692,9 @@ def health_check():
     """Health check da API"""
     return jsonify({
         "status": "ok",
-        "message": "Sistema V5.0 funcionando",
+        "message": "Sistema V5.0 funcionando com GitHub Secrets",
         "versao": "5.0",
+        "seguranca": "GitHub Secrets ativo",
         "timestamp": datetime.now().isoformat()
     })
 
@@ -677,9 +704,11 @@ def status_detalhado():
     return jsonify({
         "sistema": sistema_status,
         "versao": "5.0",
+        "seguranca": "GitHub Secrets",
         "google_sheets": {
             "conectado": sheets_manager.planilha is not None,
-            "planilha_id": PLANILHA_ID
+            "planilha_id": PLANILHA_ID,
+            "metodo": "Variável de ambiente"
         },
         "processador": {
             "ativo": True,
@@ -698,9 +727,10 @@ def processar_planilha_manual():
         thread.start()
         
         return jsonify({
-            "mensagem": "Processamento da planilha V5.0 iniciado",
+            "mensagem": "Processamento da planilha V5.0 iniciado com GitHub Secrets",
             "sucesso": True,
             "versao": "5.0",
+            "seguranca": "GitHub Secrets ativo",
             "timestamp": datetime.now().isoformat()
         })
         
@@ -753,7 +783,13 @@ def processar_produto_individual():
 # ================================
 
 if __name__ == '__main__':
-    logger.info("🚀 INICIANDO SISTEMA V5.0 CORRIGIDO")
+    logger.info("🚀 INICIANDO SISTEMA V5.0 COM GITHUB SECRETS")
+    
+    # Verificar se variável de ambiente existe
+    if not os.environ.get('GOOGLE_CREDENTIALS'):
+        logger.warning("⚠️ GOOGLE_CREDENTIALS não encontrada - configure no Render.com")
+    else:
+        logger.info("✅ GOOGLE_CREDENTIALS encontrada")
     
     # Iniciar scheduler
     iniciar_scheduler()
@@ -767,5 +803,5 @@ if __name__ == '__main__':
     
     # Iniciar servidor
     port = int(os.environ.get('PORT', 5000))
-    logger.info(f"🚀 Servidor V5.0 iniciando na porta {port}")
+    logger.info(f"🚀 Servidor V5.0 com GitHub Secrets iniciando na porta {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
