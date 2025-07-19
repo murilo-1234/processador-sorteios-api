@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Sistema Processador de Sorteios API v2.0 - COMPLETO
+Sistema Processador de Sorteios API v2.1 - CORRIGIDO
 Sistema automatizado que lê Google Sheets, processa produtos da Natura 
 com imagens de sorteio, e hospeda no Render.com com automação completa.
+
+CORREÇÃO: Nomes das colunas ajustados para:
+- Coluna G: link_produto
+- Coluna E: url_imagem_processada
 
 Autor: Sistema Manus
 Data: Julho 2025
@@ -51,7 +55,7 @@ sistema_status = {
 }
 
 # ================================
-# CLASSE PROCESSADOR V4.1
+# PROCESSADOR DE IMAGENS V4.1
 # ================================
 
 class ProcessadorSorteioV4:
@@ -60,112 +64,129 @@ class ProcessadorSorteioV4:
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
-        
-    def extrair_imagem_produto(self, url_produto):
-        """Extrai a melhor imagem do produto da página da Natura"""
+    
+    def validar_produto_natura(self, url):
+        """Validação semântica para produtos da Natura"""
         try:
-            response = self.session.get(url_produto, timeout=10)
-            response.raise_for_status()
+            response = self.session.get(url, timeout=10)
+            if response.status_code != 200:
+                return False, "URL não acessível"
             
             soup = BeautifulSoup(response.content, 'html.parser')
+            texto_pagina = soup.get_text().lower()
             
-            # Buscar imagens do produto
-            imagens_candidatas = []
-            
-            # Seletores para imagens da Natura
-            seletores = [
-                'img[src*="natura.com"]',
-                'img[data-src*="natura.com"]',
-                '.product-image img',
-                '.gallery img',
-                'img[alt*="produto"]'
+            # Palavras-chave que indicam produto da Natura
+            palavras_natura = [
+                'natura', 'ekos', 'tododia', 'chronos', 'mamãe e bebê',
+                'humor', 'essencial', 'luna', 'kriska', 'águas'
             ]
+            
+            # Verificar se pelo menos uma palavra-chave está presente
+            for palavra in palavras_natura:
+                if palavra in texto_pagina:
+                    return True, "Produto da Natura validado"
+            
+            return False, "Não parece ser um produto da Natura"
+            
+        except Exception as e:
+            return False, f"Erro na validação: {str(e)}"
+    
+    def extrair_imagem_limpa(self, url):
+        """Extrai a melhor imagem do produto"""
+        try:
+            response = self.session.get(url, timeout=15)
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # Seletores para imagens de produtos
+            seletores = [
+                'img[data-testid="product-image"]',
+                '.product-image img',
+                '.main-image img',
+                'img[alt*="produto"]',
+                'img[src*="product"]',
+                '.gallery img',
+                'img[class*="zoom"]'
+            ]
+            
+            melhor_img = None
+            melhor_score = 0
             
             for seletor in seletores:
                 imgs = soup.select(seletor)
                 for img in imgs:
                     src = img.get('src') or img.get('data-src')
-                    if src and self._validar_imagem_semantica(src, img):
-                        if src.startswith('//'):
-                            src = 'https:' + src
-                        elif src.startswith('/'):
-                            src = urljoin(url_produto, src)
-                        imagens_candidatas.append(src)
+                    if not src:
+                        continue
+                    
+                    if src.startswith('//'):
+                        src = 'https:' + src
+                    elif src.startswith('/'):
+                        src = urljoin(url, src)
+                    
+                    # Calcular score da imagem
+                    score = 0
+                    if any(palavra in src.lower() for palavra in ['product', 'zoom', 'large']):
+                        score += 3
+                    if 'natura' in src.lower():
+                        score += 2
+                    if any(formato in src.lower() for formato in ['.jpg', '.png', '.webp']):
+                        score += 1
+                    
+                    if score > melhor_score:
+                        melhor_score = score
+                        melhor_img = src
             
-            if not imagens_candidatas:
-                return None, "Nenhuma imagem válida encontrada"
+            if melhor_img:
+                return melhor_img, "Imagem extraída com sucesso"
+            else:
+                return None, "Nenhuma imagem encontrada"
                 
-            # Retornar a primeira imagem válida
-            return imagens_candidatas[0], "Imagem extraída com sucesso"
-            
         except Exception as e:
             return None, f"Erro ao extrair imagem: {str(e)}"
     
-    def _validar_imagem_semantica(self, src, img_tag):
-        """Validação semântica flexível para imagens de produto"""
-        if not src:
-            return False
-            
-        # Palavras que indicam imagem de produto (flexível)
-        palavras_produto = ['produto', 'item', 'natura', 'cosmetico', 'perfume', 'creme']
-        
-        # Palavras que devem ser evitadas
-        palavras_evitar = ['logo', 'banner', 'icon', 'thumb', 'small']
-        
-        src_lower = src.lower()
-        alt_text = (img_tag.get('alt') or '').lower()
-        
-        # Verificar se contém palavras a evitar
-        for palavra in palavras_evitar:
-            if palavra in src_lower:
-                return False
-        
-        # Se contém palavras de produto, é válida
-        for palavra in palavras_produto:
-            if palavra in src_lower or palavra in alt_text:
-                return True
-        
-        # Se chegou até aqui e tem extensão de imagem, aceitar
-        extensoes = ['.jpg', '.jpeg', '.png', '.webp']
-        return any(ext in src_lower for ext in extensoes)
-    
-    def processar_imagem_sorteio(self, url_imagem):
-        """Processa a imagem para formato de sorteio"""
+    def baixar_imagem(self, url_imagem):
+        """Baixa e processa a imagem"""
         try:
-            # Baixar imagem
-            response = self.session.get(url_imagem, timeout=10)
-            response.raise_for_status()
+            response = self.session.get(url_imagem, timeout=15)
+            if response.status_code != 200:
+                return None, "Erro ao baixar imagem"
             
-            # Abrir imagem
-            img_original = Image.open(io.BytesIO(response.content))
-            img_original = img_original.convert('RGBA')
+            img = Image.open(io.BytesIO(response.content))
+            
+            # Converter para RGBA se necessário
+            if img.mode != 'RGBA':
+                img = img.convert('RGBA')
+            
+            return img, "Imagem baixada com sucesso"
+            
+        except Exception as e:
+            return None, f"Erro ao baixar imagem: {str(e)}"
+    
+    def processar_imagem_sorteio(self, img_produto):
+        """Processa a imagem para sorteio"""
+        try:
+            # Redimensionar produto para 540x540
+            img_produto = img_produto.resize((540, 540), Image.Resampling.LANCZOS)
             
             # Criar canvas 600x600 branco
             canvas = Image.new('RGBA', (600, 600), (255, 255, 255, 255))
             
-            # Redimensionar produto para máximo 540x540
-            img_produto = img_original.copy()
-            img_produto.thumbnail((540, 540), Image.Resampling.LANCZOS)
-            
             # Centralizar produto no canvas
-            pos_x = (600 - img_produto.width) // 2
-            pos_y = (600 - img_produto.height) // 2
+            pos_x = (600 - 540) // 2
+            pos_y = (600 - 540) // 2
             canvas.paste(img_produto, (pos_x, pos_y), img_produto)
             
-            # Adicionar textos
-            draw = ImageDraw.Draw(canvas)
-            
-            # Configurar fonte (usar fonte padrão se não encontrar)
+            # Configurar fontes e cores
             try:
-                fonte_grande = ImageFont.truetype("arial.ttf", 96)
                 fonte_media = ImageFont.truetype("arial.ttf", 60)
+                fonte_grande = ImageFont.truetype("arial.ttf", 96)
             except:
-                fonte_grande = ImageFont.load_default()
                 fonte_media = ImageFont.load_default()
+                fonte_grande = ImageFont.load_default()
             
-            # Cor vermelha escura
-            cor_vermelha = (139, 0, 0)  # Dark red
-            cor_contorno = (255, 255, 255)  # Branco
+            draw = ImageDraw.Draw(canvas)
+            cor_vermelha = (220, 20, 60)  # Vermelho
+            cor_contorno = (255, 255, 255)  # Branco para contorno
             
             # Texto superior: "Ganhe esse Top!"
             texto_superior = "Ganhe esse Top!"
@@ -239,7 +260,7 @@ class ProcessadorSorteioV4:
                 if url.startswith('https://files.catbox.moe/'):
                     return url, "Upload realizado com sucesso"
             
-            return None, f"Erro no upload: {response.text}"
+            return None, "Erro no upload para Catbox"
             
         except Exception as e:
             return None, f"Erro no upload: {str(e)}"
@@ -247,28 +268,42 @@ class ProcessadorSorteioV4:
     def processar_produto_completo(self, url_produto):
         """Processa um produto completo"""
         try:
-            # 1. Extrair imagem
-            url_imagem, msg_extracao = self.extrair_imagem_produto(url_produto)
+            logger.info(f"🔄 Iniciando processamento: {url_produto}")
+            
+            # 1. Validar produto
+            valido, msg_validacao = self.validar_produto_natura(url_produto)
+            if not valido:
+                return None, f"❌ Validação falhou: {msg_validacao}"
+            
+            # 2. Extrair imagem
+            url_imagem, msg_extracao = self.extrair_imagem_limpa(url_produto)
             if not url_imagem:
-                return None, f"Falha na extração: {msg_extracao}"
+                return None, f"❌ Extração falhou: {msg_extracao}"
             
-            # 2. Processar imagem
-            buffer_imagem, msg_processamento = self.processar_imagem_sorteio(url_imagem)
-            if not buffer_imagem:
-                return None, f"Falha no processamento: {msg_processamento}"
+            # 3. Baixar imagem
+            img_produto, msg_download = self.baixar_imagem(url_imagem)
+            if not img_produto:
+                return None, f"❌ Download falhou: {msg_download}"
             
-            # 3. Upload
-            url_final, msg_upload = self.upload_catbox(buffer_imagem)
+            # 4. Processar para sorteio
+            buffer_processado, msg_processamento = self.processar_imagem_sorteio(img_produto)
+            if not buffer_processado:
+                return None, f"❌ Processamento falhou: {msg_processamento}"
+            
+            # 5. Upload para Catbox
+            url_final, msg_upload = self.upload_catbox(buffer_processado)
             if not url_final:
-                return None, f"Falha no upload: {msg_upload}"
+                return None, f"❌ Upload falhou: {msg_upload}"
             
-            return url_final, "Produto processado com sucesso"
+            logger.info(f"✅ Processamento concluído: {url_final}")
+            return url_final, "✅ Produto processado com sucesso"
             
         except Exception as e:
-            return None, f"Erro geral: {str(e)}"
+            logger.error(f"❌ Erro geral no processamento: {e}")
+            return None, f"❌ Erro geral: {str(e)}"
 
 # ================================
-# CLASSE GOOGLE SHEETS
+# GERENCIADOR GOOGLE SHEETS
 # ================================
 
 class GoogleSheetsManager:
@@ -277,7 +312,7 @@ class GoogleSheetsManager:
         self.conectar()
     
     def conectar(self):
-        """Conecta com Google Sheets"""
+        """Conecta ao Google Sheets"""
         try:
             scope = ['https://spreadsheets.google.com/feeds',
                     'https://www.googleapis.com/auth/drive']
@@ -310,15 +345,16 @@ class GoogleSheetsManager:
             produtos_pendentes = []
             
             for i, linha in enumerate(dados, start=2):  # Linha 2 = primeira linha de dados
-                link_produto = linha.get('Link do Produto', '').strip()
-                imagem_processada = linha.get('Imagem Processada', '').strip()
+                # CORREÇÃO: Usar nomes corretos das colunas
+                link_produto = linha.get('link_produto', '').strip()
+                imagem_processada = linha.get('url_imagem_processada', '').strip()
                 
                 # Se tem link do produto mas não tem imagem processada
                 if link_produto and not imagem_processada:
                     produtos_pendentes.append({
                         'linha': i,
                         'url': link_produto,
-                        'produto': linha.get('Produto', 'Produto sem nome')
+                        'produto': linha.get('nome', 'Produto sem nome')
                     })
             
             return produtos_pendentes
@@ -333,7 +369,7 @@ class GoogleSheetsManager:
             if not self.planilha:
                 return False
             
-            # Coluna E = Imagem Processada
+            # Coluna E = url_imagem_processada (coluna 5)
             self.planilha.update_cell(linha, 5, url_imagem)
             logger.info(f"✅ Linha {linha} atualizada com imagem: {url_imagem}")
             return True
@@ -355,171 +391,153 @@ sheets_manager = GoogleSheetsManager()
 
 def processar_planilha_automatico():
     """Função que processa a planilha automaticamente"""
-    global sistema_status
-    
     try:
         logger.info("🔄 Iniciando processamento automático da planilha")
         sistema_status["status"] = "Processando planilha..."
         
         # Obter produtos pendentes
-        produtos_pendentes = sheets_manager.obter_produtos_pendentes()
+        produtos = sheets_manager.obter_produtos_pendentes()
         
-        if not produtos_pendentes:
-            logger.info("✅ Nenhum produto pendente encontrado")
-            sistema_status["status"] = "Nenhum produto pendente"
-            sistema_status["ultima_execucao"] = datetime.now().isoformat()
+        if not produtos:
+            logger.info("ℹ️ Nenhum produto pendente encontrado")
+            sistema_status["status"] = "Aguardando produtos pendentes"
             return
         
-        logger.info(f"📋 {len(produtos_pendentes)} produtos pendentes encontrados")
+        logger.info(f"📋 Encontrados {len(produtos)} produtos pendentes")
         
         # Processar cada produto
-        for produto in produtos_pendentes:
+        for produto in produtos:
             try:
-                logger.info(f"🎯 Processando: {produto['produto']}")
+                logger.info(f"🔄 Processando: {produto['produto']}")
                 
                 # Processar produto
                 url_imagem, mensagem = processador.processar_produto_completo(produto['url'])
                 
                 if url_imagem:
                     # Atualizar planilha
-                    if sheets_manager.atualizar_imagem_processada(produto['linha'], url_imagem):
+                    sucesso = sheets_manager.atualizar_imagem_processada(produto['linha'], url_imagem)
+                    
+                    if sucesso:
                         sistema_status["produtos_processados"] += 1
-                        logger.info(f"✅ Produto processado: {produto['produto']}")
+                        logger.info(f"✅ {produto['produto']} processado com sucesso")
                     else:
                         sistema_status["erros"] += 1
-                        logger.error(f"❌ Erro ao atualizar planilha para: {produto['produto']}")
+                        logger.error(f"❌ Erro ao atualizar planilha para {produto['produto']}")
                 else:
                     sistema_status["erros"] += 1
-                    logger.error(f"❌ Erro ao processar: {produto['produto']} - {mensagem}")
+                    logger.error(f"❌ Erro ao processar {produto['produto']}: {mensagem}")
                 
-                # Aguardar entre processamentos
+                # Pausa entre processamentos
                 time.sleep(2)
                 
             except Exception as e:
                 sistema_status["erros"] += 1
-                logger.error(f"❌ Erro no produto {produto['produto']}: {e}")
+                logger.error(f"❌ Erro ao processar produto {produto.get('produto', 'desconhecido')}: {e}")
         
-        sistema_status["status"] = f"Processamento concluído: {len(produtos_pendentes)} produtos"
         sistema_status["ultima_execucao"] = datetime.now().isoformat()
+        sistema_status["status"] = "Aguardando próxima execução"
         logger.info("✅ Processamento automático concluído")
         
     except Exception as e:
         sistema_status["erros"] += 1
-        sistema_status["status"] = f"Erro no processamento: {str(e)}"
+        sistema_status["status"] = f"Erro: {str(e)}"
         logger.error(f"❌ Erro no processamento automático: {e}")
 
 def iniciar_scheduler():
-    """Inicia o scheduler para execução automática"""
-    # Agendar execução a cada 30 minutos
-    schedule.every(30).minutes.do(processar_planilha_automatico)
-    
+    """Inicia o scheduler em thread separada"""
     def run_scheduler():
+        # Agendar execução a cada 30 minutos
+        schedule.every(30).minutes.do(processar_planilha_automatico)
+        
+        logger.info("⏰ Scheduler iniciado - execução a cada 30 minutos")
+        
         while True:
             schedule.run_pending()
             time.sleep(60)  # Verificar a cada minuto
     
-    # Executar scheduler em thread separada
+    # Executar em thread separada
     scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
     scheduler_thread.start()
-    logger.info("⏰ Scheduler iniciado - execução a cada 30 minutos")
 
 # ================================
 # ROTAS DA API
 # ================================
 
 @app.route('/')
-def home():
-    """Página inicial com dashboard"""
+def dashboard():
+    """Dashboard principal do sistema"""
     html = """
     <!DOCTYPE html>
-    <html>
+    <html lang="pt-BR">
     <head>
-        <title>🎯 Sistema Processador de Sorteios</title>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Sistema Processador de Sorteios</title>
         <style>
-            body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
-            .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-            h1 { color: #2c3e50; text-align: center; }
-            .status { padding: 15px; margin: 10px 0; border-radius: 5px; }
-            .success { background: #d4edda; border: 1px solid #c3e6cb; color: #155724; }
-            .info { background: #d1ecf1; border: 1px solid #bee5eb; color: #0c5460; }
-            .warning { background: #fff3cd; border: 1px solid #ffeaa7; color: #856404; }
-            .btn { padding: 10px 20px; margin: 5px; border: none; border-radius: 5px; cursor: pointer; text-decoration: none; display: inline-block; }
+            body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+            .container { max-width: 1200px; margin: 0 auto; }
+            .header { text-align: center; margin-bottom: 30px; }
+            .status-card { background: white; padding: 20px; border-radius: 10px; margin: 20px 0; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            .success { background: #d4edda; border-left: 5px solid #28a745; }
+            .stats { display: flex; justify-content: space-around; margin: 20px 0; }
+            .stat { text-align: center; }
+            .stat h2 { font-size: 2.5em; margin: 0; color: #007bff; }
+            .buttons { text-align: center; margin: 30px 0; }
+            .btn { padding: 15px 30px; margin: 10px; border: none; border-radius: 5px; font-size: 16px; cursor: pointer; text-decoration: none; display: inline-block; }
             .btn-primary { background: #007bff; color: white; }
             .btn-success { background: #28a745; color: white; }
-            .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin: 20px 0; }
-            .stat-card { background: #f8f9fa; padding: 15px; border-radius: 5px; text-align: center; }
-            .stat-number { font-size: 2em; font-weight: bold; color: #007bff; }
+            .endpoints { background: #fff3cd; padding: 20px; border-radius: 10px; margin: 20px 0; }
+            .endpoint { margin: 10px 0; font-family: monospace; }
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>🎯 Sistema Processador de Sorteios</h1>
-            <div class="status success">
-                <strong>✅ Sistema Online e Funcionando!</strong><br>
-                Automação ativa - processamento a cada 30 minutos
+            <div class="header">
+                <h1>🎯 Sistema Processador de Sorteios</h1>
+            </div>
+            
+            <div class="status-card success">
+                <h3>✅ Sistema Online e Funcionando!</h3>
+                <p>Automação ativa - processamento a cada 30 minutos</p>
             </div>
             
             <div class="stats">
-                <div class="stat-card">
-                    <div class="stat-number" id="produtos">{{ produtos_processados }}</div>
-                    <div>Produtos Processados</div>
+                <div class="stat">
+                    <h2>{{ produtos_processados }}</h2>
+                    <p>Produtos Processados</p>
                 </div>
-                <div class="stat-card">
-                    <div class="stat-number" id="erros">{{ erros }}</div>
-                    <div>Erros</div>
+                <div class="stat">
+                    <h2>{{ erros }}</h2>
+                    <p>Erros</p>
                 </div>
             </div>
             
-            <div class="status info">
-                <strong>📊 Status:</strong> <span id="status">{{ status }}</span><br>
-                <strong>🕐 Última Execução:</strong> <span id="ultima">{{ ultima_execucao or 'Aguardando primeira execução' }}</span>
+            <div class="status-card">
+                <h4>📊 Status: {{ status }}</h4>
+                <p>🕐 Última Execução: {{ ultima_execucao or 'Aguardando primeira execução' }}</p>
             </div>
             
-            <div style="text-align: center; margin: 20px 0;">
-                <a href="/api/sorteios/processar-planilha" class="btn btn-primary" onclick="return confirm('Processar planilha manualmente?')">
-                    🚀 Processar Planilha Agora
-                </a>
-                <a href="/api/sorteios/status" class="btn btn-success">
-                    📊 Ver Status Detalhado
-                </a>
+            <div class="buttons">
+                <a href="/api/sorteios/processar-planilha" class="btn btn-primary">🚀 Processar Planilha Agora</a>
+                <a href="/api/sorteios/status" class="btn btn-success">📊 Ver Status Detalhado</a>
             </div>
             
-            <div class="status warning">
-                <strong>🔗 Endpoints da API:</strong><br>
-                • <code>GET /api/sorteios/health</code> - Health check<br>
-                • <code>GET /api/sorteios/status</code> - Status detalhado<br>
-                • <code>POST /api/sorteios/processar-planilha</code> - Processar planilha<br>
-                • <code>POST /api/sorteios/processar-produto</code> - Processar produto individual
+            <div class="endpoints">
+                <h4>🔌 Endpoints da API:</h4>
+                <div class="endpoint">• GET /api/sorteios/health - Health check</div>
+                <div class="endpoint">• GET /api/sorteios/status - Status detalhado</div>
+                <div class="endpoint">• POST /api/sorteios/processar-planilha - Processar planilha</div>
+                <div class="endpoint">• POST /api/sorteios/processar-produto - Processar produto individual</div>
             </div>
         </div>
-        
-        <script>
-            // Atualizar status a cada 30 segundos
-            setInterval(function() {
-                fetch('/api/sorteios/status')
-                    .then(response => response.json())
-                    .then(data => {
-                        document.getElementById('produtos').textContent = data.produtos_processados;
-                        document.getElementById('erros').textContent = data.erros;
-                        document.getElementById('status').textContent = data.status;
-                        document.getElementById('ultima').textContent = data.ultima_execucao || 'Aguardando primeira execução';
-                    })
-                    .catch(error => console.log('Erro ao atualizar status:', error));
-            }, 30000);
-        </script>
     </body>
     </html>
-    """.replace('{{ produtos_processados }}', str(sistema_status['produtos_processados'])) \
-       .replace('{{ erros }}', str(sistema_status['erros'])) \
-       .replace('{{ status }}', sistema_status['status']) \
-       .replace('{{ ultima_execucao }}', sistema_status['ultima_execucao'] or '')
+    """
     
-    return html
+    return render_template_string(html, **sistema_status)
 
 @app.route('/api/sorteios/health')
-def health():
+def health_check():
     """Health check da API"""
     return jsonify({
         "status": "ok",
@@ -528,73 +546,76 @@ def health():
     })
 
 @app.route('/api/sorteios/status')
-def status():
+def status_detalhado():
     """Status detalhado do sistema"""
     return jsonify({
-        "sistema": "Processador de Sorteios V2.0",
-        "status": "online",
-        "ultima_execucao": sistema_status["ultima_execucao"],
-        "produtos_processados": sistema_status["produtos_processados"],
-        "erros": sistema_status["erros"],
-        "status_atual": sistema_status["status"],
-        "google_sheets": "conectado" if sheets_manager.planilha else "desconectado",
-        "automacao": "ativa",
-        "frequencia": "30 minutos",
+        "sistema": sistema_status,
+        "google_sheets": {
+            "conectado": sheets_manager.planilha is not None,
+            "planilha_id": PLANILHA_ID
+        },
+        "processador": {
+            "ativo": True,
+            "versao": "4.1"
+        },
         "timestamp": datetime.now().isoformat()
     })
 
+@app.route('/api/sorteios/processar-planilha', methods=['GET', 'POST'])
+def processar_planilha_manual():
+    """Processa a planilha manualmente"""
+    try:
+        # Executar em thread separada para não bloquear
+        thread = threading.Thread(target=processar_planilha_automatico, daemon=True)
+        thread.start()
+        
+        return jsonify({
+            "mensagem": "Processamento da planilha iniciado",
+            "sucesso": True,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "mensagem": f"Erro ao iniciar processamento: {str(e)}",
+            "sucesso": False,
+            "timestamp": datetime.now().isoformat()
+        }), 500
+
 @app.route('/api/sorteios/processar-produto', methods=['POST'])
-def processar_produto():
+def processar_produto_individual():
     """Processa um produto individual"""
     try:
         data = request.get_json()
         url_produto = data.get('url')
         
         if not url_produto:
-            return jsonify({"erro": "URL do produto é obrigatória"}), 400
+            return jsonify({
+                "mensagem": "URL do produto é obrigatória",
+                "sucesso": False
+            }), 400
         
         # Processar produto
         url_imagem, mensagem = processador.processar_produto_completo(url_produto)
         
         if url_imagem:
             return jsonify({
-                "sucesso": True,
-                "url_imagem": url_imagem,
                 "mensagem": mensagem,
+                "url_imagem": url_imagem,
+                "sucesso": True,
                 "timestamp": datetime.now().isoformat()
             })
         else:
             return jsonify({
+                "mensagem": mensagem,
                 "sucesso": False,
-                "erro": mensagem,
                 "timestamp": datetime.now().isoformat()
             }), 400
             
     except Exception as e:
         return jsonify({
+            "mensagem": f"Erro ao processar produto: {str(e)}",
             "sucesso": False,
-            "erro": str(e),
-            "timestamp": datetime.now().isoformat()
-        }), 500
-
-@app.route('/api/sorteios/processar-planilha', methods=['POST', 'GET'])
-def processar_planilha():
-    """Processa a planilha completa"""
-    try:
-        # Executar processamento em thread separada para não bloquear
-        thread = threading.Thread(target=processar_planilha_automatico)
-        thread.start()
-        
-        return jsonify({
-            "sucesso": True,
-            "mensagem": "Processamento da planilha iniciado",
-            "timestamp": datetime.now().isoformat()
-        })
-        
-    except Exception as e:
-        return jsonify({
-            "sucesso": False,
-            "erro": str(e),
             "timestamp": datetime.now().isoformat()
         }), 500
 
@@ -616,8 +637,4 @@ if __name__ == '__main__':
     # Iniciar servidor
     port = int(os.environ.get('PORT', 5000))
     logger.info(f"🚀 Iniciando servidor na porta {port}")
-    logger.info("🎯 Sistema Processador de Sorteios V2.0")
-    logger.info("⏰ Automação: A cada 30 minutos")
-    logger.info("📊 Dashboard: http://localhost:5000")
-    
     app.run(host='0.0.0.0', port=port, debug=False)
