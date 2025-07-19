@@ -21,7 +21,6 @@ from flask_cors import CORS
 import os
 import threading
 import time
-import schedule
 import logging
 from datetime import datetime
 import json
@@ -54,7 +53,7 @@ sistema_status = {
     "ultima_execucao": None,
     "produtos_processados": 0,
     "erros": 0,
-    "status": "Aguardando primeira execução"
+    "status": "Serviço web online. Aguardando execução do Cron Job."
 }
 
 # ================================
@@ -156,7 +155,7 @@ class ProcessadorSorteioV5:
                 
                 if src.startswith('//'):
                     src = 'https:' + src
-                elif src.startswith('/'):
+                elif src.startswith('/' ):
                     src = urljoin(url, src)
                 
                 # Filtrar apenas imagens que contêm o código do produto
@@ -343,13 +342,13 @@ class ProcessadorSorteioV5:
                                    files=files, 
                                    data=data, 
                                    headers=headers,
-                                   timeout=60)
+                                   timeout=60 )
             
             logger.info(f"📊 Status Code: {response.status_code}")
             
             if response.status_code == 200:
                 url = response.text.strip()
-                if url.startswith('https://files.catbox.moe/'):
+                if url.startswith('https://files.catbox.moe/' ):
                     logger.info(f"✅ Upload concluído: {url}")
                     return url, "Upload realizado com sucesso"
                 else:
@@ -416,7 +415,7 @@ class GoogleSheetsManager:
                     'https://www.googleapis.com/auth/drive']
             
             # Tentar obter credenciais da variável de ambiente
-            credentials_json = os.environ.get('GOOGLE_CREDENTIALS')
+            credentials_json = os.environ.get('GOOGLE_CREDENTIALS' )
             
             if not credentials_json:
                 logger.error("❌ Variável GOOGLE_CREDENTIALS não encontrada")
@@ -566,27 +565,13 @@ def processar_planilha_automatico():
                 logger.error(f"❌ Erro ao processar {produto.get('produto', 'desconhecido')}: {e}")
         
         sistema_status["ultima_execucao"] = datetime.now().isoformat()
-        sistema_status["status"] = "Aguardando próxima execução"
+        sistema_status["status"] = "Aguardando próxima execução do Cron Job"
         logger.info("✅ PROCESSAMENTO AUTOMÁTICO CONCLUÍDO")
         
     except Exception as e:
         sistema_status["erros"] += 1
         sistema_status["status"] = f"Erro: {str(e)}"
         logger.error(f"❌ Erro no processamento automático: {e}")
-
-def iniciar_scheduler():
-    """Inicia o scheduler em thread separada"""
-    def run_scheduler():
-        # Agendar execução a cada 30 minutos
-        schedule.every(30).minutes.do(processar_planilha_automatico)
-        logger.info("⏰ Scheduler iniciado - execução a cada 30 minutos")
-        
-        while True:
-            schedule.run_pending()
-            time.sleep(60)
-    
-    scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
-    scheduler_thread.start()
 
 # ================================
 # ROTAS DA API
@@ -644,12 +629,13 @@ def dashboard():
                     <li>✅ Validação de fundo branco ≥60% obrigatória</li>
                     <li>✅ Processamento conforme especificações do PDF</li>
                     <li>✅ Mapeamento correto colunas E/G</li>
+                    <li>✅ Agendamento via Cron Job (mais robusto)</li>
                 </ul>
             </div>
             
             <div class="status-card success">
                 <h3>✅ Sistema V5.0 Online e Funcionando!</h3>
-                <p>Automação ativa - processamento a cada 30 minutos</p>
+                <p>Automação via Cron Job - processamento a cada 30 minutos</p>
             </div>
             
             <div class="stats">
@@ -665,7 +651,7 @@ def dashboard():
             
             <div class="status-card">
                 <h4>📊 Status: {{ status }}</h4>
-                <p>🕐 Última Execução: {{ ultima_execucao or 'Aguardando primeira execução' }}</p>
+                <p>🕐 Última Execução: {{ ultima_execucao or 'Aguardando primeira execução do Cron Job' }}</p>
             </div>
             
             <div class="buttons">
@@ -695,6 +681,7 @@ def health_check():
         "message": "Sistema V5.0 funcionando com GitHub Secrets",
         "versao": "5.0",
         "seguranca": "GitHub Secrets ativo",
+        "agendamento": "Cron Job externo",
         "timestamp": datetime.now().isoformat()
     })
 
@@ -705,6 +692,7 @@ def status_detalhado():
         "sistema": sistema_status,
         "versao": "5.0",
         "seguranca": "GitHub Secrets",
+        "agendamento": "Cron Job externo (mais robusto)",
         "google_sheets": {
             "conectado": sheets_manager.planilha is not None,
             "planilha_id": PLANILHA_ID,
@@ -727,7 +715,7 @@ def processar_planilha_manual():
         thread.start()
         
         return jsonify({
-            "mensagem": "Processamento da planilha V5.0 iniciado com GitHub Secrets",
+            "mensagem": "Processamento manual da planilha V5.0 iniciado",
             "sucesso": True,
             "versao": "5.0",
             "seguranca": "GitHub Secrets ativo",
@@ -783,7 +771,7 @@ def processar_produto_individual():
 # ================================
 
 if __name__ == '__main__':
-    logger.info("🚀 INICIANDO SISTEMA V5.0 COM GITHUB SECRETS")
+    logger.info("🚀 INICIANDO SERVIDOR WEB V5.0 COM GITHUB SECRETS")
     
     # Verificar se variável de ambiente existe
     if not os.environ.get('GOOGLE_CREDENTIALS'):
@@ -791,17 +779,7 @@ if __name__ == '__main__':
     else:
         logger.info("✅ GOOGLE_CREDENTIALS encontrada")
     
-    # Iniciar scheduler
-    iniciar_scheduler()
-    
-    # Executar primeira verificação após 30 segundos
-    def primeira_execucao():
-        time.sleep(30)
-        processar_planilha_automatico()
-    
-    threading.Thread(target=primeira_execucao, daemon=True).start()
-    
-    # Iniciar servidor
+    # Iniciar servidor (sem agendamento interno)
     port = int(os.environ.get('PORT', 5000))
-    logger.info(f"🚀 Servidor V5.0 com GitHub Secrets iniciando na porta {port}")
+    logger.info(f"🚀 Servidor Web V5.0 iniciando na porta {port}. Agendamento será feito via Cron Job.")
     app.run(host='0.0.0.0', port=port, debug=False)
