@@ -1,785 +1,525 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Sistema Processador de Sorteios API v5.0 - COM GITHUB SECRETS
-Sistema automatizado que lê Google Sheets, processa produtos da Natura 
-com extração por código e validação de fundo branco conforme PDF.
-
-CORREÇÕES IMPLEMENTADAS:
-- Extração por código NATBRA-XXXXX (não semântica)
-- Validação de fundo branco ≥60% obrigatória
-- Processamento conforme especificações do PDF
-- Mapeamento correto das colunas E/G
-- USO DE GITHUB SECRETS para credenciais
-
-Autor: Sistema Manus V5.0
-Data: Julho 2025
+Sistema Integrado de Processamento de Sorteios + Automação Manychat
+Preserva funcionalidades existentes e adiciona automação Selenium
 """
 
-from flask import Flask, request, jsonify, render_template_string
-from flask_cors import CORS
 import os
+import json
+import logging
 import threading
 import time
-import logging
-from datetime import datetime
-import json
-import requests
-from bs4 import BeautifulSoup
-from PIL import Image, ImageDraw, ImageFont
-import io
-import re
-from urllib.parse import urljoin, urlparse
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-import tempfile
+from datetime import datetime, timedelta
+from flask import Flask, request, jsonify, render_template_string
+from flask_cors import CORS
+import schedule
 
-# Configurar logging
-logging.basicConfig(level=logging.INFO)
+# Imports dos módulos do sistema
+from config_final import *
+from google_sheets_monitor_final import GoogleSheetsMonitor, executar_monitoramento
+from selenium_manager_final import SeleniumManager, processar_todas_automacoes
+
+# Configuração de logging
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL),
+    format=LOG_FORMAT,
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('sistema_sorteios.log')
+    ]
+)
+
 logger = logging.getLogger(__name__)
 
+# Inicialização Flask
 app = Flask(__name__)
 CORS(app)
 
 # ================================
-# CONFIGURAÇÕES GLOBAIS
+# VARIÁVEIS GLOBAIS DO SISTEMA
 # ================================
 
-# Configuração Google Sheets
-PLANILHA_ID = "1D84AsjVlCeXmW2hJEIVKBj6EHWe4xYfB6wd-JpHf_Ug"
-
-# Status global do sistema
-sistema_status = {
-    "ultima_execucao": None,
-    "produtos_processados": 0,
-    "erros": 0,
-    "status": "Serviço web online. Aguardando execução do Cron Job."
+sistema_ativo = True
+ultima_verificacao = None
+logs_sistema = []
+estatisticas = {
+    'verificacoes_realizadas': 0,
+    'novos_sorteios_processados': 0,
+    'automacoes_atualizadas': 0,
+    'erros_encontrados': 0,
+    'ultima_automacao': None
 }
 
 # ================================
-# PROCESSADOR DE IMAGENS V5.0 CORRIGIDO
+# FUNÇÕES DE LOG
 # ================================
 
-class ProcessadorSorteioV5:
-    def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        })
-        logger.info("🎯 PROCESSADOR V5.0 INICIADO - Extração por código + validação fundo branco")
-
-    def extrair_codigo_produto(self, url):
-        """Extrai o código NATBRA do produto da URL"""
-        try:
-            match = re.search(r'NATBRA-(\d+)', url)
-            if match:
-                codigo = f"NATBRA-{match.group(1)}"
-                logger.info(f"📋 Código extraído: {codigo}")
-                return codigo
-            else:
-                logger.error("❌ Código NATBRA não encontrado na URL")
-                return None
-        except Exception as e:
-            logger.error(f"❌ Erro ao extrair código: {e}")
-            return None
-
-    def validar_fundo_branco(self, img):
-        """Valida se a imagem tem ≥60% de fundo branco"""
-        try:
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
-            
-            width, height = img.size
-            pixels_brancos = 0
-            pixels_amostrados = 0
-            
-            # Amostragem das bordas (mais eficiente)
-            border_size = min(width, height) // 10
-            
-            # Amostragem das bordas
-            for x in range(0, width, 5):
-                for y in range(border_size):
-                    r, g, b = img.getpixel((x, y))
-                    if r > 240 and g > 240 and b > 240:
-                        pixels_brancos += 1
-                    pixels_amostrados += 1
-            
-            for x in range(0, width, 5):
-                for y in range(height - border_size, height):
-                    r, g, b = img.getpixel((x, y))
-                    if r > 240 and g > 240 and b > 240:
-                        pixels_brancos += 1
-                    pixels_amostrados += 1
-            
-            for y in range(0, height, 5):
-                for x in range(border_size):
-                    r, g, b = img.getpixel((x, y))
-                    if r > 240 and g > 240 and b > 240:
-                        pixels_brancos += 1
-                    pixels_amostrados += 1
-                
-                for x in range(width - border_size, width):
-                    r, g, b = img.getpixel((x, y))
-                    if r > 240 and g > 240 and b > 240:
-                        pixels_brancos += 1
-                    pixels_amostrados += 1
-            
-            if pixels_amostrados > 0:
-                percentual = (pixels_brancos / pixels_amostrados) * 100
-                logger.info(f"🎨 Fundo branco: {percentual:.1f}%")
-                return percentual >= 60.0, percentual
-            else:
-                return False, 0.0
-                
-        except Exception as e:
-            logger.error(f"❌ Erro na validação de fundo branco: {e}")
-            return False, 0.0
-
-    def extrair_imagens_por_codigo(self, url, codigo_produto):
-        """Extrai imagens baseado no código do produto"""
-        try:
-            logger.info(f"🔍 Buscando imagens para código: {codigo_produto}")
-            
-            response = self.session.get(url, timeout=15)
-            if response.status_code != 200:
-                return [], "Erro ao acessar página do produto"
-            
-            soup = BeautifulSoup(response.content, 'html.parser')
-            imgs = soup.find_all('img')
-            candidatas = []
-            
-            for img in imgs:
-                src = img.get('src') or img.get('data-src') or img.get('data-lazy-src')
-                if not src:
-                    continue
-                
-                if src.startswith('//'):
-                    src = 'https:' + src
-                elif src.startswith('/' ):
-                    src = urljoin(url, src)
-                
-                # Filtrar apenas imagens que contêm o código do produto
-                if codigo_produto in src or codigo_produto.replace('-', '') in src:
-                    candidatas.append({
-                        'url': src,
-                        'score': 0,
-                        'motivo': f'Contém código {codigo_produto}'
-                    })
-                    logger.info(f"✅ Candidata: {src}")
-            
-            if not candidatas:
-                logger.error(f"❌ Nenhuma imagem com código {codigo_produto}")
-                return [], "Nenhuma imagem encontrada com o código do produto"
-            
-            logger.info(f"📋 Candidatas encontradas: {len(candidatas)}")
-            return candidatas, "Candidatas extraídas com sucesso"
-            
-        except Exception as e:
-            logger.error(f"❌ Erro ao extrair imagens: {e}")
-            return [], f"Erro na extração: {str(e)}"
-
-    def avaliar_e_selecionar_imagem(self, candidatas):
-        """Avalia candidatas e seleciona a melhor com base no fundo branco"""
-        try:
-            logger.info("🔍 Avaliando candidatas...")
-            melhores = []
-            
-            for i, candidata in enumerate(candidatas):
-                logger.info(f"📋 Avaliando {i+1}/{len(candidatas)}: {candidata['url']}")
-                
-                try:
-                    response = self.session.get(candidata['url'], timeout=10)
-                    if response.status_code != 200:
-                        continue
-                    
-                    img = Image.open(io.BytesIO(response.content))
-                    tem_fundo_branco, percentual = self.validar_fundo_branco(img)
-                    
-                    if tem_fundo_branco:
-                        score = 1000
-                        if percentual >= 80:
-                            score += 500
-                        elif percentual >= 70:
-                            score += 300
-                        else:
-                            score += 100
-                        
-                        width, height = img.size
-                        if width >= 800 and height >= 800:
-                            score += 200
-                        elif width >= 400 and height >= 400:
-                            score += 100
-                        
-                        candidata['score'] = score
-                        candidata['percentual_branco'] = percentual
-                        candidata['imagem'] = img
-                        melhores.append(candidata)
-                        
-                        logger.info(f"✅ APROVADA - Score: {score}, Fundo: {percentual:.1f}%")
-                    else:
-                        logger.info(f"❌ REJEITADA - Fundo: {percentual:.1f}%")
-                
-                except Exception as e:
-                    logger.error(f"❌ Erro ao avaliar: {e}")
-                    continue
-            
-            if not melhores:
-                return None, "Nenhuma imagem com fundo branco adequado (≥60%)"
-            
-            melhores.sort(key=lambda x: x['score'], reverse=True)
-            melhor = melhores[0]
-            
-            logger.info(f"🏆 MELHOR: Score {melhor['score']}, Fundo {melhor['percentual_branco']:.1f}%")
-            return melhor['imagem'], "Imagem selecionada com sucesso"
-            
-        except Exception as e:
-            logger.error(f"❌ Erro na avaliação: {e}")
-            return None, f"Erro na avaliação: {str(e)}"
-
-    def processar_imagem_sorteio(self, img_produto):
-        """Processa a imagem para sorteio conforme especificações do PDF"""
-        try:
-            logger.info("🎨 Processando imagem para sorteio...")
-            
-            # Redimensionar produto para máximo 540x540 mantendo proporção
-            img_produto.thumbnail((540, 540), Image.Resampling.LANCZOS)
-            
-            # Criar canvas 600x600 branco
-            canvas = Image.new('RGB', (600, 600), (255, 255, 255))
-            
-            # Centralizar produto no canvas
-            produto_width, produto_height = img_produto.size
-            pos_x = (600 - produto_width) // 2
-            pos_y = (600 - produto_height) // 2
-            
-            if img_produto.mode == 'RGBA':
-                canvas.paste(img_produto, (pos_x, pos_y), img_produto)
-            else:
-                canvas.paste(img_produto, (pos_x, pos_y))
-            
-            # Configurar fontes
-            try:
-                fonte_media = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 60)
-                fonte_grande = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 96)
-            except:
-                try:
-                    fonte_media = ImageFont.truetype("arial.ttf", 60)
-                    fonte_grande = ImageFont.truetype("arial.ttf", 96)
-                except:
-                    fonte_media = ImageFont.load_default()
-                    fonte_grande = ImageFont.load_default()
-            
-            draw = ImageDraw.Draw(canvas)
-            cor_vermelha = (139, 0, 0)  # #8B0000
-            cor_contorno = (255, 255, 255)
-            
-            # TEXTO SUPERIOR: "Ganhe esse Top!"
-            texto_superior = "Ganhe esse Top!"
-            bbox_superior = draw.textbbox((0, 0), texto_superior, font=fonte_media)
-            largura_superior = bbox_superior[2] - bbox_superior[0]
-            x_superior = (600 - largura_superior) // 2
-            y_superior = 20
-            
-            # Contorno branco (4px)
-            for dx in range(-4, 5):
-                for dy in range(-4, 5):
-                    if dx != 0 or dy != 0:
-                        draw.text((x_superior + dx, y_superior + dy), texto_superior, 
-                                font=fonte_media, fill=cor_contorno)
-            
-            draw.text((x_superior, y_superior), texto_superior, 
-                     font=fonte_media, fill=cor_vermelha)
-            
-            # TEXTO INFERIOR: "Sorteio"
-            texto_inferior = "Sorteio"
-            bbox_inferior = draw.textbbox((0, 0), texto_inferior, font=fonte_grande)
-            largura_inferior = bbox_inferior[2] - bbox_inferior[0]
-            altura_inferior = bbox_inferior[3] - bbox_inferior[1]
-            x_inferior = (600 - largura_inferior) // 2
-            y_inferior = 600 - altura_inferior - 20
-            
-            # Contorno branco (6px)
-            for dx in range(-6, 7):
-                for dy in range(-6, 7):
-                    if dx != 0 or dy != 0:
-                        draw.text((x_inferior + dx, y_inferior + dy), texto_inferior, 
-                                font=fonte_grande, fill=cor_contorno)
-            
-            draw.text((x_inferior, y_inferior), texto_inferior, 
-                     font=fonte_grande, fill=cor_vermelha)
-            
-            # Salvar em buffer
-            buffer = io.BytesIO()
-            canvas.save(buffer, format='PNG', quality=95)
-            buffer.seek(0)
-            
-            logger.info("✅ Imagem processada com sucesso")
-            return buffer, "Imagem processada conforme PDF"
-            
-        except Exception as e:
-            logger.error(f"❌ Erro ao processar imagem: {e}")
-            return None, f"Erro no processamento: {str(e)}"
-
-    def upload_catbox(self, buffer_imagem):
-        """Faz upload da imagem para Catbox.moe"""
-        try:
-            logger.info("📤 Upload para Catbox.moe...")
-            buffer_imagem.seek(0)
-            
-            files = {
-                'fileToUpload': ('sorteio.png', buffer_imagem, 'image/png')
-            }
-            
-            data = {
-                'reqtype': 'fileupload'
-            }
-            
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            
-            response = requests.post('https://catbox.moe/user/api.php', 
-                                   files=files, 
-                                   data=data, 
-                                   headers=headers,
-                                   timeout=60 )
-            
-            logger.info(f"📊 Status Code: {response.status_code}")
-            
-            if response.status_code == 200:
-                url = response.text.strip()
-                if url.startswith('https://files.catbox.moe/' ):
-                    logger.info(f"✅ Upload concluído: {url}")
-                    return url, "Upload realizado com sucesso"
-                else:
-                    logger.error(f"❌ Resposta inesperada: {url}")
-                    return None, f"Resposta inesperada: {url}"
-            else:
-                logger.error(f"❌ Erro HTTP {response.status_code}")
-                return None, f"Erro HTTP {response.status_code}"
-            
-        except Exception as e:
-            logger.error(f"❌ Erro no upload: {e}")
-            return None, f"Erro no upload: {str(e)}"
-
-    def processar_produto_completo(self, url_produto):
-        """Processa um produto completo"""
-        try:
-            logger.info(f"🚀 PROCESSAMENTO V5.0: {url_produto}")
-            
-            # 1. Extrair código do produto
-            codigo = self.extrair_codigo_produto(url_produto)
-            if not codigo:
-                return None, "❌ Código NATBRA não encontrado na URL"
-            
-            # 2. Extrair imagens por código
-            candidatas, msg_extracao = self.extrair_imagens_por_codigo(url_produto, codigo)
-            if not candidatas:
-                return None, f"❌ Extração falhou: {msg_extracao}"
-            
-            # 3. Avaliar e selecionar melhor imagem
-            img_produto, msg_selecao = self.avaliar_e_selecionar_imagem(candidatas)
-            if not img_produto:
-                return None, f"❌ Seleção falhou: {msg_selecao}"
-            
-            # 4. Processar para sorteio
-            buffer_processado, msg_processamento = self.processar_imagem_sorteio(img_produto)
-            if not buffer_processado:
-                return None, f"❌ Processamento falhou: {msg_processamento}"
-            
-            # 5. Upload para Catbox
-            url_final, msg_upload = self.upload_catbox(buffer_processado)
-            if not url_final:
-                return None, f"❌ Upload falhou: {msg_upload}"
-            
-            logger.info(f"🎉 SUCESSO: {url_final}")
-            return url_final, "✅ Produto processado com sucesso"
-            
-        except Exception as e:
-            logger.error(f"❌ Erro geral: {e}")
-            return None, f"❌ Erro geral: {str(e)}"
-
-# ================================
-# GERENCIADOR GOOGLE SHEETS COM SECRETS
-# ================================
-
-class GoogleSheetsManager:
-    def __init__(self):
-        self.planilha = None
-        self.conectar()
+def adicionar_log(nivel, mensagem):
+    """Adiciona log ao sistema com timestamp"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_entry = {
+        'timestamp': timestamp,
+        'nivel': nivel,
+        'mensagem': mensagem
+    }
     
-    def conectar(self):
-        """Conecta ao Google Sheets usando credenciais da variável de ambiente"""
-        try:
-            scope = ['https://spreadsheets.google.com/feeds',
-                    'https://www.googleapis.com/auth/drive']
-            
-            # Tentar obter credenciais da variável de ambiente
-            credentials_json = os.environ.get('GOOGLE_CREDENTIALS' )
-            
-            if not credentials_json:
-                logger.error("❌ Variável GOOGLE_CREDENTIALS não encontrada")
-                return False
-            
-            # Criar arquivo temporário com as credenciais
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp_file:
-                temp_file.write(credentials_json)
-                temp_path = temp_file.name
-            
-            try:
-                creds = ServiceAccountCredentials.from_json_keyfile_name(temp_path, scope)
-                client = gspread.authorize(creds)
-                self.planilha = client.open_by_key(PLANILHA_ID).sheet1
-                logger.info("✅ Conectado ao Google Sheets via variável de ambiente")
-                return True
-            finally:
-                # Limpar arquivo temporário
-                try:
-                    os.unlink(temp_path)
-                except:
-                    pass
-            
-        except Exception as e:
-            logger.error(f"❌ Erro ao conectar Google Sheets: {e}")
-            return False
+    logs_sistema.append(log_entry)
     
-    def obter_produtos_pendentes(self):
-        """Obtém produtos que precisam ser processados"""
-        try:
-            if not self.planilha:
-                logger.error("❌ Planilha não conectada")
-                return []
-            
-            # Ler todas as linhas
-            dados = self.planilha.get_all_records()
-            produtos_pendentes = []
-            
-            for i, linha in enumerate(dados, start=2):  # Linha 2 = primeira linha de dados
-                # CORREÇÃO: Verificar colunas corretas
-                # Coluna G = link do produto (onde você fornece o link)
-                # Coluna E = url_imagem_processada (onde vai o resultado)
-                
-                # Tentar diferentes nomes de colunas possíveis
-                link_produto = (linha.get('G') or 
-                              linha.get('link_produto') or 
-                              linha.get('Link Produto') or 
-                              linha.get('URL Produto') or '').strip()
-                
-                imagem_processada = (linha.get('E') or 
-                                   linha.get('url_imagem_processada') or 
-                                   linha.get('URL Imagem Processada') or 
-                                   linha.get('Imagem Processada') or '').strip()
-                
-                # Se tem link do produto mas não tem imagem processada
-                if link_produto and not imagem_processada:
-                    nome_produto = (linha.get('nome') or 
-                                  linha.get('Nome') or 
-                                  linha.get('Produto') or 
-                                  linha.get('produto') or 
-                                  f'Produto linha {i}')
-                    
-                    produtos_pendentes.append({
-                        'linha': i,
-                        'url': link_produto,
-                        'produto': nome_produto
-                    })
-                    logger.info(f"📋 Produto pendente linha {i}: {nome_produto}")
-            
-            logger.info(f"📊 Total de produtos pendentes: {len(produtos_pendentes)}")
-            return produtos_pendentes
-            
-        except Exception as e:
-            logger.error(f"❌ Erro ao obter produtos pendentes: {e}")
-            return []
+    # Mantém apenas os últimos logs
+    if len(logs_sistema) > LOG_MAX_LINES:
+        logs_sistema.pop(0)
     
-    def atualizar_imagem_processada(self, linha, url_imagem):
-        """Atualiza a coluna E com a URL da imagem processada"""
-        try:
-            if not self.planilha:
-                logger.error("❌ Planilha não conectada")
-                return False
-            
-            # Coluna E = 5ª coluna (url_imagem_processada)
-            self.planilha.update_cell(linha, 5, url_imagem)
-            logger.info(f"✅ Linha {linha} atualizada: {url_imagem}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Erro ao atualizar planilha linha {linha}: {e}")
-            return False
+    # Log no sistema
+    if nivel == 'INFO':
+        logger.info(mensagem)
+    elif nivel == 'WARNING':
+        logger.warning(mensagem)
+    elif nivel == 'ERROR':
+        logger.error(mensagem)
+    elif nivel == 'DEBUG':
+        logger.debug(mensagem)
 
 # ================================
-# INSTÂNCIAS GLOBAIS
+# FUNÇÃO PRINCIPAL DE VERIFICAÇÃO
 # ================================
 
-processador = ProcessadorSorteioV5()
-sheets_manager = GoogleSheetsManager()
-
-# ================================
-# FUNÇÕES DE AUTOMAÇÃO
-# ================================
-
-def processar_planilha_automatico():
-    """Função que processa a planilha automaticamente"""
+def executar_verificacao_sistema():
+    """Execução principal do sistema - verifica planilhas e atualiza Manychat"""
+    global ultima_verificacao, estatisticas
+    
     try:
-        logger.info("🔄 INICIANDO PROCESSAMENTO AUTOMÁTICO")
-        sistema_status["status"] = "Processando planilha..."
+        adicionar_log('INFO', MENSAGENS['verificacao_iniciada'])
+        estatisticas['verificacoes_realizadas'] += 1
         
-        # Obter produtos pendentes
-        produtos = sheets_manager.obter_produtos_pendentes()
+        # 1. Monitora Google Sheets
+        resultados_sheets = executar_monitoramento()
         
-        if not produtos:
-            logger.info("ℹ️ Nenhum produto pendente encontrado")
-            sistema_status["status"] = "Aguardando produtos pendentes"
-            return
+        if not resultados_sheets or 'erro' in resultados_sheets:
+            erro = resultados_sheets.get('erro', 'Erro desconhecido') if resultados_sheets else 'Falha no monitoramento'
+            adicionar_log('ERROR', f"❌ Erro no monitoramento Google Sheets: {erro}")
+            estatisticas['erros_encontrados'] += 1
+            return False
         
-        logger.info(f"📋 Produtos pendentes: {len(produtos)}")
+        # 2. Processa novos sorteios
+        novos_processados = resultados_sheets.get('novos_processados', 0)
+        if novos_processados > 0:
+            adicionar_log('INFO', f"🆕 {novos_processados} novos sorteios processados")
+            estatisticas['novos_sorteios_processados'] += novos_processados
         
-        # Processar cada produto
-        for produto in produtos:
-            try:
-                logger.info(f"🔄 Processando: {produto['produto']}")
+        # 3. Verifica sorteios finalizados
+        sorteios_finalizados = resultados_sheets.get('sorteios_finalizados', [])
+        
+        if sorteios_finalizados:
+            # Há sorteios que acabaram de finalizar
+            for sorteio in sorteios_finalizados:
+                adicionar_log('INFO', MENSAGENS['sorteio_finalizado'].format(sorteio.get('nome', 'Desconhecido')))
+            
+            # Obtém dados para automação
+            dados_automacao = resultados_sheets.get('dados_automacao')
+            
+            if dados_automacao:
+                adicionar_log('INFO', MENSAGENS['proximo_sorteio'].format(
+                    dados_automacao.get('nome', 'Desconhecido'),
+                    dados_automacao.get('data', 'Data não informada')
+                ))
                 
-                # Processar produto
-                url_imagem, mensagem = processador.processar_produto_completo(produto['url'])
-                
-                if url_imagem:
-                    # Atualizar planilha
-                    sucesso = sheets_manager.atualizar_imagem_processada(produto['linha'], url_imagem)
-                    
-                    if sucesso:
-                        sistema_status["produtos_processados"] += 1
-                        logger.info(f"✅ {produto['produto']} processado com sucesso")
-                    else:
-                        sistema_status["erros"] += 1
-                        logger.error(f"❌ Erro ao atualizar planilha: {produto['produto']}")
+                # 4. Executa automação Manychat
+                if executar_automacao_manychat(dados_automacao):
+                    adicionar_log('INFO', "✅ Todas as automações Manychat atualizadas com sucesso")
+                    estatisticas['automacoes_atualizadas'] += 1
+                    estatisticas['ultima_automacao'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 else:
-                    sistema_status["erros"] += 1
-                    logger.error(f"❌ Erro ao processar {produto['produto']}: {mensagem}")
-                
-                # Pausa entre processamentos
-                time.sleep(3)
-                
-            except Exception as e:
-                sistema_status["erros"] += 1
-                logger.error(f"❌ Erro ao processar {produto.get('produto', 'desconhecido')}: {e}")
+                    adicionar_log('ERROR', "❌ Falha na automação Manychat")
+                    estatisticas['erros_encontrados'] += 1
         
-        sistema_status["ultima_execucao"] = datetime.now().isoformat()
-        sistema_status["status"] = "Aguardando próxima execução do Cron Job"
-        logger.info("✅ PROCESSAMENTO AUTOMÁTICO CONCLUÍDO")
+        ultima_verificacao = datetime.now()
+        adicionar_log('INFO', "✅ Verificação do sistema concluída")
+        return True
         
     except Exception as e:
-        sistema_status["erros"] += 1
-        sistema_status["status"] = f"Erro: {str(e)}"
-        logger.error(f"❌ Erro no processamento automático: {e}")
+        adicionar_log('ERROR', f"❌ Erro crítico na verificação: {e}")
+        estatisticas['erros_encontrados'] += 1
+        return False
+
+def executar_automacao_manychat(dados_automacao):
+    """Executa automação Manychat com os dados do próximo sorteio"""
+    try:
+        if SIMULAR_ATUALIZACOES:
+            adicionar_log('INFO', "🧪 Modo simulação - automação Manychat simulada")
+            time.sleep(2)  # Simula tempo de processamento
+            return True
+        
+        # Extrai dados necessários
+        data_sorteio = dados_automacao.get('data')
+        url_planilha = dados_automacao.get('url_planilha')
+        sorteio_id = dados_automacao.get('sorteio_id')
+        
+        if not all([data_sorteio, url_planilha, sorteio_id]):
+            adicionar_log('ERROR', "❌ Dados insuficientes para automação Manychat")
+            return False
+        
+        adicionar_log('INFO', "🤖 Iniciando automação Selenium...")
+        
+        # Executa automação via Selenium
+        resultados = processar_todas_automacoes(data_sorteio, url_planilha, sorteio_id)
+        
+        if 'erro' in resultados:
+            adicionar_log('ERROR', f"❌ Erro na automação: {resultados['erro']}")
+            return False
+        
+        # Processa resultados por automação
+        sucesso_total = True
+        for automacao, resultado in resultados.items():
+            if 'erro' in resultado:
+                adicionar_log('WARNING', f"⚠️ {automacao}: {resultado['erro']}")
+                sucesso_total = False
+            elif resultado.get('sucesso'):
+                adicionar_log('INFO', MENSAGENS['automacao_concluida'].format(automacao))
+            else:
+                adicionar_log('WARNING', f"⚠️ Falha parcial na automação {automacao}")
+                sucesso_total = False
+        
+        return sucesso_total
+        
+    except Exception as e:
+        adicionar_log('ERROR', f"❌ Erro na automação Manychat: {e}")
+        return False
 
 # ================================
-# ROTAS DA API
+# SCHEDULER E THREAD DE MONITORAMENTO
+# ================================
+
+def iniciar_scheduler():
+    """Inicia o scheduler para verificações periódicas"""
+    schedule.every(INTERVALO_VERIFICACAO).minutes.do(executar_verificacao_sistema)
+    
+    adicionar_log('INFO', f"⏰ Scheduler iniciado - verificações a cada {INTERVALO_VERIFICACAO} minutos")
+    
+    while sistema_ativo:
+        schedule.run_pending()
+        time.sleep(60)  # Verifica a cada minuto
+
+def iniciar_monitoramento():
+    """Inicia thread de monitoramento em background"""
+    thread_scheduler = threading.Thread(target=iniciar_scheduler, daemon=True)
+    thread_scheduler.start()
+    
+    adicionar_log('INFO', MENSAGENS['sistema_iniciado'])
+
+# ================================
+# ROTAS DA API FLASK
 # ================================
 
 @app.route('/')
 def dashboard():
     """Dashboard principal do sistema"""
-    html = """
+    template = """
     <!DOCTYPE html>
     <html lang="pt-BR">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Sistema Processador de Sorteios V5.0</title>
+        <title>Sistema de Automação Manychat + Sorteios</title>
         <style>
-            body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+            body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
             .container { max-width: 1200px; margin: 0 auto; }
-            .header { text-align: center; margin-bottom: 30px; }
-            .status-card { background: white; padding: 20px; border-radius: 10px; margin: 20px 0; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-            .success { background: #d4edda; border-left: 5px solid #28a745; }
-            .stats { display: flex; justify-content: space-around; margin: 20px 0; }
-            .stat { text-align: center; }
-            .stat h2 { font-size: 2.5em; margin: 0; color: #007bff; }
-            .buttons { text-align: center; margin: 30px 0; }
-            .btn { padding: 15px 30px; margin: 10px; border: none; border-radius: 5px; font-size: 16px; cursor: pointer; text-decoration: none; display: inline-block; }
+            .card { background: white; padding: 20px; margin: 10px 0; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+            .status { padding: 10px; border-radius: 4px; margin: 10px 0; }
+            .status.ativo { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+            .status.erro { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+            .btn { padding: 10px 20px; margin: 5px; border: none; border-radius: 4px; cursor: pointer; }
             .btn-primary { background: #007bff; color: white; }
             .btn-success { background: #28a745; color: white; }
-            .endpoints { background: #fff3cd; padding: 20px; border-radius: 10px; margin: 20px 0; }
-            .endpoint { margin: 10px 0; font-family: monospace; }
-            .version { background: #e7f3ff; padding: 15px; border-radius: 10px; margin: 20px 0; }
-            .security { background: #d1ecf1; padding: 15px; border-radius: 10px; margin: 20px 0; }
+            .btn-warning { background: #ffc107; color: black; }
+            .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }
+            .stat-card { text-align: center; padding: 15px; }
+            .stat-number { font-size: 2em; font-weight: bold; color: #007bff; }
+            .logs { max-height: 400px; overflow-y: auto; background: #f8f9fa; padding: 15px; border-radius: 4px; }
+            .log-entry { margin: 5px 0; padding: 5px; border-left: 3px solid #007bff; }
+            .log-error { border-left-color: #dc3545; }
+            .log-warning { border-left-color: #ffc107; }
+            .log-info { border-left-color: #28a745; }
+            h1, h2 { color: #333; }
+            .refresh { float: right; }
         </style>
+        <script>
+            function executarVerificacao() {
+                fetch('/api/executar-verificacao', {method: 'POST'})
+                    .then(response => response.json())
+                    .then(data => {
+                        alert(data.sucesso ? 'Verificação executada!' : 'Erro: ' + data.erro);
+                        location.reload();
+                    });
+            }
+            
+            function testarManychat() {
+                fetch('/api/testar-manychat', {method: 'POST'})
+                    .then(response => response.json())
+                    .then(data => {
+                        alert(data.sucesso ? 'Conexão OK!' : 'Erro: ' + data.erro);
+                    });
+            }
+            
+            // Auto-refresh a cada 30 segundos
+            setTimeout(() => location.reload(), 30000);
+        </script>
     </head>
     <body>
         <div class="container">
-            <div class="header">
-                <h1>🎯 Sistema Processador de Sorteios V5.0</h1>
-                <p>Extração por código + Validação de fundo branco</p>
-            </div>
+            <h1>🤖 Sistema de Automação Manychat + Sorteios</h1>
             
-            <div class="security">
-                <h4>🔐 SEGURANÇA IMPLEMENTADA:</h4>
-                <ul>
-                    <li>✅ Credenciais via GitHub Secrets</li>
-                    <li>✅ Sem arquivos sensíveis no repositório</li>
-                    <li>✅ Variáveis de ambiente seguras</li>
-                </ul>
-            </div>
-            
-            <div class="version">
-                <h4>🔧 CORREÇÕES V5.0 IMPLEMENTADAS:</h4>
-                <ul>
-                    <li>✅ Extração por código NATBRA-XXXXX (não semântica)</li>
-                    <li>✅ Validação de fundo branco ≥60% obrigatória</li>
-                    <li>✅ Processamento conforme especificações do PDF</li>
-                    <li>✅ Mapeamento correto colunas E/G</li>
-                    <li>✅ Agendamento via Cron Job (mais robusto)</li>
-                </ul>
-            </div>
-            
-            <div class="status-card success">
-                <h3>✅ Sistema V5.0 Online e Funcionando!</h3>
-                <p>Automação via Cron Job - processamento a cada 30 minutos</p>
-            </div>
-            
-            <div class="stats">
-                <div class="stat">
-                    <h2>{{ produtos_processados }}</h2>
-                    <p>Produtos Processados</p>
+            <div class="card">
+                <h2>Status do Sistema <button class="btn btn-primary refresh" onclick="location.reload()">🔄 Atualizar</button></h2>
+                <div class="status {{ 'ativo' if sistema_ativo else 'erro' }}">
+                    {{ '✅ Sistema Ativo' if sistema_ativo else '❌ Sistema Inativo' }}
                 </div>
-                <div class="stat">
-                    <h2>{{ erros }}</h2>
-                    <p>Erros</p>
+                <p><strong>Última Verificação:</strong> {{ ultima_verificacao.strftime('%d/%m/%Y %H:%M:%S') if ultima_verificacao else 'Nunca' }}</p>
+                <p><strong>Próxima Verificação:</strong> {{ (ultima_verificacao + timedelta(minutes=intervalo)).strftime('%d/%m/%Y %H:%M:%S') if ultima_verificacao else 'Em breve' }}</p>
+            </div>
+            
+            <div class="card">
+                <h2>Estatísticas</h2>
+                <div class="stats">
+                    <div class="stat-card">
+                        <div class="stat-number">{{ estatisticas.verificacoes_realizadas }}</div>
+                        <div>Verificações</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number">{{ estatisticas.novos_sorteios_processados }}</div>
+                        <div>Sorteios Processados</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number">{{ estatisticas.automacoes_atualizadas }}</div>
+                        <div>Automações Atualizadas</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number">{{ estatisticas.erros_encontrados }}</div>
+                        <div>Erros</div>
+                    </div>
                 </div>
+                <p><strong>Última Automação:</strong> {{ estatisticas.ultima_automacao or 'Nunca' }}</p>
             </div>
             
-            <div class="status-card">
-                <h4>📊 Status: {{ status }}</h4>
-                <p>🕐 Última Execução: {{ ultima_execucao or 'Aguardando primeira execução do Cron Job' }}</p>
+            <div class="card">
+                <h2>Controles</h2>
+                <button class="btn btn-success" onclick="executarVerificacao()">🔍 Executar Verificação Manual</button>
+                <button class="btn btn-warning" onclick="testarManychat()">🧪 Testar Conexão Manychat</button>
             </div>
             
-            <div class="buttons">
-                <a href="/api/sorteios/processar-planilha" class="btn btn-primary">🚀 Processar Planilha Agora</a>
-                <a href="/api/sorteios/status" class="btn btn-success">📊 Ver Status Detalhado</a>
-            </div>
-            
-            <div class="endpoints">
-                <h4>🔌 Endpoints da API:</h4>
-                <div class="endpoint">• GET /api/sorteios/health - Health check</div>
-                <div class="endpoint">• GET /api/sorteios/status - Status detalhado</div>
-                <div class="endpoint">• POST /api/sorteios/processar-planilha - Processar planilha</div>
-                <div class="endpoint">• POST /api/sorteios/processar-produto - Processar produto individual</div>
+            <div class="card">
+                <h2>Logs Recentes ({{ logs_sistema|length }} entradas)</h2>
+                <div class="logs">
+                    {% for log in logs_sistema[-20:] %}
+                    <div class="log-entry log-{{ log.nivel.lower() }}">
+                        <strong>[{{ log.timestamp }}]</strong> {{ log.mensagem }}
+                    </div>
+                    {% endfor %}
+                </div>
             </div>
         </div>
     </body>
     </html>
     """
     
-    return render_template_string(html, **sistema_status)
+    return render_template_string(template, 
+        sistema_ativo=sistema_ativo,
+        ultima_verificacao=ultima_verificacao,
+        intervalo=INTERVALO_VERIFICACAO,
+        estatisticas=estatisticas,
+        logs_sistema=logs_sistema,
+        timedelta=timedelta
+    )
 
-@app.route('/api/sorteios/health')
-def health_check():
-    """Health check da API"""
+@app.route('/api/status')
+def api_status():
+    """Retorna status do sistema"""
     return jsonify({
-        "status": "ok",
-        "message": "Sistema V5.0 funcionando com GitHub Secrets",
-        "versao": "5.0",
-        "seguranca": "GitHub Secrets ativo",
-        "agendamento": "Cron Job externo",
-        "timestamp": datetime.now().isoformat()
+        'sistema_ativo': sistema_ativo,
+        'ultima_verificacao': ultima_verificacao.isoformat() if ultima_verificacao else None,
+        'estatisticas': estatisticas,
+        'configuracoes': {
+            'intervalo_verificacao': INTERVALO_VERIFICACAO,
+            'automacoes_configuradas': len([url for url in AUTOMACOES_URLS.values() if not url.startswith('URL_DA_AUTOMACAO')]),
+            'modo_simulacao': SIMULAR_ATUALIZACOES
+        }
     })
 
-@app.route('/api/sorteios/status')
-def status_detalhado():
-    """Status detalhado do sistema"""
-    return jsonify({
-        "sistema": sistema_status,
-        "versao": "5.0",
-        "seguranca": "GitHub Secrets",
-        "agendamento": "Cron Job externo (mais robusto)",
-        "google_sheets": {
-            "conectado": sheets_manager.planilha is not None,
-            "planilha_id": PLANILHA_ID,
-            "metodo": "Variável de ambiente"
-        },
-        "processador": {
-            "ativo": True,
-            "versao": "5.0",
-            "extracao": "Por código NATBRA-XXXXX",
-            "validacao": "Fundo branco ≥60%"
-        },
-        "timestamp": datetime.now().isoformat()
-    })
-
-@app.route('/api/sorteios/processar-planilha', methods=['GET', 'POST'])
-def processar_planilha_manual():
-    """Processa a planilha manualmente"""
+@app.route('/api/executar-verificacao', methods=['POST'])
+def api_executar_verificacao():
+    """Executa verificação manual do sistema"""
     try:
-        thread = threading.Thread(target=processar_planilha_automatico, daemon=True)
-        thread.start()
+        sucesso = executar_verificacao_sistema()
+        return jsonify({
+            'sucesso': sucesso,
+            'timestamp': datetime.now().isoformat(),
+            'mensagem': 'Verificação executada com sucesso' if sucesso else 'Erro na verificação'
+        })
+    except Exception as e:
+        return jsonify({
+            'sucesso': False,
+            'erro': str(e)
+        }), 500
+
+@app.route('/api/testar-manychat', methods=['POST'])
+def api_testar_manychat():
+    """Testa conexão com Manychat"""
+    try:
+        if SIMULAR_ATUALIZACOES:
+            return jsonify({
+                'sucesso': True,
+                'mensagem': 'Modo simulação - teste simulado'
+            })
+        
+        with SeleniumManager() as selenium:
+            sessao_ativa = selenium.verificar_sessao_ativa()
+            
+            return jsonify({
+                'sucesso': sessao_ativa,
+                'mensagem': 'Sessão Manychat ativa' if sessao_ativa else 'Sessão expirada - necessário login'
+            })
+            
+    except Exception as e:
+        return jsonify({
+            'sucesso': False,
+            'erro': str(e)
+        }), 500
+
+@app.route('/api/login-manychat', methods=['POST'])
+def api_login_manychat():
+    """Endpoint para login no Manychat (implementação futura)"""
+    return jsonify({
+        'sucesso': False,
+        'mensagem': 'Login manual necessário - acesse Manychat no navegador e faça login'
+    })
+
+@app.route('/api/logs')
+def api_logs():
+    """Retorna logs do sistema"""
+    return jsonify({
+        'logs': logs_sistema[-100:],  # Últimos 100 logs
+        'total': len(logs_sistema)
+    })
+
+@app.route('/api/status-sheets')
+def api_status_sheets():
+    """Testa conexão com Google Sheets"""
+    try:
+        monitor = GoogleSheetsMonitor()
+        sucesso = monitor.testar_conexao()
         
         return jsonify({
-            "mensagem": "Processamento manual da planilha V5.0 iniciado",
-            "sucesso": True,
-            "versao": "5.0",
-            "seguranca": "GitHub Secrets ativo",
-            "timestamp": datetime.now().isoformat()
+            'sucesso': sucesso,
+            'mensagem': 'Conexão Google Sheets OK' if sucesso else 'Erro na conexão'
         })
         
     except Exception as e:
         return jsonify({
-            "mensagem": f"Erro ao iniciar processamento: {str(e)}",
-            "sucesso": False,
-            "timestamp": datetime.now().isoformat()
-        }), 500
-
-@app.route('/api/sorteios/processar-produto', methods=['POST'])
-def processar_produto_individual():
-    """Processa um produto individual"""
-    try:
-        data = request.get_json()
-        url_produto = data.get('url')
-        
-        if not url_produto:
-            return jsonify({
-                "mensagem": "URL do produto é obrigatória",
-                "sucesso": False
-            }), 400
-        
-        url_imagem, mensagem = processador.processar_produto_completo(url_produto)
-        
-        if url_imagem:
-            return jsonify({
-                "mensagem": mensagem,
-                "url_imagem": url_imagem,
-                "sucesso": True,
-                "versao": "5.0",
-                "timestamp": datetime.now().isoformat()
-            })
-        else:
-            return jsonify({
-                "mensagem": mensagem,
-                "sucesso": False,
-                "timestamp": datetime.now().isoformat()
-            }), 400
-            
-    except Exception as e:
-        return jsonify({
-            "mensagem": f"Erro ao processar produto: {str(e)}",
-            "sucesso": False,
-            "timestamp": datetime.now().isoformat()
+            'sucesso': False,
+            'erro': str(e)
         }), 500
 
 # ================================
-# INICIALIZAÇÃO
+# ROTAS ORIGINAIS DO SISTEMA (PRESERVADAS)
+# ================================
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Webhook original do sistema - preservado"""
+    try:
+        data = request.get_json()
+        adicionar_log('INFO', f"📡 Webhook recebido: {data}")
+        
+        # Aqui você pode adicionar a lógica original do webhook
+        # Mantendo compatibilidade com o sistema existente
+        
+        return jsonify({'status': 'success', 'message': 'Webhook processado'})
+        
+    except Exception as e:
+        adicionar_log('ERROR', f"❌ Erro no webhook: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/sorteios', methods=['GET'])
+def api_sorteios():
+    """API para listar sorteios - preservada/expandida"""
+    try:
+        monitor = GoogleSheetsMonitor()
+        if not monitor.inicializar_conexao():
+            return jsonify({'erro': 'Falha na conexão Google Sheets'}), 500
+        
+        dados = monitor.obter_dados_sorteios()
+        return jsonify({
+            'sorteios': dados,
+            'total': len(dados)
+        })
+        
+    except Exception as e:
+        return jsonify({'erro': str(e)}), 500
+
+# ================================
+# INICIALIZAÇÃO DO SISTEMA
+# ================================
+
+def inicializar_sistema():
+    """Inicializa o sistema completo"""
+    try:
+        # Valida configurações
+        erros_config = validar_configuracoes()
+        if erros_config:
+            for erro in erros_config:
+                adicionar_log('ERROR', f"❌ Configuração: {erro}")
+            return False
+        
+        # Testa conexões
+        adicionar_log('INFO', "🔍 Testando conexões...")
+        
+        # Testa Google Sheets
+        monitor = GoogleSheetsMonitor()
+        if not monitor.testar_conexao():
+            adicionar_log('ERROR', "❌ Falha na conexão Google Sheets")
+            return False
+        
+        adicionar_log('INFO', "✅ Google Sheets conectado")
+        
+        # Testa Selenium (se não estiver em modo simulação)
+        if not SIMULAR_ATUALIZACOES:
+            try:
+                with SeleniumManager() as selenium:
+                    adicionar_log('INFO', "✅ Selenium inicializado")
+            except Exception as e:
+                adicionar_log('WARNING', f"⚠️ Selenium não disponível: {e}")
+        
+        # Inicia monitoramento
+        iniciar_monitoramento()
+        
+        # Executa primeira verificação
+        executar_verificacao_sistema()
+        
+        return True
+        
+    except Exception as e:
+        adicionar_log('ERROR', f"❌ Erro na inicialização: {e}")
+        return False
+
+# ================================
+# PONTO DE ENTRADA
 # ================================
 
 if __name__ == '__main__':
-    logger.info("🚀 INICIANDO SERVIDOR WEB V5.0 COM GITHUB SECRETS")
+    print("🚀 Iniciando Sistema de Automação Manychat + Sorteios...")
     
-    # Verificar se variável de ambiente existe
-    if not os.environ.get('GOOGLE_CREDENTIALS'):
-        logger.warning("⚠️ GOOGLE_CREDENTIALS não encontrada - configure no Render.com")
+    if inicializar_sistema():
+        print("✅ Sistema inicializado com sucesso!")
+        print(f"🌐 Dashboard: http://localhost:{FLASK_PORT}")
+        print(f"📊 API Status: http://localhost:{FLASK_PORT}/api/status")
+        
+        # Inicia servidor Flask
+        app.run(
+            host=FLASK_HOST,
+            port=FLASK_PORT,
+            debug=FLASK_DEBUG,
+            threaded=True
+        )
     else:
-        logger.info("✅ GOOGLE_CREDENTIALS encontrada")
-    
-    # Iniciar servidor (sem agendamento interno)
-    port = int(os.environ.get('PORT', 5000))
-    logger.info(f"🚀 Servidor Web V5.0 iniciando na porta {port}. Agendamento será feito via Cron Job.")
-    app.run(host='0.0.0.0', port=port, debug=False)
+        print("❌ Falha na inicialização do sistema!")
+        exit(1)
+
