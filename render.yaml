@@ -2,13 +2,39 @@ services:
   - type: web
     name: processador-sorteios-api
     env: python
+    region: oregon
     plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: python src/main.py
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+      # Instala Chrome e ChromeDriver para Selenium
+      apt-get update
+      apt-get install -y wget gnupg
+      wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add -
+      echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list
+      apt-get update
+      apt-get install -y google-chrome-stable
+      # Instala ChromeDriver
+      CHROME_DRIVER_VERSION=$(curl -sS chromedriver.storage.googleapis.com/LATEST_RELEASE )
+      wget -O /tmp/chromedriver.zip http://chromedriver.storage.googleapis.com/$(curl -sS chromedriver.storage.googleapis.com/LATEST_RELEASE )/chromedriver_linux64.zip
+      unzip /tmp/chromedriver.zip chromedriver -d /usr/local/bin/
+      chmod +x /usr/local/bin/chromedriver
+      mkdir -p /tmp/chrome-user-data
+      chmod 755 /tmp/chrome-user-data
+    startCommand: python main.py
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
+      - key: FLASK_ENV
+        value: production
+      - key: FLASK_DEBUG
+        value: false
+      - key: GOOGLE_CREDENTIALS_PATH
+        value: credentials.json
+      - key: DEBUG_MODE
+        value: false
+      - key: SIMULAR_ATUALIZACOES
+        value: false
       - key: PORT
         value: 10000
-    healthCheckPath: /api/sorteios/health
-
+    healthCheckPath: /api/status
