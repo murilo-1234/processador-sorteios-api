@@ -30,9 +30,9 @@ MANYCHAT_API_TOKEN = "1066870:38e7bfe6809eec0a08e7f39e798d9348"
 
 # URLs das automações (CONFIGURAR COM AS URLs REAIS)
 AUTOMACOES_URLS = {
-    'instagram': 'https://app.manychat.com/fb/1066870/cms/files/content/20250711329/1_351235/edit',
-    'facebook': 'URL_DA_AUTOMACAO_FACEBOOK',  # CONFIGURAR
-    'whatsapp': 'URL_DA_AUTOMACAO_WHATSAPP'   # CONFIGURAR
+    'instagram': 'https://app.manychat.com/fb1066870/cms/files/content20250711132911_351235/edit',
+    'facebook': 'https://app.manychat.com/fb1066870/cms/files/content20250720172834_901322/edit',
+    'whatsapp': 'https://app.manychat.com/fb1066870/cms/files/content20250720172901_269298/edit'
 }
 
 # ================================
