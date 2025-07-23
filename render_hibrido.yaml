@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: processador-sorteios-hibrido
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements_hibrido.txt
+    startCommand: python main_manychat.py
+    envVars:
+      - key: GOOGLE_CREDENTIALS
+        sync: false
+      - key: MANYCHAT_API_TOKEN
+        sync: false
+      - key: PLANILHA_SORTEIOS_ID
+        value: "1D84AsjVlCeXmW2hJEIVKBj6EHWe4xYfB6wd-JpHf_Ug"
+      - key: PLANILHA_TEMPLATE_ID
+        value: "1VWbKvHQt7MP3WAkGLLgV3mKRa3xyBwglFoqDkF3QQaE"
+      - key: LOG_LEVEL
+        value: "INFO"
+
