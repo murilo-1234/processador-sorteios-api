@@ -71,7 +71,7 @@ class GoogleSheetsMonitor:
                     sorteio.get('nome') and 
                     sorteio.get('data') and 
                     sorteio.get('hora') and 
-                    not sorteio.get('url_participantes')):  # COLUNA F
+                    not sorteio.get('url_planilha')):  # COLUNA F
                     
                     sorteio['linha'] = i
                     novos_sorteios.append(sorteio)
@@ -212,8 +212,8 @@ class GoogleSheetsMonitor:
             menor_diferenca = None
             
             for sorteio in dados:
-                # CORREÇÃO: Mudou para verificar 'url_participantes' (coluna F)
-                if not all([sorteio.get('data'), sorteio.get('hora'), sorteio.get('url_participantes')]):
+                # CORREÇÃO: Mudou para verificar 'url_planilha' (coluna F)
+                if not all([sorteio.get('data'), sorteio.get('hora'), sorteio.get('url_planilha')]):
                     continue
                 
                 try:
@@ -275,8 +275,8 @@ class GoogleSheetsMonitor:
                 'nome': proximo_sorteio.get('nome'),
                 'data': proximo_sorteio.get('data'),
                 'hora': proximo_sorteio.get('hora'),
-                # CORREÇÃO: Mudou para 'url_participantes' (coluna F)
-                'url_planilha': proximo_sorteio.get('url_participantes')
+                # CORREÇÃO: Mudou para 'url_planilha' (coluna F)
+                'url_planilha': proximo_sorteio.get('url_planilha')
             }
             
             self.logger.info(f"📋 Dados para automação: {dados['nome']}")
