@@ -2,6 +2,7 @@
 """
 Monitor Google Sheets para Sistema de Sorteios
 Integrado com automação Manychat
+CORRIGIDO: Usa coluna F para URL da planilha de participantes
 """
 
 import logging
@@ -64,12 +65,13 @@ class GoogleSheetsMonitor:
             novos_sorteios = []
             
             for i, sorteio in enumerate(dados, start=2):  # Linha 2 é a primeira com dados
-                # Verifica se campos A, B, C, D estão preenchidos e E está vazio
+                # Verifica se campos A, B, C, D estão preenchidos e F está vazio
+                # CORREÇÃO: Mudou de 'url_planilha' para verificar coluna F
                 if (sorteio.get('ad') and 
                     sorteio.get('nome') and 
                     sorteio.get('data') and 
                     sorteio.get('hora') and 
-                    not sorteio.get('url_planilha')):
+                    not sorteio.get('url_participantes')):  # COLUNA F
                     
                     sorteio['linha'] = i
                     novos_sorteios.append(sorteio)
@@ -106,12 +108,13 @@ class GoogleSheetsMonitor:
             return None
     
     def atualizar_url_planilha(self, linha, url_planilha):
-        """Atualiza campo E com URL da planilha criada"""
+        """Atualiza campo F com URL da planilha criada"""
         try:
             worksheet = self.planilha_sorteios.sheet1
-            worksheet.update_cell(linha, 5, url_planilha)  # Coluna E = 5
+            # CORREÇÃO: Mudou de coluna 5 (E) para coluna 6 (F)
+            worksheet.update_cell(linha, 6, url_planilha)  # Coluna F = 6
             
-            self.logger.info(f"✅ URL atualizada na linha {linha}")
+            self.logger.info(f"✅ URL atualizada na coluna F, linha {linha}")
             return True
             
         except Exception as e:
@@ -129,7 +132,7 @@ class GoogleSheetsMonitor:
                 url_planilha = self.criar_planilha_participantes(sorteio)
                 
                 if url_planilha:
-                    # Atualiza campo E na planilha principal
+                    # Atualiza campo F na planilha principal
                     if self.atualizar_url_planilha(sorteio['linha'], url_planilha):
                         processados += 1
                         self.logger.info(f"✅ Sorteio processado: {sorteio.get('nome')}")
@@ -209,7 +212,8 @@ class GoogleSheetsMonitor:
             menor_diferenca = None
             
             for sorteio in dados:
-                if not all([sorteio.get('data'), sorteio.get('hora'), sorteio.get('url_planilha')]):
+                # CORREÇÃO: Mudou para verificar 'url_participantes' (coluna F)
+                if not all([sorteio.get('data'), sorteio.get('hora'), sorteio.get('url_participantes')]):
                     continue
                 
                 try:
@@ -271,7 +275,8 @@ class GoogleSheetsMonitor:
                 'nome': proximo_sorteio.get('nome'),
                 'data': proximo_sorteio.get('data'),
                 'hora': proximo_sorteio.get('hora'),
-                'url_planilha': proximo_sorteio.get('url_planilha')
+                # CORREÇÃO: Mudou para 'url_participantes' (coluna F)
+                'url_planilha': proximo_sorteio.get('url_participantes')
             }
             
             self.logger.info(f"📋 Dados para automação: {dados['nome']}")
@@ -360,4 +365,3 @@ if __name__ == "__main__":
         print(f"📊 Resultados: {resultados}")
     else:
         print("❌ Erro na conexão Google Sheets")
-
