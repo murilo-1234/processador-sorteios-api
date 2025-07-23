@@ -2,10 +2,13 @@
 """
 Monitor Google Sheets para Sistema de Sorteios
 Integrado com automação Manychat
+VERSÃO CORRIGIDA - Usa credenciais via Environment Variables
 """
 
 import logging
 import gspread
+import json
+import os
 from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 from config_final import *
@@ -18,7 +21,7 @@ class GoogleSheetsMonitor:
         self.logger = logging.getLogger(__name__)
         
     def inicializar_conexao(self):
-        """Inicializa conexão com Google Sheets"""
+        """Inicializa conexão com Google Sheets usando Environment Variables"""
         try:
             # Configura credenciais
             scopes = [
@@ -26,8 +29,17 @@ class GoogleSheetsMonitor:
                 'https://www.googleapis.com/auth/drive'
             ]
             
-            credentials = Credentials.from_service_account_file(
-                GOOGLE_CREDENTIALS_PATH, 
+            # ✅ CORREÇÃO: Usar credenciais da Environment Variable
+            credentials_json = os.environ.get('GOOGLE_CREDENTIALS')
+            
+            if not credentials_json:
+                self.logger.error("❌ Variável GOOGLE_CREDENTIALS não encontrada")
+                return False
+            
+            # ✅ CORREÇÃO: Usar credenciais diretas da string JSON
+            credentials_dict = json.loads(credentials_json)
+            credentials = Credentials.from_service_account_info(
+                credentials_dict, 
                 scopes=scopes
             )
             
@@ -37,7 +49,7 @@ class GoogleSheetsMonitor:
             self.planilha_sorteios = self.gc.open_by_key(PLANILHA_SORTEIOS_ID)
             self.planilha_template = self.gc.open_by_key(PLANILHA_TEMPLATE_ID)
             
-            self.logger.info("✅ Conexão Google Sheets estabelecida")
+            self.logger.info("✅ Conexão Google Sheets estabelecida via Environment Variable")
             return True
             
         except Exception as e:
@@ -64,7 +76,7 @@ class GoogleSheetsMonitor:
             novos_sorteios = []
             
             for i, sorteio in enumerate(dados, start=2):  # Linha 2 é a primeira com dados
-                # Verifica se campos A, B, C, D estão preenchidos e E está vazio
+                # ✅ CORREÇÃO: Verificar se coluna F (url_planilha) está vazia
                 if (sorteio.get('ad') and 
                     sorteio.get('nome') and 
                     sorteio.get('data') and 
@@ -106,12 +118,13 @@ class GoogleSheetsMonitor:
             return None
     
     def atualizar_url_planilha(self, linha, url_planilha):
-        """Atualiza campo E com URL da planilha criada"""
+        """Atualiza campo F (coluna 6) com URL da planilha criada"""
         try:
             worksheet = self.planilha_sorteios.sheet1
-            worksheet.update_cell(linha, 5, url_planilha)  # Coluna E = 5
+            # ✅ CORREÇÃO: Coluna F = 6 (não 5)
+            worksheet.update_cell(linha, 6, url_planilha)
             
-            self.logger.info(f"✅ URL atualizada na linha {linha}")
+            self.logger.info(f"✅ URL atualizada na linha {linha}, coluna F")
             return True
             
         except Exception as e:
@@ -129,7 +142,7 @@ class GoogleSheetsMonitor:
                 url_planilha = self.criar_planilha_participantes(sorteio)
                 
                 if url_planilha:
-                    # Atualiza campo E na planilha principal
+                    # Atualiza campo F na planilha principal
                     if self.atualizar_url_planilha(sorteio['linha'], url_planilha):
                         processados += 1
                         self.logger.info(f"✅ Sorteio processado: {sorteio.get('nome')}")
@@ -209,6 +222,7 @@ class GoogleSheetsMonitor:
             menor_diferenca = None
             
             for sorteio in dados:
+                # ✅ CORREÇÃO: Verificar url_planilha (coluna F)
                 if not all([sorteio.get('data'), sorteio.get('hora'), sorteio.get('url_planilha')]):
                     continue
                 
@@ -360,4 +374,3 @@ if __name__ == "__main__":
         print(f"📊 Resultados: {resultados}")
     else:
         print("❌ Erro na conexão Google Sheets")
-
