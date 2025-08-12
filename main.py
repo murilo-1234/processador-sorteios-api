@@ -197,14 +197,28 @@ def processar_com_chatgpt(message, user_name, user_id):
         logger.error(f"❌ Erro ChatGPT: {e}")
         return f"Desculpe {user_name}, estou com dificuldades técnicas. Tente novamente! 😊"
 
-@app.route('/webhook/manychat', methods=['POST'])
+@app.route('/webhook/manychat', methods=['GET', 'POST'])
 def webhook_manychat():
-    """Webhook para receber mensagens do ManyChat"""
+    """Webhook para receber mensagens do ManyChat - Suporta GET e POST"""
     try:
+        logger.info(f"🔄 Webhook ManyChat - Método: {request.method}")
+        
+        # Tratamento para GET (teste/debug)
+        if request.method == 'GET':
+            logger.info("📋 Requisição GET recebida - Webhook funcionando")
+            return jsonify({
+                "status": "ok",
+                "message": "Webhook ManyChat funcionando",
+                "method": "GET",
+                "endpoint": "/webhook/manychat"
+            })
+        
+        # Tratamento para POST (dados reais)
         data = request.get_json()
         
         # Validar dados recebidos
         if not data:
+            logger.warning("⚠️ Dados não fornecidos na requisição POST")
             return jsonify({"error": "Dados não fornecidos"}), 400
         
         message = data.get('message', '').strip()
@@ -217,6 +231,7 @@ def webhook_manychat():
         
         # Validar se é requisição do ManyChat
         if platform != 'manychat':
+            logger.warning(f"⚠️ Platform inválida: {platform}")
             return jsonify({"error": "Platform inválida"}), 400
         
         if not message:
