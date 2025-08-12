@@ -1075,4 +1075,4 @@ if __name__ == '__main__':
     
     # Iniciar servidor Flask
     logger.info(f"🌐 Servidor iniciando na porta {port}")
-    app.run(host='0.0.0.0', port=port, debug=F
+    app.run(host='0.0.0.0', port=port, debug=Fal
