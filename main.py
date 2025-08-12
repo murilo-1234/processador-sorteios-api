@@ -1020,6 +1020,52 @@ def processar_produto():
 # ================================
 # INICIALIZAÇÃO DO SISTEMA
 # ================================
+@app.route('/debug/openai', methods=['GET'])
+def debug_openai():
+    """Endpoint para testar integração OpenAI"""
+    try:
+        # Testar import
+        from openai import OpenAI
+        
+        # Testar API key
+        api_key = os.getenv('OPENAI_API_KEY')
+        if not api_key:
+            return jsonify({
+                "status": "erro",
+                "problema": "OPENAI_API_KEY não configurada",
+                "api_key_presente": False
+            })
+        
+        # Testar cliente OpenAI
+        client = OpenAI(api_key=api_key)
+        
+        # Testar Assistant ID
+        assistant_id = "asst_AQjafiLKeePeACy6mzPX1Mqo"
+        
+        # Fazer teste simples
+        thread = client.beta.threads.create()
+        
+        return jsonify({
+            "status": "sucesso",
+            "api_key_presente": True,
+            "api_key_inicio": api_key[:10] + "...",
+            "assistant_id": assistant_id,
+            "thread_criada": thread.id,
+            "openai_import": "OK"
+        })
+        
+    except ImportError as e:
+        return jsonify({
+            "status": "erro",
+            "problema": "Erro no import OpenAI",
+            "erro": str(e)
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "erro",
+            "problema": "Erro geral",
+            "erro": str(e)
+        })
 
 if __name__ == '__main__':
     logger.info("🚀 INICIANDO SISTEMA PROCESSADOR DE SORTEIOS V6.0")
