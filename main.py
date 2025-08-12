@@ -14,6 +14,7 @@ CORREÇÕES IMPLEMENTADAS:
 - USO DE GITHUB SECRETS para credenciais
 - INTEGRAÇÃO MANYCHAT-CHATGPT para atendimento 24/7
 - CORREÇÃO: Removido async/await para compatibilidade Flask
+- ATUALIZAÇÃO: Chat Completions API (sem warnings deprecated)
 
 Autor: Sistema Manus V6.0
 Data: Janeiro 2025
@@ -124,22 +125,21 @@ def detectar_automacao(message):
     return None
 
 def processar_com_chatgpt(message, user_name, user_id):
-    """Processa mensagem com ChatGPT usando Assistant - VERSÃO SÍNCRONA CORRIGIDA"""
+    """Processa mensagem com ChatGPT usando Chat Completions API - VERSÃO ATUALIZADA"""
     try:
         logger.info(f"🤖 Iniciando processamento ChatGPT para {user_name}")
+        logger.info(f"📝 Mensagem recebida: {message}")
         
         client = get_openai_client()
+        logger.info("✅ Cliente OpenAI criado com sucesso")
         
         # Limpar conversas antigas periodicamente
         if len(user_conversations) > MAX_CONVERSAS:
             limpar_conversas_antigas()
         
-        # Obter ou criar thread para o usuário
+        # Obter histórico de conversa do usuário
         if user_id not in user_conversations:
-            # Criar nova thread
-            thread = client.beta.threads.create()
             user_conversations[user_id] = {
-                'thread_id': thread.id,
                 'messages': [],
                 'last_activity': time.time()
             }
@@ -149,57 +149,49 @@ def processar_com_chatgpt(message, user_name, user_id):
             user_conversations[user_id]['last_activity'] = time.time()
             logger.info(f"🔄 Conversa existente para {user_name} ({user_id})")
         
-        thread_id = user_conversations[user_id]['thread_id']
+        # Preparar mensagens para a API
+        messages = [
+            {
+                "role": "system",
+                "content": "Você é um assistente da Natura especializado em sorteios, produtos e atendimento ao cliente. Responda de forma amigável e útil em português brasileiro. Seja conciso mas informativo."
+            }
+        ]
         
-        # Adicionar mensagem do usuário
-        logger.info(f"📝 Adicionando mensagem à thread: {message}")
-        client.beta.threads.messages.create(
-            thread_id=thread_id,
-            role="user",
-            content=message
+        # Adicionar histórico da conversa (últimas 5 mensagens)
+        historico = user_conversations[user_id]['messages']
+        if historico:
+            messages.extend(historico[-10:])  # Últimas 10 mensagens
+            logger.info(f"📚 Adicionado histórico: {len(historico[-10:])} mensagens")
+        
+        # Adicionar mensagem atual do usuário
+        messages.append({
+            "role": "user",
+            "content": f"{user_name}: {message}"
+        })
+        
+        logger.info(f"🚀 Enviando {len(messages)} mensagens para OpenAI")
+        
+        # Fazer chamada para OpenAI Chat Completions
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=messages,
+            max_tokens=500,
+            temperature=0.7,
+            timeout=30
         )
         
-        # Executar Assistant
-        logger.info(f"🚀 Executando Assistant: {ASSISTANT_ID}")
-        run = client.beta.threads.runs.create(
-            thread_id=thread_id,
-            assistant_id=ASSISTANT_ID
-        )
+        logger.info("✅ Resposta recebida da OpenAI")
         
-        # Aguardar conclusão
-        max_attempts = 30
-        for attempt in range(max_attempts):
-            run_status = client.beta.threads.runs.retrieve(
-                thread_id=thread_id,
-                run_id=run.id
-            )
-            
-            logger.info(f"⏳ Status do run (tentativa {attempt+1}): {run_status.status}")
-            
-            if run_status.status == 'completed':
-                logger.info("✅ Run completado com sucesso")
-                break
-            elif run_status.status in ['failed', 'cancelled', 'expired']:
-                logger.error(f"❌ Run falhou: {run_status.status}")
-                raise Exception(f"Run falhou: {run_status.status}")
-            
-            time.sleep(1)
-        else:
-            logger.error("❌ Timeout aguardando resposta do Assistant")
-            raise Exception("Timeout aguardando resposta do Assistant")
-        
-        # Obter resposta
-        logger.info("📥 Obtendo resposta do Assistant")
-        messages = client.beta.threads.messages.list(thread_id=thread_id)
-        resposta = messages.data[0].content[0].text.value
+        # Extrair resposta
+        resposta = response.choices[0].message.content
         
         # Armazenar no histórico local
         user_conversations[user_id]['messages'].extend([
-            {'role': 'user', 'content': message},
+            {'role': 'user', 'content': f"{user_name}: {message}"},
             {'role': 'assistant', 'content': resposta}
         ])
         
-        # Manter apenas últimas 10 mensagens para otimização
+        # Manter apenas últimas 20 mensagens para otimização
         if len(user_conversations[user_id]['messages']) > 20:
             user_conversations[user_id]['messages'] = user_conversations[user_id]['messages'][-20:]
         
@@ -208,6 +200,7 @@ def processar_com_chatgpt(message, user_name, user_id):
         
     except Exception as e:
         logger.error(f"❌ Erro ChatGPT para {user_name}: {e}")
+        logger.error(f"❌ Tipo do erro: {type(e).__name__}")
         return f"Desculpe {user_name}, estou com dificuldades técnicas no momento. Tente novamente em alguns instantes! 😊"
 
 @app.route('/webhook/manychat', methods=['POST'])
@@ -1082,4 +1075,4 @@ if __name__ == '__main__':
     
     # Iniciar servidor Flask
     logger.info(f"🌐 Servidor iniciando na porta {port}")
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=F
