@@ -240,18 +240,32 @@ def webhook_manychat():
             })
         
         # Detectar automação
+        logger.info("🔍 Iniciando detecção de automação")
         tipo_automacao = detectar_automacao(message)
         if tipo_automacao:
             logger.info(f"🎯 Automação detectada: {tipo_automacao}")
+        else:
+            logger.info("📝 Nenhuma automação específica detectada")
         
         # Processar com ChatGPT
-        resposta = processar_com_chatgpt(message, user_name, user_id)
+        logger.info("🚀 CHAMANDO FUNÇÃO processar_com_chatgpt")
+        logger.info(f"📋 Parâmetros: message='{message}', user_name='{user_name}', user_id='{user_id}'")
+        
+        try:
+            resposta = processar_com_chatgpt(message, user_name, user_id)
+            logger.info(f"✅ FUNÇÃO processar_com_chatgpt RETORNOU: {resposta[:50]}...")
+        except Exception as e:
+            logger.error(f"❌ ERRO NA FUNÇÃO processar_com_chatgpt: {e}")
+            logger.error(f"❌ Tipo do erro: {type(e).__name__}")
+            resposta = f"Desculpe {user_name}, estou com dificuldades técnicas. Tente novamente! 😊"
         
         # Adicionar indicador de automação se detectada
         if tipo_automacao:
             resposta += f"\n\n[Automação {tipo_automacao} detectada]"
+            logger.info(f"🏷️ Adicionado indicador de automação: {tipo_automacao}")
         
         # Formato de resposta para ManyChat
+        logger.info("📦 Preparando resposta para ManyChat")
         response = {
             "messages": [
                 {
@@ -261,6 +275,7 @@ def webhook_manychat():
         }
         
         logger.info(f"✅ Resposta enviada para {user_name}")
+        logger.info(f"📤 JSON resposta: {response}")
         return jsonify(response)
         
     except Exception as e:
