@@ -13,6 +13,7 @@ CORREÇÕES IMPLEMENTADAS:
 - Mapeamento correto das colunas E/G
 - USO DE GITHUB SECRETS para credenciais
 - INTEGRAÇÃO MANYCHAT-CHATGPT para atendimento 24/7
+- CORREÇÃO: Removido async/await para compatibilidade Flask
 
 Autor: Sistema Manus V6.0
 Data: Janeiro 2025
@@ -122,9 +123,11 @@ def detectar_automacao(message):
     
     return None
 
-async def processar_com_chatgpt(message, user_name, user_id):
-    """Processa mensagem com ChatGPT usando Assistant"""
+def processar_com_chatgpt(message, user_name, user_id):
+    """Processa mensagem com ChatGPT usando Assistant - VERSÃO SÍNCRONA CORRIGIDA"""
     try:
+        logger.info(f"🤖 Iniciando processamento ChatGPT para {user_name}")
+        
         client = get_openai_client()
         
         # Limpar conversas antigas periodicamente
@@ -144,10 +147,12 @@ async def processar_com_chatgpt(message, user_name, user_id):
         else:
             # Atualizar atividade
             user_conversations[user_id]['last_activity'] = time.time()
+            logger.info(f"🔄 Conversa existente para {user_name} ({user_id})")
         
         thread_id = user_conversations[user_id]['thread_id']
         
         # Adicionar mensagem do usuário
+        logger.info(f"📝 Adicionando mensagem à thread: {message}")
         client.beta.threads.messages.create(
             thread_id=thread_id,
             role="user",
@@ -155,6 +160,7 @@ async def processar_com_chatgpt(message, user_name, user_id):
         )
         
         # Executar Assistant
+        logger.info(f"🚀 Executando Assistant: {ASSISTANT_ID}")
         run = client.beta.threads.runs.create(
             thread_id=thread_id,
             assistant_id=ASSISTANT_ID
@@ -162,20 +168,28 @@ async def processar_com_chatgpt(message, user_name, user_id):
         
         # Aguardar conclusão
         max_attempts = 30
-        for _ in range(max_attempts):
+        for attempt in range(max_attempts):
             run_status = client.beta.threads.runs.retrieve(
                 thread_id=thread_id,
                 run_id=run.id
             )
             
+            logger.info(f"⏳ Status do run (tentativa {attempt+1}): {run_status.status}")
+            
             if run_status.status == 'completed':
+                logger.info("✅ Run completado com sucesso")
                 break
             elif run_status.status in ['failed', 'cancelled', 'expired']:
+                logger.error(f"❌ Run falhou: {run_status.status}")
                 raise Exception(f"Run falhou: {run_status.status}")
             
             time.sleep(1)
+        else:
+            logger.error("❌ Timeout aguardando resposta do Assistant")
+            raise Exception("Timeout aguardando resposta do Assistant")
         
         # Obter resposta
+        logger.info("📥 Obtendo resposta do Assistant")
         messages = client.beta.threads.messages.list(thread_id=thread_id)
         resposta = messages.data[0].content[0].text.value
         
@@ -229,16 +243,7 @@ def webhook_manychat():
             logger.info(f"🎯 Automação detectada: {tipo_automacao}")
         
         # Processar com ChatGPT
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        resposta = loop.run_until_complete(
-            processar_com_chatgpt(message, user_name, user_id)
-        )
+        resposta = processar_com_chatgpt(message, user_name, user_id)
         
         # Adicionar indicador de automação se detectada
         if tipo_automacao:
