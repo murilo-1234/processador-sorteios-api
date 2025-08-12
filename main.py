@@ -13,8 +13,7 @@ CORREÇÕES IMPLEMENTADAS:
 - Mapeamento correto das colunas E/G
 - USO DE GITHUB SECRETS para credenciais
 - INTEGRAÇÃO MANYCHAT-CHATGPT para atendimento 24/7
-- CORREÇÃO: Removido async/await para compatibilidade Flask
-- ATUALIZAÇÃO: Chat Completions API (sem warnings deprecated)
+- CORREÇÃO DEFINITIVA: Chat Completions API (sem async/await)
 
 Autor: Sistema Manus V6.0
 Data: Janeiro 2025
@@ -125,13 +124,12 @@ def detectar_automacao(message):
     return None
 
 def processar_com_chatgpt(message, user_name, user_id):
-    """Processa mensagem com ChatGPT usando Chat Completions API - VERSÃO ATUALIZADA"""
+    """Processa mensagem com ChatGPT usando Chat Completions API"""
     try:
         logger.info(f"🤖 Iniciando processamento ChatGPT para {user_name}")
-        logger.info(f"📝 Mensagem recebida: {message}")
         
         client = get_openai_client()
-        logger.info("✅ Cliente OpenAI criado com sucesso")
+        logger.info("✅ Cliente OpenAI criado")
         
         # Limpar conversas antigas periodicamente
         if len(user_conversations) > MAX_CONVERSAS:
@@ -143,65 +141,61 @@ def processar_com_chatgpt(message, user_name, user_id):
                 'messages': [],
                 'last_activity': time.time()
             }
-            logger.info(f"🆕 Nova conversa criada para {user_name} ({user_id})")
+            logger.info(f"🆕 Nova conversa: {user_name}")
         else:
-            # Atualizar atividade
             user_conversations[user_id]['last_activity'] = time.time()
-            logger.info(f"🔄 Conversa existente para {user_name} ({user_id})")
+            logger.info(f"🔄 Conversa existente: {user_name}")
         
         # Preparar mensagens para a API
         messages = [
             {
                 "role": "system",
-                "content": "Você é um assistente da Natura especializado em sorteios, produtos e atendimento ao cliente. Responda de forma amigável e útil em português brasileiro. Seja conciso mas informativo."
+                "content": "Você é um assistente da Natura especializado em sorteios, produtos e atendimento ao cliente. Responda de forma amigável e útil em português brasileiro."
             }
         ]
         
-        # Adicionar histórico da conversa (últimas 5 mensagens)
+        # Adicionar histórico (últimas 8 mensagens)
         historico = user_conversations[user_id]['messages']
         if historico:
-            messages.extend(historico[-10:])  # Últimas 10 mensagens
-            logger.info(f"📚 Adicionado histórico: {len(historico[-10:])} mensagens")
+            messages.extend(historico[-8:])
         
-        # Adicionar mensagem atual do usuário
+        # Adicionar mensagem atual
         messages.append({
             "role": "user",
             "content": f"{user_name}: {message}"
         })
         
-        logger.info(f"🚀 Enviando {len(messages)} mensagens para OpenAI")
+        logger.info(f"🚀 Enviando para OpenAI")
         
-        # Fazer chamada para OpenAI Chat Completions
+        # Chamada para OpenAI Chat Completions
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=messages,
-            max_tokens=500,
-            temperature=0.7,
-            timeout=30
+            max_tokens=400,
+            temperature=0.7
         )
         
-        logger.info("✅ Resposta recebida da OpenAI")
+        logger.info("✅ Resposta recebida")
         
         # Extrair resposta
         resposta = response.choices[0].message.content
         
-        # Armazenar no histórico local
+        # Armazenar no histórico
         user_conversations[user_id]['messages'].extend([
             {'role': 'user', 'content': f"{user_name}: {message}"},
             {'role': 'assistant', 'content': resposta}
         ])
         
-        # Manter apenas últimas 20 mensagens para otimização
-        if len(user_conversations[user_id]['messages']) > 20:
-            user_conversations[user_id]['messages'] = user_conversations[user_id]['messages'][-20:]
+        # Manter apenas últimas 16 mensagens
+        if len(user_conversations[user_id]['messages']) > 16:
+            user_conversations[user_id]['messages'] = user_conversations[user_id]['messages'][-16:]
         
-        logger.info(f"✅ Resposta ChatGPT para {user_name}: {resposta[:100]}...")
+        logger.info(f"✅ Resposta para {user_name}: {resposta[:50]}...")
         return resposta
         
     except Exception as e:
-        logger.error(f"❌ Erro ChatGPT para {user_name}: {e}")
-        logger.error(f"❌ Tipo do erro: {type(e).__name__}")
-        return f"Desculpe {user_name}, estou com dificuldades técnicas no momento. Tente novamente em alguns instantes! 😊"
+        logger.error(f"❌ Erro ChatGPT: {e}")
+        return f"Desculpe {user_name}, estou com dificuldades técnicas. Tente novamente! 😊"
 
 @app.route('/webhook/manychat', methods=['POST'])
 def webhook_manychat():
@@ -1013,52 +1007,6 @@ def processar_produto():
 # ================================
 # INICIALIZAÇÃO DO SISTEMA
 # ================================
-@app.route('/debug/openai', methods=['GET'])
-def debug_openai():
-    """Endpoint para testar integração OpenAI"""
-    try:
-        # Testar import
-        from openai import OpenAI
-        
-        # Testar API key
-        api_key = os.getenv('OPENAI_API_KEY')
-        if not api_key:
-            return jsonify({
-                "status": "erro",
-                "problema": "OPENAI_API_KEY não configurada",
-                "api_key_presente": False
-            })
-        
-        # Testar cliente OpenAI
-        client = OpenAI(api_key=api_key)
-        
-        # Testar Assistant ID
-        assistant_id = "asst_AQjafiLKeePeACy6mzPX1Mqo"
-        
-        # Fazer teste simples
-        thread = client.beta.threads.create()
-        
-        return jsonify({
-            "status": "sucesso",
-            "api_key_presente": True,
-            "api_key_inicio": api_key[:10] + "...",
-            "assistant_id": assistant_id,
-            "thread_criada": thread.id,
-            "openai_import": "OK"
-        })
-        
-    except ImportError as e:
-        return jsonify({
-            "status": "erro",
-            "problema": "Erro no import OpenAI",
-            "erro": str(e)
-        })
-    except Exception as e:
-        return jsonify({
-            "status": "erro",
-            "problema": "Erro geral",
-            "erro": str(e)
-        })
 
 if __name__ == '__main__':
     logger.info("🚀 INICIANDO SISTEMA PROCESSADOR DE SORTEIOS V6.0")
@@ -1075,4 +1023,4 @@ if __name__ == '__main__':
     
     # Iniciar servidor Flask
     logger.info(f"🌐 Servidor iniciando na porta {port}")
-    app.run(host='0.0.0.0', port=port, debug=Fal
+    app.run(host='0.0.0.0', port=port, debug=False)
