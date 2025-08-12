@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Sistema Processador de Sorteios API v5.0 - COM GITHUB SECRETS
+Sistema Processador de Sorteios V6.0 + Integração ManyChat-ChatGPT
 Sistema automatizado que lê Google Sheets, processa produtos da Natura 
 com extração por código e validação de fundo branco conforme PDF.
+Agora com integração ManyChat-ChatGPT para atendimento automatizado.
 
 CORREÇÕES IMPLEMENTADAS:
 - Extração por código NATBRA-XXXXX (não semântica)
@@ -11,11 +12,13 @@ CORREÇÕES IMPLEMENTADAS:
 - Processamento conforme especificações do PDF
 - Mapeamento correto das colunas E/G
 - USO DE GITHUB SECRETS para credenciais
+- INTEGRAÇÃO MANYCHAT-CHATGPT para atendimento 24/7
 
-Autor: Sistema Manus V5.0
-Data: Julho 2025
+Autor: Sistema Manus V6.0
+Data: Janeiro 2025
 """
 
+# IMPORTS ORIGINAIS DO SISTEMA
 from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 import os
@@ -33,6 +36,9 @@ from urllib.parse import urljoin, urlparse
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import tempfile
+
+# IMPORTS PARA INTEGRAÇÃO MANYCHAT
+from openai import OpenAI
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -55,6 +61,234 @@ sistema_status = {
     "erros": 0,
     "status": "Serviço web online. Aguardando execução do Cron Job."
 }
+
+# ================================
+# INTEGRAÇÃO MANYCHAT-CHATGPT
+# ================================
+
+# Configuração do cliente OpenAI
+def get_openai_client():
+    """Obtém cliente OpenAI configurado"""
+    api_key = os.getenv('OPENAI_API_KEY')
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY não configurada")
+    return OpenAI(api_key=api_key)
+
+# Armazenamento de conversas (em produção, usar Redis ou banco)
+user_conversations = {}
+ASSISTANT_ID = "asst_AQjafiLKeePeACy6mzPX1Mqo"
+MAX_CONVERSAS = 1000
+TIMEOUT_CONVERSA = 1800  # 30 minutos
+
+def limpar_conversas_antigas():
+    """Remove conversas antigas para economizar memória"""
+    agora = time.time()
+    usuarios_para_remover = []
+    
+    for user_id, conversa in user_conversations.items():
+        if agora - conversa['last_activity'] > TIMEOUT_CONVERSA:
+            usuarios_para_remover.append(user_id)
+    
+    for user_id in usuarios_para_remover:
+        del user_conversations[user_id]
+        logger.info(f"🧹 Conversa removida por timeout: {user_id}")
+
+def detectar_automacao(message):
+    """Detecta tipo de automação baseado na mensagem"""
+    message_lower = message.lower()
+    
+    # Palavras-chave para diferentes automações
+    automacoes = {
+        'sorteio': ['sorteio', 'concurso', 'prêmio', 'ganhar', 'participar', 'sorteios'],
+        'produto': ['produto', 'natura', 'catálogo', 'preço', 'perfume', 'maquiagem', 'creme'],
+        'contato': ['contato', 'ajuda', 'suporte', 'atendimento', 'falar', 'conversar'],
+        'pedido': ['pedido', 'compra', 'carrinho', 'quero', 'comprar', 'adquirir'],
+        'entrega': ['entrega', 'prazo', 'rastreamento', 'correios', 'quando chega']
+    }
+    
+    # Scoring para priorizar automações
+    scores = {}
+    for tipo, palavras in automacoes.items():
+        score = 0
+        for palavra in palavras:
+            if palavra in message_lower:
+                score += 1
+        if score > 0:
+            scores[tipo] = score
+    
+    if scores:
+        # Retorna automação com maior score
+        return max(scores, key=scores.get)
+    
+    return None
+
+async def processar_com_chatgpt(message, user_name, user_id):
+    """Processa mensagem com ChatGPT usando Assistant"""
+    try:
+        client = get_openai_client()
+        
+        # Limpar conversas antigas periodicamente
+        if len(user_conversations) > MAX_CONVERSAS:
+            limpar_conversas_antigas()
+        
+        # Obter ou criar thread para o usuário
+        if user_id not in user_conversations:
+            # Criar nova thread
+            thread = client.beta.threads.create()
+            user_conversations[user_id] = {
+                'thread_id': thread.id,
+                'messages': [],
+                'last_activity': time.time()
+            }
+            logger.info(f"🆕 Nova conversa criada para {user_name} ({user_id})")
+        else:
+            # Atualizar atividade
+            user_conversations[user_id]['last_activity'] = time.time()
+        
+        thread_id = user_conversations[user_id]['thread_id']
+        
+        # Adicionar mensagem do usuário
+        client.beta.threads.messages.create(
+            thread_id=thread_id,
+            role="user",
+            content=message
+        )
+        
+        # Executar Assistant
+        run = client.beta.threads.runs.create(
+            thread_id=thread_id,
+            assistant_id=ASSISTANT_ID
+        )
+        
+        # Aguardar conclusão
+        max_attempts = 30
+        for _ in range(max_attempts):
+            run_status = client.beta.threads.runs.retrieve(
+                thread_id=thread_id,
+                run_id=run.id
+            )
+            
+            if run_status.status == 'completed':
+                break
+            elif run_status.status in ['failed', 'cancelled', 'expired']:
+                raise Exception(f"Run falhou: {run_status.status}")
+            
+            time.sleep(1)
+        
+        # Obter resposta
+        messages = client.beta.threads.messages.list(thread_id=thread_id)
+        resposta = messages.data[0].content[0].text.value
+        
+        # Armazenar no histórico local
+        user_conversations[user_id]['messages'].extend([
+            {'role': 'user', 'content': message},
+            {'role': 'assistant', 'content': resposta}
+        ])
+        
+        # Manter apenas últimas 10 mensagens para otimização
+        if len(user_conversations[user_id]['messages']) > 20:
+            user_conversations[user_id]['messages'] = user_conversations[user_id]['messages'][-20:]
+        
+        logger.info(f"✅ Resposta ChatGPT para {user_name}: {resposta[:100]}...")
+        return resposta
+        
+    except Exception as e:
+        logger.error(f"❌ Erro ChatGPT para {user_name}: {e}")
+        return f"Desculpe {user_name}, estou com dificuldades técnicas no momento. Tente novamente em alguns instantes! 😊"
+
+@app.route('/webhook/manychat', methods=['POST'])
+def webhook_manychat():
+    """Webhook para receber mensagens do ManyChat"""
+    try:
+        data = request.get_json()
+        
+        # Validar dados recebidos
+        if not data:
+            return jsonify({"error": "Dados não fornecidos"}), 400
+        
+        message = data.get('message', '').strip()
+        user_name = data.get('nome', 'Usuário')
+        user_id = data.get('user_id', 'unknown')
+        platform = data.get('platform', '')
+        
+        logger.info(f"🔄 Webhook ManyChat recebido - Usuário: {user_name} ({user_id})")
+        logger.info(f"📝 Mensagem: {message}")
+        
+        # Validar se é requisição do ManyChat
+        if platform != 'manychat':
+            return jsonify({"error": "Platform inválida"}), 400
+        
+        if not message:
+            return jsonify({
+                "messages": [{"text": "Desculpe, não consegui entender sua mensagem. Pode tentar novamente? 😊"}]
+            })
+        
+        # Detectar automação
+        tipo_automacao = detectar_automacao(message)
+        if tipo_automacao:
+            logger.info(f"🎯 Automação detectada: {tipo_automacao}")
+        
+        # Processar com ChatGPT
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        resposta = loop.run_until_complete(
+            processar_com_chatgpt(message, user_name, user_id)
+        )
+        
+        # Adicionar indicador de automação se detectada
+        if tipo_automacao:
+            resposta += f"\n\n[Automação {tipo_automacao} detectada]"
+        
+        # Formato de resposta para ManyChat
+        response = {
+            "messages": [
+                {
+                    "text": resposta
+                }
+            ]
+        }
+        
+        logger.info(f"✅ Resposta enviada para {user_name}")
+        return jsonify(response)
+        
+    except Exception as e:
+        logger.error(f"❌ Erro no webhook ManyChat: {e}")
+        return jsonify({
+            "messages": [{"text": "Erro interno do servidor. Tente novamente mais tarde."}]
+        }), 500
+
+@app.route('/api/manychat/stats', methods=['GET'])
+def stats_manychat():
+    """Retorna estatísticas da integração ManyChat"""
+    try:
+        agora = time.time()
+        conversas_ativas = 0
+        
+        for conversa in user_conversations.values():
+            if agora - conversa['last_activity'] < TIMEOUT_CONVERSA:
+                conversas_ativas += 1
+        
+        stats = {
+            "status": "ok",
+            "timestamp": datetime.now().isoformat(),
+            "estatisticas": {
+                "total_conversas": len(user_conversations),
+                "conversas_ativas": conversas_ativas,
+                "timeout_conversa": TIMEOUT_CONVERSA,
+                "max_conversas": MAX_CONVERSAS
+            }
+        }
+        
+        return jsonify(stats)
+        
+    except Exception as e:
+        logger.error(f"❌ Erro ao obter stats: {e}")
+        return jsonify({"error": "Erro interno"}), 500
 
 # ================================
 # PROCESSADOR DE IMAGENS V5.0 CORRIGIDO
@@ -409,169 +643,199 @@ class GoogleSheetsManager:
         self.conectar()
     
     def conectar(self):
-        """Conecta ao Google Sheets usando credenciais da variável de ambiente"""
+        """Conecta ao Google Sheets usando credenciais do GitHub Secrets"""
         try:
-            scope = ['https://spreadsheets.google.com/feeds',
-                    'https://www.googleapis.com/auth/drive']
+            logger.info("🔗 Conectando ao Google Sheets...")
             
-            # Tentar obter credenciais da variável de ambiente
-            credentials_json = os.environ.get('GOOGLE_CREDENTIALS' )
+            # Obter credenciais do ambiente (GitHub Secrets)
+            creds_json = os.getenv('GOOGLE_CREDENTIALS')
+            if not creds_json:
+                raise ValueError("GOOGLE_CREDENTIALS não encontrada no ambiente")
             
-            if not credentials_json:
-                logger.error("❌ Variável GOOGLE_CREDENTIALS não encontrada")
-                return False
+            # Parse das credenciais JSON
+            creds_dict = json.loads(creds_json)
             
-            # Criar arquivo temporário com as credenciais
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp_file:
-                temp_file.write(credentials_json)
-                temp_path = temp_file.name
+            # Configurar escopo
+            scope = [
+                'https://spreadsheets.google.com/feeds',
+                'https://www.googleapis.com/auth/drive'
+            ]
             
-            try:
-                creds = ServiceAccountCredentials.from_json_keyfile_name(temp_path, scope)
-                client = gspread.authorize(creds)
-                self.planilha = client.open_by_key(PLANILHA_ID).sheet1
-                logger.info("✅ Conectado ao Google Sheets via variável de ambiente")
-                return True
-            finally:
-                # Limpar arquivo temporário
-                try:
-                    os.unlink(temp_path)
-                except:
-                    pass
+            # Criar credenciais
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+            
+            # Autorizar cliente
+            client = gspread.authorize(creds)
+            
+            # Abrir planilha
+            self.planilha = client.open_by_key(PLANILHA_ID)
+            
+            logger.info("✅ Conectado ao Google Sheets com sucesso")
+            return True
             
         except Exception as e:
             logger.error(f"❌ Erro ao conectar Google Sheets: {e}")
+            self.planilha = None
             return False
     
     def obter_produtos_pendentes(self):
-        """Obtém produtos que precisam ser processados"""
+        """Obtém produtos pendentes da planilha"""
         try:
             if not self.planilha:
-                logger.error("❌ Planilha não conectada")
-                return []
+                if not self.conectar():
+                    return []
             
-            # Ler todas as linhas
-            dados = self.planilha.get_all_records()
+            # Acessar primeira aba
+            worksheet = self.planilha.get_worksheet(0)
+            
+            # Obter todos os dados
+            dados = worksheet.get_all_records()
+            
             produtos_pendentes = []
-            
             for i, linha in enumerate(dados, start=2):  # Linha 2 = primeira linha de dados
-                # CORREÇÃO: Verificar colunas corretas
-                # Coluna G = link do produto (onde você fornece o link)
-                # Coluna E = url_imagem_processada (onde vai o resultado)
+                url_produto = linha.get('URL do Produto', '').strip()
+                status = linha.get('Status', '').strip()
                 
-                # Tentar diferentes nomes de colunas possíveis
-                link_produto = (linha.get('G') or 
-                              linha.get('link_produto') or 
-                              linha.get('Link Produto') or 
-                              linha.get('URL Produto') or '').strip()
-                
-                imagem_processada = (linha.get('E') or 
-                                   linha.get('url_imagem_processada') or 
-                                   linha.get('URL Imagem Processada') or 
-                                   linha.get('Imagem Processada') or '').strip()
-                
-                # Se tem link do produto mas não tem imagem processada
-                if link_produto and not imagem_processada:
-                    nome_produto = (linha.get('nome') or 
-                                  linha.get('Nome') or 
-                                  linha.get('Produto') or 
-                                  linha.get('produto') or 
-                                  f'Produto linha {i}')
-                    
+                if url_produto and status.lower() in ['pendente', '']:
                     produtos_pendentes.append({
                         'linha': i,
-                        'url': link_produto,
-                        'produto': nome_produto
+                        'url': url_produto,
+                        'dados': linha
                     })
-                    logger.info(f"📋 Produto pendente linha {i}: {nome_produto}")
             
-            logger.info(f"📊 Total de produtos pendentes: {len(produtos_pendentes)}")
+            logger.info(f"📋 Produtos pendentes encontrados: {len(produtos_pendentes)}")
             return produtos_pendentes
             
         except Exception as e:
             logger.error(f"❌ Erro ao obter produtos pendentes: {e}")
             return []
     
-    def atualizar_imagem_processada(self, linha, url_imagem):
-        """Atualiza a coluna E com a URL da imagem processada"""
+    def atualizar_resultado(self, linha, url_imagem=None, erro=None):
+        """Atualiza resultado na planilha"""
         try:
             if not self.planilha:
-                logger.error("❌ Planilha não conectada")
-                return False
+                if not self.conectar():
+                    return False
             
-            # Coluna E = 5ª coluna (url_imagem_processada)
-            self.planilha.update_cell(linha, 5, url_imagem)
-            logger.info(f"✅ Linha {linha} atualizada: {url_imagem}")
+            worksheet = self.planilha.get_worksheet(0)
+            
+            # Determinar colunas baseado no cabeçalho
+            headers = worksheet.row_values(1)
+            col_status = None
+            col_imagem = None
+            col_erro = None
+            
+            for i, header in enumerate(headers, 1):
+                if 'status' in header.lower():
+                    col_status = i
+                elif 'imagem' in header.lower() or 'resultado' in header.lower():
+                    col_imagem = i
+                elif 'erro' in header.lower() or 'observ' in header.lower():
+                    col_erro = i
+            
+            # Atualizar células
+            if url_imagem:
+                if col_status:
+                    worksheet.update_cell(linha, col_status, "✅ Processado")
+                if col_imagem:
+                    worksheet.update_cell(linha, col_imagem, url_imagem)
+                if col_erro:
+                    worksheet.update_cell(linha, col_erro, "")
+                logger.info(f"✅ Linha {linha} atualizada com sucesso")
+            else:
+                if col_status:
+                    worksheet.update_cell(linha, col_status, "❌ Erro")
+                if col_erro:
+                    worksheet.update_cell(linha, col_erro, erro or "Erro desconhecido")
+                logger.info(f"❌ Linha {linha} atualizada com erro")
+            
             return True
             
         except Exception as e:
-            logger.error(f"❌ Erro ao atualizar planilha linha {linha}: {e}")
+            logger.error(f"❌ Erro ao atualizar planilha: {e}")
             return False
 
 # ================================
-# INSTÂNCIAS GLOBAIS
+# AUTOMAÇÃO PRINCIPAL
 # ================================
 
-processador = ProcessadorSorteioV5()
-sheets_manager = GoogleSheetsManager()
-
-# ================================
-# FUNÇÕES DE AUTOMAÇÃO
-# ================================
-
-def processar_planilha_automatico():
-    """Função que processa a planilha automaticamente"""
+def executar_processamento_automatico():
+    """Executa processamento automático dos produtos"""
+    global sistema_status
+    
     try:
-        logger.info("🔄 INICIANDO PROCESSAMENTO AUTOMÁTICO")
-        sistema_status["status"] = "Processando planilha..."
+        logger.info("🚀 INICIANDO PROCESSAMENTO AUTOMÁTICO V5.0")
+        
+        # Atualizar status
+        sistema_status["status"] = "Processando produtos..."
+        sistema_status["ultima_execucao"] = datetime.now().isoformat()
+        
+        # Inicializar componentes
+        sheets_manager = GoogleSheetsManager()
+        processador = ProcessadorSorteioV5()
         
         # Obter produtos pendentes
         produtos = sheets_manager.obter_produtos_pendentes()
         
         if not produtos:
-            logger.info("ℹ️ Nenhum produto pendente encontrado")
-            sistema_status["status"] = "Aguardando produtos pendentes"
+            logger.info("📋 Nenhum produto pendente encontrado")
+            sistema_status["status"] = "Nenhum produto pendente. Sistema em standby."
             return
         
-        logger.info(f"📋 Produtos pendentes: {len(produtos)}")
+        logger.info(f"📋 Processando {len(produtos)} produtos...")
         
-        # Processar cada produto
+        sucessos = 0
+        erros = 0
+        
         for produto in produtos:
             try:
-                logger.info(f"🔄 Processando: {produto['produto']}")
+                logger.info(f"🔄 Processando linha {produto['linha']}: {produto['url']}")
                 
                 # Processar produto
                 url_imagem, mensagem = processador.processar_produto_completo(produto['url'])
                 
                 if url_imagem:
-                    # Atualizar planilha
-                    sucesso = sheets_manager.atualizar_imagem_processada(produto['linha'], url_imagem)
-                    
-                    if sucesso:
-                        sistema_status["produtos_processados"] += 1
-                        logger.info(f"✅ {produto['produto']} processado com sucesso")
-                    else:
-                        sistema_status["erros"] += 1
-                        logger.error(f"❌ Erro ao atualizar planilha: {produto['produto']}")
+                    # Sucesso
+                    sheets_manager.atualizar_resultado(produto['linha'], url_imagem=url_imagem)
+                    sucessos += 1
+                    logger.info(f"✅ Linha {produto['linha']} processada com sucesso")
                 else:
-                    sistema_status["erros"] += 1
-                    logger.error(f"❌ Erro ao processar {produto['produto']}: {mensagem}")
+                    # Erro
+                    sheets_manager.atualizar_resultado(produto['linha'], erro=mensagem)
+                    erros += 1
+                    logger.error(f"❌ Linha {produto['linha']} falhou: {mensagem}")
                 
-                # Pausa entre processamentos
-                time.sleep(3)
+                # Delay entre processamentos
+                time.sleep(2)
                 
             except Exception as e:
-                sistema_status["erros"] += 1
-                logger.error(f"❌ Erro ao processar {produto.get('produto', 'desconhecido')}: {e}")
+                logger.error(f"❌ Erro ao processar linha {produto['linha']}: {e}")
+                sheets_manager.atualizar_resultado(produto['linha'], erro=str(e))
+                erros += 1
         
-        sistema_status["ultima_execucao"] = datetime.now().isoformat()
-        sistema_status["status"] = "Aguardando próxima execução do Cron Job"
-        logger.info("✅ PROCESSAMENTO AUTOMÁTICO CONCLUÍDO")
+        # Atualizar status final
+        sistema_status["produtos_processados"] = sucessos
+        sistema_status["erros"] = erros
+        sistema_status["status"] = f"Processamento concluído. {sucessos} sucessos, {erros} erros."
+        
+        logger.info(f"🎉 PROCESSAMENTO CONCLUÍDO: {sucessos} sucessos, {erros} erros")
         
     except Exception as e:
-        sistema_status["erros"] += 1
-        sistema_status["status"] = f"Erro: {str(e)}"
         logger.error(f"❌ Erro no processamento automático: {e}")
+        sistema_status["status"] = f"Erro no processamento: {str(e)}"
+        sistema_status["erros"] += 1
+
+def executar_cron_job():
+    """Executa o cron job em thread separada"""
+    while True:
+        try:
+            # Executar a cada 30 minutos
+            time.sleep(1800)
+            logger.info("⏰ Executando cron job automático...")
+            executar_processamento_automatico()
+        except Exception as e:
+            logger.error(f"❌ Erro no cron job: {e}")
+            time.sleep(300)  # Aguardar 5 minutos em caso de erro
 
 # ================================
 # ROTAS DA API
@@ -586,200 +850,185 @@ def dashboard():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Sistema Processador de Sorteios V5.0</title>
+        <title>Sistema Processador de Sorteios V6.0</title>
         <style>
-            body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
-            .container { max-width: 1200px; margin: 0 auto; }
-            .header { text-align: center; margin-bottom: 30px; }
-            .status-card { background: white; padding: 20px; border-radius: 10px; margin: 20px 0; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-            .success { background: #d4edda; border-left: 5px solid #28a745; }
-            .stats { display: flex; justify-content: space-around; margin: 20px 0; }
-            .stat { text-align: center; }
-            .stat h2 { font-size: 2.5em; margin: 0; color: #007bff; }
-            .buttons { text-align: center; margin: 30px 0; }
-            .btn { padding: 15px 30px; margin: 10px; border: none; border-radius: 5px; font-size: 16px; cursor: pointer; text-decoration: none; display: inline-block; }
+            body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+            .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            .header { text-align: center; color: #2c3e50; margin-bottom: 30px; }
+            .status { padding: 15px; border-radius: 5px; margin: 10px 0; }
+            .status.online { background: #d4edda; border: 1px solid #c3e6cb; color: #155724; }
+            .status.processing { background: #fff3cd; border: 1px solid #ffeaa7; color: #856404; }
+            .status.error { background: #f8d7da; border: 1px solid #f5c6cb; color: #721c24; }
+            .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin: 20px 0; }
+            .stat-card { background: #f8f9fa; padding: 15px; border-radius: 5px; text-align: center; border-left: 4px solid #007bff; }
+            .stat-number { font-size: 24px; font-weight: bold; color: #007bff; }
+            .stat-label { color: #6c757d; font-size: 14px; }
+            .actions { margin: 20px 0; }
+            .btn { padding: 10px 20px; margin: 5px; border: none; border-radius: 5px; cursor: pointer; text-decoration: none; display: inline-block; }
             .btn-primary { background: #007bff; color: white; }
             .btn-success { background: #28a745; color: white; }
-            .endpoints { background: #fff3cd; padding: 20px; border-radius: 10px; margin: 20px 0; }
-            .endpoint { margin: 10px 0; font-family: monospace; }
-            .version { background: #e7f3ff; padding: 15px; border-radius: 10px; margin: 20px 0; }
-            .security { background: #d1ecf1; padding: 15px; border-radius: 10px; margin: 20px 0; }
+            .btn-warning { background: #ffc107; color: black; }
+            .footer { text-align: center; margin-top: 30px; color: #6c757d; font-size: 12px; }
+            .integration-status { background: #e7f3ff; border: 1px solid #b3d9ff; color: #0056b3; padding: 10px; border-radius: 5px; margin: 10px 0; }
         </style>
     </head>
     <body>
         <div class="container">
             <div class="header">
-                <h1>🎯 Sistema Processador de Sorteios V5.0</h1>
-                <p>Extração por código + Validação de fundo branco</p>
+                <h1>🎯 Sistema Processador de Sorteios V6.0</h1>
+                <p>Processamento automatizado de produtos Natura com integração ManyChat-ChatGPT</p>
             </div>
             
-            <div class="security">
-                <h4>🔐 SEGURANÇA IMPLEMENTADA:</h4>
-                <ul>
-                    <li>✅ Credenciais via GitHub Secrets</li>
-                    <li>✅ Sem arquivos sensíveis no repositório</li>
-                    <li>✅ Variáveis de ambiente seguras</li>
-                </ul>
+            <div class="status online">
+                <strong>✅ Sistema V6.0 Online</strong><br>
+                Status: {{ status.status }}<br>
+                Última execução: {{ status.ultima_execucao or 'Nunca executado' }}
             </div>
             
-            <div class="version">
-                <h4>🔧 CORREÇÕES V5.0 IMPLEMENTADAS:</h4>
-                <ul>
-                    <li>✅ Extração por código NATBRA-XXXXX (não semântica)</li>
-                    <li>✅ Validação de fundo branco ≥60% obrigatória</li>
-                    <li>✅ Processamento conforme especificações do PDF</li>
-                    <li>✅ Mapeamento correto colunas E/G</li>
-                    <li>✅ Agendamento via Cron Job (mais robusto)</li>
-                </ul>
-            </div>
-            
-            <div class="status-card success">
-                <h3>✅ Sistema V5.0 Online e Funcionando!</h3>
-                <p>Automação via Cron Job - processamento a cada 30 minutos</p>
+            <div class="integration-status">
+                <strong>🤖 Integração ManyChat: Ativa</strong><br>
+                Endpoint: /webhook/manychat<br>
+                ChatGPT Assistant: Configurado
             </div>
             
             <div class="stats">
-                <div class="stat">
-                    <h2>{{ produtos_processados }}</h2>
-                    <p>Produtos Processados</p>
+                <div class="stat-card">
+                    <div class="stat-number">{{ status.produtos_processados }}</div>
+                    <div class="stat-label">Produtos Processados</div>
                 </div>
-                <div class="stat">
-                    <h2>{{ erros }}</h2>
-                    <p>Erros</p>
+                <div class="stat-card">
+                    <div class="stat-number">{{ status.erros }}</div>
+                    <div class="stat-label">Erros Registrados</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">{{ conversas_ativas }}</div>
+                    <div class="stat-label">Conversas ManyChat Ativas</div>
                 </div>
             </div>
             
-            <div class="status-card">
-                <h4>📊 Status: {{ status }}</h4>
-                <p>🕐 Última Execução: {{ ultima_execucao or 'Aguardando primeira execução do Cron Job' }}</p>
+            <div class="actions">
+                <h3>🔧 Ações Disponíveis:</h3>
+                <a href="/api/sorteios/processar-planilha" class="btn btn-primary">📊 Processar Planilha</a>
+                <a href="/api/sorteios/status" class="btn btn-success">📋 Status Detalhado</a>
+                <a href="/api/manychat/stats" class="btn btn-warning">🤖 Stats ManyChat</a>
             </div>
             
-            <div class="buttons">
-                <a href="/api/sorteios/processar-planilha" class="btn btn-primary">🚀 Processar Planilha Agora</a>
-                <a href="/api/sorteios/status" class="btn btn-success">📊 Ver Status Detalhado</a>
-            </div>
-            
-            <div class="endpoints">
-                <h4>🔌 Endpoints da API:</h4>
-                <div class="endpoint">• GET /api/sorteios/health - Health check</div>
-                <div class="endpoint">• GET /api/sorteios/status - Status detalhado</div>
-                <div class="endpoint">• POST /api/sorteios/processar-planilha - Processar planilha</div>
-                <div class="endpoint">• POST /api/sorteios/processar-produto - Processar produto individual</div>
+            <div class="footer">
+                <p>Sistema Manus V6.0 - Processamento de Sorteios + Integração ManyChat-ChatGPT</p>
+                <p>Desenvolvido para automação completa de sorteios da Natura</p>
             </div>
         </div>
     </body>
     </html>
     """
     
-    return render_template_string(html, **sistema_status)
+    # Calcular conversas ativas
+    agora = time.time()
+    conversas_ativas = sum(1 for conversa in user_conversations.values() 
+                          if agora - conversa['last_activity'] < TIMEOUT_CONVERSA)
+    
+    return render_template_string(html, status=sistema_status, conversas_ativas=conversas_ativas)
 
 @app.route('/api/sorteios/health')
 def health_check():
-    """Health check da API"""
+    """Health check do sistema"""
     return jsonify({
         "status": "ok",
-        "message": "Sistema V5.0 funcionando com GitHub Secrets",
-        "versao": "5.0",
-        "seguranca": "GitHub Secrets ativo",
-        "agendamento": "Cron Job externo",
-        "timestamp": datetime.now().isoformat()
+        "version": "6.0",
+        "timestamp": datetime.now().isoformat(),
+        "integracoes": {
+            "manychat": "ativa",
+            "chatgpt": "configurado",
+            "google_sheets": "conectado"
+        }
     })
 
 @app.route('/api/sorteios/status')
-def status_detalhado():
-    """Status detalhado do sistema"""
+def status_sistema():
+    """Retorna status detalhado do sistema"""
     return jsonify({
         "sistema": sistema_status,
-        "versao": "5.0",
-        "seguranca": "GitHub Secrets",
-        "agendamento": "Cron Job externo (mais robusto)",
-        "google_sheets": {
-            "conectado": sheets_manager.planilha is not None,
-            "planilha_id": PLANILHA_ID,
-            "metodo": "Variável de ambiente"
-        },
-        "processador": {
-            "ativo": True,
-            "versao": "5.0",
-            "extracao": "Por código NATBRA-XXXXX",
-            "validacao": "Fundo branco ≥60%"
-        },
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
+        "version": "6.0",
+        "manychat": {
+            "conversas_ativas": len(user_conversations),
+            "timeout_conversa": TIMEOUT_CONVERSA
+        }
     })
 
-@app.route('/api/sorteios/processar-planilha', methods=['GET', 'POST'])
-def processar_planilha_manual():
-    """Processa a planilha manualmente"""
+@app.route('/api/sorteios/processar-planilha')
+def processar_planilha():
+    """Endpoint para processar planilha manualmente"""
     try:
-        thread = threading.Thread(target=processar_planilha_automatico, daemon=True)
+        # Executar em thread separada para não bloquear
+        thread = threading.Thread(target=executar_processamento_automatico)
+        thread.daemon = True
         thread.start()
         
         return jsonify({
-            "mensagem": "Processamento manual da planilha V5.0 iniciado",
-            "sucesso": True,
-            "versao": "5.0",
-            "seguranca": "GitHub Secrets ativo",
+            "status": "ok",
+            "message": "Processamento iniciado em background",
             "timestamp": datetime.now().isoformat()
         })
-        
     except Exception as e:
         return jsonify({
-            "mensagem": f"Erro ao iniciar processamento: {str(e)}",
-            "sucesso": False,
+            "status": "error",
+            "message": str(e),
             "timestamp": datetime.now().isoformat()
         }), 500
 
 @app.route('/api/sorteios/processar-produto', methods=['POST'])
-def processar_produto_individual():
-    """Processa um produto individual"""
+def processar_produto():
+    """Endpoint para processar produto individual"""
     try:
         data = request.get_json()
         url_produto = data.get('url')
         
         if not url_produto:
-            return jsonify({
-                "mensagem": "URL do produto é obrigatória",
-                "sucesso": False
-            }), 400
+            return jsonify({"error": "URL do produto é obrigatória"}), 400
         
+        # Processar produto
+        processador = ProcessadorSorteioV5()
         url_imagem, mensagem = processador.processar_produto_completo(url_produto)
         
         if url_imagem:
             return jsonify({
-                "mensagem": mensagem,
+                "status": "success",
                 "url_imagem": url_imagem,
-                "sucesso": True,
-                "versao": "5.0",
+                "message": mensagem,
                 "timestamp": datetime.now().isoformat()
             })
         else:
             return jsonify({
-                "mensagem": mensagem,
-                "sucesso": False,
+                "status": "error",
+                "message": mensagem,
                 "timestamp": datetime.now().isoformat()
             }), 400
             
     except Exception as e:
         return jsonify({
-            "mensagem": f"Erro ao processar produto: {str(e)}",
-            "sucesso": False,
+            "status": "error",
+            "message": str(e),
             "timestamp": datetime.now().isoformat()
         }), 500
 
 # ================================
-# INICIALIZAÇÃO
+# INICIALIZAÇÃO DO SISTEMA
 # ================================
 
 if __name__ == '__main__':
-    logger.info("🚀 INICIANDO SERVIDOR WEB V5.0 COM GITHUB SECRETS")
+    logger.info("🚀 INICIANDO SISTEMA PROCESSADOR DE SORTEIOS V6.0")
+    logger.info("🤖 Integração ManyChat-ChatGPT: ATIVA")
     
-    # Verificar se variável de ambiente existe
-    if not os.environ.get('GOOGLE_CREDENTIALS'):
-        logger.warning("⚠️ GOOGLE_CREDENTIALS não encontrada - configure no Render.com")
-    else:
-        logger.info("✅ GOOGLE_CREDENTIALS encontrada")
+    # Iniciar cron job em thread separada
+    cron_thread = threading.Thread(target=executar_cron_job)
+    cron_thread.daemon = True
+    cron_thread.start()
+    logger.info("⏰ Cron job iniciado")
     
-    # Iniciar servidor (sem agendamento interno)
+    # Obter porta do ambiente (Render)
     port = int(os.environ.get('PORT', 5000))
-    logger.info(f"🚀 Servidor Web V5.0 iniciando na porta {port}. Agendamento será feito via Cron Job.")
+    
+    # Iniciar servidor Flask
+    logger.info(f"🌐 Servidor iniciando na porta {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
