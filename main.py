@@ -165,6 +165,51 @@ def processar_com_chatgpt(message, user_name, user_id):
         
         thread_id = user_conversations[user_id]['thread_id']
         
+        # Verificar se há runs ativos na thread
+        logger.info("🔍 Verificando runs ativos na thread")
+        try:
+            active_runs = client.beta.threads.runs.list(
+                thread_id=thread_id,
+                limit=5
+            )
+            
+            # Verificar se há run ativo
+            for run in active_runs.data:
+                if run.status in ['queued', 'in_progress']:
+                    logger.info(f"⏳ Run ativo encontrado: {run.id} (status: {run.status})")
+                    logger.info("⏳ Aguardando run anterior terminar...")
+                    
+                    # Aguardar run terminar (máximo 30 segundos)
+                    wait_attempts = 30
+                    for attempt in range(wait_attempts):
+                        run_status = client.beta.threads.runs.retrieve(
+                            thread_id=thread_id,
+                            run_id=run.id
+                        )
+                        
+                        if run_status.status not in ['queued', 'in_progress']:
+                            logger.info(f"✅ Run anterior terminou: {run_status.status}")
+                            break
+                        
+                        time.sleep(1)
+                    
+                    if attempt >= wait_attempts - 1:
+                        logger.warning("⚠️ Timeout aguardando run anterior - cancelando")
+                        try:
+                            client.beta.threads.runs.cancel(
+                                thread_id=thread_id,
+                                run_id=run.id
+                            )
+                            logger.info("🚫 Run anterior cancelado")
+                        except:
+                            logger.warning("⚠️ Não foi possível cancelar run anterior")
+                    break
+            
+            logger.info("✅ Thread livre para nova mensagem")
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Erro verificando runs ativos: {e}")
+        
         # Adicionar mensagem à thread
         logger.info(f"📝 Adicionando mensagem à thread")
         client.beta.threads.messages.create(
