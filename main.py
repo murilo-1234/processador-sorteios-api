@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Sistema Processador de Sorteios V6.0 + Integração ManyChat-ChatGPT
+Sistema Processador de Sorteios V6.0 + Integração ManyChat-ChatGPT Multiplataforma
 Sistema automatizado que lê Google Sheets, processa produtos da Natura 
 com extração por código e validação de fundo branco conforme PDF.
-Agora com integração ManyChat-ChatGPT para atendimento automatizado.
+Agora com integração ManyChat-ChatGPT para atendimento automatizado em:
+- WhatsApp (platform: manychat)
+- Instagram (platform: instagram) 
+- Messenger (platform: messenger)
 
 CORREÇÕES IMPLEMENTADAS:
 - Extração por código NATBRA-XXXXX (não semântica)
@@ -13,7 +16,9 @@ CORREÇÕES IMPLEMENTADAS:
 - Mapeamento correto das colunas E/G
 - USO DE GITHUB SECRETS para credenciais
 - INTEGRAÇÃO MANYCHAT-CHATGPT para atendimento 24/7
-- CORREÇÃO DEFINITIVA: Chat Completions API (sem async/await)
+- ASSISTANTS API com assistente específico asst_AQjafiLKeePeACy6mzPX1Mqo
+- CORREÇÃO RUNS ATIVOS para conversas fluidas
+- SUPORTE MULTIPLATAFORMA: WhatsApp, Instagram, Messenger
 
 Autor: Sistema Manus V6.0
 Data: Janeiro 2025
@@ -302,13 +307,14 @@ def webhook_manychat():
         user_id = data.get('user_id', 'unknown')
         platform = data.get('platform', '')
         
-        logger.info(f"🔄 Webhook ManyChat recebido - Usuário: {user_name} ({user_id})")
+        logger.info(f"🔄 Webhook recebido - Usuário: {user_name} ({user_id}) - Platform: {platform}")
         logger.info(f"📝 Mensagem: {message}")
         
-        # Validar se é requisição do ManyChat
-        if platform != 'manychat':
-            logger.warning(f"⚠️ Platform inválida: {platform}")
-            return jsonify({"error": "Platform inválida"}), 400
+        # Validar plataformas suportadas
+        valid_platforms = ['manychat', 'instagram', 'messenger']
+        if platform not in valid_platforms:
+            logger.warning(f"⚠️ Platform inválida: {platform}. Plataformas suportadas: {valid_platforms}")
+            return jsonify({"error": f"Platform inválida. Suportadas: {valid_platforms}"}), 400
         
         if not message:
             return jsonify({
