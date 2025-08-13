@@ -124,71 +124,102 @@ def detectar_automacao(message):
     return None
 
 def processar_com_chatgpt(message, user_name, user_id):
-    """Processa mensagem com ChatGPT usando Chat Completions API"""
+    """Processar mensagem usando Assistants API com assistente específico"""
     try:
         logger.info(f"🤖 Iniciando processamento ChatGPT para {user_name}")
         
+        # Obter cliente OpenAI
         client = get_openai_client()
         logger.info("✅ Cliente OpenAI criado")
         
-        # Limpar conversas antigas periodicamente
-        if len(user_conversations) > MAX_CONVERSAS:
-            limpar_conversas_antigas()
+        # ID do assistente específico
+        ASSISTANT_ID = "asst_AQjafiLKeePeACy6mzPX1Mqo"
+        logger.info(f"🎯 Usando assistente: {ASSISTANT_ID}")
         
-        # Obter histórico de conversa do usuário
+        # Gerenciar threads por usuário
+        global user_conversations
+        
+        # Limpar conversas antigas (mais de 30 minutos)
+        current_time = time.time()
+        expired_users = [uid for uid, conv in user_conversations.items() 
+                        if current_time - conv.get('last_activity', 0) > 1800]
+        for uid in expired_users:
+            del user_conversations[uid]
+            logger.info(f"🧹 Conversa expirada removida: {uid}")
+        
+        # Criar ou recuperar thread do usuário
         if user_id not in user_conversations:
+            # Criar nova thread
+            logger.info(f"🆕 Criando nova thread para {user_name}")
+            thread = client.beta.threads.create()
             user_conversations[user_id] = {
-                'messages': [],
-                'last_activity': time.time()
+                'thread_id': thread.id,
+                'last_activity': current_time
             }
-            logger.info(f"🆕 Nova conversa: {user_name}")
+            logger.info(f"✅ Thread criada: {thread.id}")
         else:
-            user_conversations[user_id]['last_activity'] = time.time()
-            logger.info(f"🔄 Conversa existente: {user_name}")
+            # Usar thread existente
+            thread_id = user_conversations[user_id]['thread_id']
+            user_conversations[user_id]['last_activity'] = current_time
+            logger.info(f"🔄 Usando thread existente: {thread_id}")
         
-        # Preparar mensagens para a API
-        messages = [
-            {
-                "role": "system",
-                "content": "Você é um assistente da Natura especializado em sorteios, produtos e atendimento ao cliente. Responda de forma amigável e útil em português brasileiro."
-            }
-        ]
+        thread_id = user_conversations[user_id]['thread_id']
         
-        # Adicionar histórico (últimas 8 mensagens)
-        historico = user_conversations[user_id]['messages']
-        if historico:
-            messages.extend(historico[-8:])
-        
-        # Adicionar mensagem atual
-        messages.append({
-            "role": "user",
-            "content": f"{user_name}: {message}"
-        })
-        
-        logger.info(f"🚀 Enviando para OpenAI")
-        
-        # Chamada para OpenAI Chat Completions
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=messages,
-            max_tokens=400,
-            temperature=0.7
+        # Adicionar mensagem à thread
+        logger.info(f"📝 Adicionando mensagem à thread")
+        client.beta.threads.messages.create(
+            thread_id=thread_id,
+            role="user",
+            content=f"{user_name}: {message}"
         )
         
-        logger.info("✅ Resposta recebida")
+        # Executar assistente
+        logger.info(f"🚀 Executando assistente {ASSISTANT_ID}")
+        run = client.beta.threads.runs.create(
+            thread_id=thread_id,
+            assistant_id=ASSISTANT_ID
+        )
+        
+        # Aguardar conclusão
+        logger.info("⏳ Aguardando resposta do assistente...")
+        max_attempts = 30  # 30 segundos máximo
+        attempt = 0
+        
+        while attempt < max_attempts:
+            run_status = client.beta.threads.runs.retrieve(
+                thread_id=thread_id,
+                run_id=run.id
+            )
+            
+            if run_status.status == 'completed':
+                logger.info("✅ Assistente concluído")
+                break
+            elif run_status.status in ['failed', 'cancelled', 'expired']:
+                logger.error(f"❌ Assistente falhou: {run_status.status}")
+                raise Exception(f"Assistente falhou: {run_status.status}")
+            
+            time.sleep(1)
+            attempt += 1
+        
+        if attempt >= max_attempts:
+            logger.error("❌ Timeout aguardando assistente")
+            raise Exception("Timeout aguardando resposta do assistente")
+        
+        # Obter mensagens da thread
+        logger.info("📥 Obtendo resposta do assistente")
+        messages = client.beta.threads.messages.list(
+            thread_id=thread_id,
+            order="desc",
+            limit=1
+        )
+        
+        if not messages.data:
+            logger.error("❌ Nenhuma resposta encontrada")
+            raise Exception("Nenhuma resposta encontrada")
         
         # Extrair resposta
-        resposta = response.choices[0].message.content
-        
-        # Armazenar no histórico
-        user_conversations[user_id]['messages'].extend([
-            {'role': 'user', 'content': f"{user_name}: {message}"},
-            {'role': 'assistant', 'content': resposta}
-        ])
-        
-        # Manter apenas últimas 16 mensagens
-        if len(user_conversations[user_id]['messages']) > 16:
-            user_conversations[user_id]['messages'] = user_conversations[user_id]['messages'][-16:]
+        resposta = messages.data[0].content[0].text.value
+        logger.info("✅ Resposta recebida do assistente")
         
         logger.info(f"✅ Resposta para {user_name}: {resposta[:50]}...")
         return resposta
