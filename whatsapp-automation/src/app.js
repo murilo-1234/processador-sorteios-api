@@ -1,455 +1,187 @@
-require('dotenv').config();
+// ======================= WebCrypto SHIM (antes de qualquer import do Baileys) =======================
+try {
+  if (!globalThis.crypto || !globalThis.crypto.subtle) {
+    const { webcrypto } = require('crypto');
+    globalThis.crypto = webcrypto;
+  }
+} catch (_) {
+  // silencioso: apenas garante que globalThis.crypto exista em Node 18 no Render
+}
+// ===================================================================================================
 
 const express = require('express');
-const session = require('express-session');
+const morgan = require('morgan');
+const QRCode = require('qrcode');
 const rateLimit = require('express-rate-limit');
-const helmet = require('helmet');
-const cors = require('cors');
-const path = require('path');
-
-const logger = require('./config/logger');
-const database = require('./config/database');
 const WhatsAppClient = require('./services/whatsapp-client');
-const JobScheduler = require('./services/job-scheduler');
-const metricsService = require('./services/metrics');
+
+const PORT = process.env.PORT || 3000;
 
 class App {
   constructor() {
     this.app = express();
-    this.port = process.env.PORT || 3000;
     this.whatsappClient = null;
-    this.jobScheduler = null;
-    this.server = null;
 
-    // Configurar proxy para Render (corrige erro X-Forwarded-For)
-    this.app.set('trust proxy', true);
-
-    // Handlers de processo (sem derrubar o app em exceções)
-    this.setupProcessHandlers();
-  }
-
-  /**
-   * Inicializar aplicação
-   */
-  async initialize() {
-    try {
-      logger.info('🚀 Inicializando aplicação WhatsApp Automation...');
-
-      // 1) Middleware
-      await this.setupMiddleware();
-
-      // 2) Banco
-      await database.initialize();
-      metricsService.setDatabaseConnections(1);
-
-      // 3) Rotas
-      await this.setupRoutes();
-
-      // 4) WhatsApp
-      await this.initializeWhatsApp();
-
-      // 5) Agendador
-      await this.initializeScheduler();
-
-      // 6) Servidor
-      await this.startServer();
-
-      logger.info('✅ Aplicação inicializada com sucesso!');
-    } catch (error) {
-      // ❗ Não finalize o processo; faça retry após alguns segundos
-      logger.error('❌ Erro ao inicializar aplicação (tentando novamente em 10s):', error);
-      setTimeout(() => this.initialize().catch(() => {}), 10_000);
-    }
-  }
-
-  /**
-   * Middleware
-   */
-  async setupMiddleware() {
-    // Segurança
-    this.app.use(
-      helmet({
-        contentSecurityPolicy: {
-          directives: {
-            defaultSrc: ["'self'"],
-            styleSrc: ["'self'", "'unsafe-inline'", 'https://cdn.jsdelivr.net'],
-            scriptSrc: ["'self'", 'https://cdn.jsdelivr.net'],
-            imgSrc: ["'self'", 'data:', 'https:'],
-          },
-        },
-      })
-    );
-
-    // CORS (liberar no dev; em prod troque pelo seu domínio)
-    this.app.use(
-      cors({
-        origin: process.env.NODE_ENV === 'production' ? ['https://seu-dominio.com'] : true,
-        credentials: true,
-      })
-    );
-
-    // Rate limiting
+    // segurança básica do rate limit (sem validação de proxy chata)
     const limiter = rateLimit({
-      windowMs: 15 * 60 * 1000,
-      max: 100,
-      message: 'Muitas requisições deste IP, tente novamente em 15 minutos.',
+      windowMs: 60 * 1000,
+      max: 300,
       standardHeaders: true,
       legacyHeaders: false,
+      validate: false
     });
-    this.app.use('/api/', limiter);
 
-    // Body parsing
-    this.app.use(express.json({ limit: '10mb' }));
-    this.app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+    this.app.use(limiter);
+    this.app.use(morgan('dev'));
+    this.app.use(express.json());
+    this.app.use(express.urlencoded({ extended: true }));
 
-    // Sessões
-    this.app.use(
-      session({
-        secret: process.env.JWT_SECRET || 'whatsapp-automation-secret',
-        resave: false,
-        saveUninitialized: false,
-        cookie: {
-          secure: process.env.NODE_ENV === 'production',
-          httpOnly: true,
-          maxAge: 24 * 60 * 60 * 1000,
-        },
-      })
-    );
+    // trust proxy só se explicitamente habilitado (evita warnings)
+    const tp = process.env.TRUST_PROXY === '1' ? 1 : false;
+    this.app.set('trust proxy', tp);
 
-    // Arquivos estáticos
-    this.app.use(express.static(path.join(__dirname, '../public')));
+    this.routes();
+  }
 
-    // Métricas middleware
-    this.app.use(metricsService.getExpressMiddleware());
-
-    // Logging de requisições
-    this.app.use((req, res, next) => {
-      logger.info(`${req.method} ${req.path}`, {
-        ip: req.ip,
-        userAgent: req.get('User-Agent'),
+  initWhatsApp() {
+    if (!this.whatsappClient) {
+      this.whatsappClient = new WhatsAppClient();
+      this.app.locals.whatsappClient = this.whatsappClient;
+      // inicializa em background
+      this.whatsappClient.initialize().catch((e) => {
+        console.error('❌ Falha inicial ao iniciar WhatsApp:', e?.message || e);
       });
-      next();
-    });
-
-    logger.info('✅ Middleware configurado');
-  }
-
-  /**
-   * Rotas
-   */
-  async setupRoutes() {
-    // Health check
-    this.app.get('/health', async (req, res) => {
-      try {
-        const health = await this.getHealthStatus();
-        const status = health.status === 'healthy' ? 200 : 503;
-        res.status(status).json(health);
-      } catch (error) {
-        res.status(503).json({
-          status: 'error',
-          error: error.message,
-        });
-      }
-    });
-
-    // Métricas
-    this.app.get('/metrics', async (req, res) => {
-      try {
-        const metrics = await metricsService.getMetrics();
-        res.set('Content-Type', 'text/plain');
-        res.send(metrics);
-      } catch (error) {
-        res.status(500).json({ error: error.message });
-      }
-    });
-
-    // API
-    const apiRoutes = require('./routes/api');
-    this.app.use('/api', apiRoutes);
-
-    // Admin
-    const adminRoutes = require('./routes/admin');
-    this.app.use('/admin', adminRoutes);
-
-    // QR Code
-    this.app.get('/qr', async (req, res) => {
-      try {
-        if (!this.whatsappClient) {
-          return res.status(503).json({
-            error: 'WhatsApp client não inicializado',
-            message: 'Aguarde a inicialização do sistema',
-          });
-        }
-
-        const qrData = await this.whatsappClient.getQRCode();
-
-        if (!qrData) {
-          return res.status(404).json({
-            error: 'QR Code não disponível',
-            message: 'WhatsApp pode já estar conectado ou aguardando conexão',
-          });
-        }
-
-        const qrcode = require('qrcode');
-        const qrSvg = await qrcode.toString(qrData, {
-          type: 'svg',
-          width: 300,
-          margin: 2,
-        });
-
-        res.setHeader('Content-Type', 'image/svg+xml');
-        res.send(qrSvg);
-      } catch (error) {
-        logger.error('❌ Erro ao gerar QR Code:', error);
-        res.status(500).json({
-          error: 'Erro ao gerar QR Code',
-          message: error.message,
-        });
-      }
-    });
-
-    // Pairing Code
-    this.app.get('/code', async (req, res) => {
-      try {
-        if (!this.whatsappClient) {
-          return res.status(503).json({
-            error: 'WhatsApp client não inicializado',
-            message: 'Aguarde a inicialização do sistema',
-          });
-        }
-
-        const pairingCode = this.whatsappClient.getPairingCode();
-
-        if (!pairingCode) {
-          return res.status(404).json({
-            error: 'Pairing code não disponível',
-            message: 'WhatsApp pode já estar conectado ou aguardando geração do código',
-          });
-        }
-
-        res.json({
-          pairingCode,
-          instructions: [
-            '1. Abra o WhatsApp no seu celular',
-            '2. Vá em: Aparelhos Conectados',
-            '3. Toque em: "Conectar com código"',
-            `4. Digite: ${pairingCode}`,
-            '5. Pronto! WhatsApp conectado.',
-          ],
-          timestamp: new Date().toISOString(),
-          status: 'available',
-        });
-      } catch (error) {
-        logger.error('❌ Erro ao obter pairing code:', error);
-        res.status(500).json({
-          error: 'Erro ao obter pairing code',
-          message: error.message,
-        });
-      }
-    });
-
-    // Página inicial
-    this.app.get('/', (req, res) => {
-      res.json({
-        name: 'WhatsApp Automation System',
-        version: '1.0.0',
-        status: 'running',
-        timestamp: new Date().toISOString(),
-      });
-    });
-
-    // 404
-    this.app.use('*', (req, res) => {
-      res.status(404).json({
-        error: 'Endpoint não encontrado',
-        path: req.originalUrl,
-      });
-    });
-
-    // Handler de erros
-    this.app.use((error, req, res, next) => {
-      logger.error('❌ Erro na aplicação:', error);
-
-      res.status(error.status || 500).json({
-        error: process.env.NODE_ENV === 'production' ? 'Erro interno do servidor' : error.message,
-        timestamp: new Date().toISOString(),
-      });
-    });
-
-    logger.info('✅ Rotas configuradas');
-  }
-
-  /**
-   * WhatsApp
-   */
-  async initializeWhatsApp() {
-    this.whatsappClient = new WhatsAppClient();
-
-    // Eventos
-    this.whatsappClient.on('connected', () => {
-      logger.info('✅ WhatsApp conectado');
-      metricsService.setBaileyConnectionState(true);
-    });
-
-    this.whatsappClient.on('qr-code', () => {
-      logger.info('📱 QR Code gerado para autenticação');
-    });
-
-    this.whatsappClient.on('pairing-code', (code) => {
-      logger.info('🔗 Pairing Code gerado para autenticação');
-      logger.info(`📱 Código: ${code}`);
-      logger.info('💡 Acesse: /code para visualizar');
-    });
-
-    this.whatsappClient.on('logged-out', () => {
-      logger.warn('⚠️ WhatsApp deslogado');
-      metricsService.setBaileyConnectionState(false);
-    });
-
-    this.whatsappClient.on('circuit-breaker-open', () => {
-      logger.error('🔴 Circuit breaker aberto - muitas falhas no WhatsApp');
-      metricsService.recordAlertSent('circuit_breaker', 'system');
-    });
-
-    await this.whatsappClient.initialize();
-
-    // Disponibilizar globalmente
-    this.app.locals.whatsappClient = this.whatsappClient;
-
-    logger.info('✅ WhatsApp inicializado');
-  }
-
-  /**
-   * Agendador
-   */
-  async initializeScheduler() {
-    this.jobScheduler = new JobScheduler();
-
-    this.jobScheduler.on('job-error', (data) => {
-      logger.error(`❌ Erro no job ${data.name}:`, data.error);
-      metricsService.recordAlertSent('job_error', 'system');
-    });
-
-    this.jobScheduler.on('high-failure-rate', (data) => {
-      logger.warn(`⚠️ Alta taxa de falhas detectada: ${data.count} jobs falharam na última hora`);
-      metricsService.recordAlertSent('high_failure_rate', 'system');
-    });
-
-    await this.jobScheduler.initialize();
-
-    this.app.locals.jobScheduler = this.jobScheduler;
-
-    logger.info('✅ Agendador inicializado');
-  }
-
-  /**
-   * Servidor
-   */
-  async startServer() {
-    return new Promise((resolve, reject) => {
-      this.server = this.app.listen(this.port, '0.0.0.0', (error) => {
-        if (error) return reject(error);
-
-        logger.info(`🌐 Servidor rodando na porta ${this.port}`);
-        logger.info(`📊 Métricas: http://localhost:${this.port}/metrics`);
-        logger.info(`🏥 Health:   http://localhost:${this.port}/health`);
-        resolve();
-      });
-    });
-  }
-
-  /**
-   * Health status
-   */
-  async getHealthStatus() {
-    const checks = {
-      database: await database.healthCheck(),
-      whatsapp: {
-        status: this.whatsappClient?.isConnected ? 'ok' : 'error',
-        connected: this.whatsappClient?.isConnected || false,
-        queueLength: this.whatsappClient?.messageQueue?.length || 0,
-      },
-      scheduler: {
-        status: this.jobScheduler?.isInitialized ? 'ok' : 'error',
-        jobsCount: this.jobScheduler?.jobs?.size || 0,
-      },
-      memory: this.getMemoryStatus(),
-      uptime: process.uptime(),
-    };
-
-    const isHealthy = Object.values(checks).every((check) =>
-      typeof check === 'object' ? check.status === 'ok' : true
-    );
-
-    return {
-      status: isHealthy ? 'healthy' : 'unhealthy',
-      timestamp: new Date().toISOString(),
-      checks,
-    };
-  }
-
-  /**
-   * Memória
-   */
-  getMemoryStatus() {
-    const used = process.memoryUsage();
-    const totalMB = used.rss / 1024 / 1024;
-
-    return {
-      status: totalMB < 800 ? 'ok' : 'warning',
-      memory_usage_mb: +totalMB.toFixed(2),
-      heap_used_mb: +(used.heapUsed / 1024 / 1024).toFixed(2),
-      heap_total_mb: +(used.heapTotal / 1024 / 1024).toFixed(2),
-    };
-  }
-
-  /**
-   * Handlers do processo (sem derrubar o app)
-   */
-  setupProcessHandlers() {
-    // Encerramentos "legais" continuam chamando shutdown
-    process.on('SIGTERM', () => this.shutdown('SIGTERM'));
-    process.on('SIGINT', () => this.shutdown('SIGINT'));
-
-    // ❗ Em exceções/rejeições, só logar e manter no ar
-    process.on('uncaughtException', (error) => {
-      logger.error('❌ Uncaught Exception (mantendo serviço no ar):', error);
-      // sem process.exit()
-    });
-
-    process.on('unhandledRejection', (reason, promise) => {
-      logger.error('❌ Unhandled Rejection (mantendo serviço no ar):', reason);
-      // sem process.exit()
-    });
-  }
-
-  /**
-   * Shutdown graceful
-   */
-  async shutdown(signal) {
-    logger.info(`🔄 Recebido sinal ${signal}. Iniciando shutdown graceful...`);
-    try {
-      if (this.server) this.server.close();
-      if (this.jobScheduler) this.jobScheduler.stopAll();
-      if (this.whatsappClient) await this.whatsappClient.disconnect();
-      await database.close();
-      logger.info('✅ Shutdown graceful concluído');
-      process.exit(0);
-    } catch (error) {
-      logger.error('❌ Erro durante shutdown:', error);
-      process.exit(1);
     }
+    return this.whatsappClient;
+  }
+
+  routes() {
+    // Health simples
+    this.app.get('/health', (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
+
+    // Status enxuto
+    this.app.get('/api/whatsapp/status', (req, res) => {
+      const wa = this.initWhatsApp();
+      res.json({
+        isConnected: wa.isConnected,
+        qrCodeGenerated: wa.qrCodeGenerated,
+        currentRetry: wa.currentRetry || 0,
+        maxRetries: wa.maxRetries || 3,
+        circuitBreakerState: wa.circuitBreaker || 'CLOSED',
+        failureCount: wa.failureCount || 0,
+        queueLength: 0,
+        user: wa.user || null
+      });
+    });
+
+    // Status detalhado da sessão
+    this.app.get('/api/whatsapp/session-status', (req, res) => {
+      const wa = this.initWhatsApp();
+      res.json({
+        initialized: !!wa.sock,
+        connected: wa.isConnected,
+        qrAvailable: !!wa.getQRCode(),
+        pairingAvailable: !!wa.getPairingCode(),
+        qrCode: null, // nunca exponha o texto do QR aqui
+        pairingCode: null, // idem
+        retryCount: wa.currentRetry || 0,
+        maxRetries: wa.maxRetries || 3,
+        circuitBreaker: wa.circuitBreaker || 'CLOSED',
+        user: wa.user || null,
+        timestamp: new Date().toISOString()
+      });
+    });
+
+    // Reset: limpa sessão e re-inicializa; tenta já forçar geração do QR
+    this.app.get('/api/reset-whatsapp', async (req, res) => {
+      const wa = this.initWhatsApp();
+      try {
+        await wa.clearSession();
+        await wa.initialize();
+        // tenta provocar evento de QR imediatamente
+        const ok = await wa.forceQRGeneration();
+        return res.json({
+          success: true,
+          message: ok
+            ? 'WhatsApp resetado com sucesso! Acesse /qr para escanear novo código.'
+            : 'WhatsApp resetado. Aguarde alguns segundos e tente /qr novamente.',
+          timestamp: new Date().toISOString(),
+          action: ok ? 'qr_ready' : 'qr_pending'
+        });
+      } catch (e) {
+        console.error('❌ reset-whatsapp:', e);
+        return res.status(500).json({ success: false, error: e?.message || String(e) });
+      }
+    });
+
+    // Força tentativa de QR (útil se você não usa pairing)
+    this.app.get('/api/force-qr', async (req, res) => {
+      const wa = this.initWhatsApp();
+      try {
+        const ok = await wa.forceQRGeneration();
+        if (ok) {
+          return res.json({
+            success: true,
+            message: 'QR preparado. Acesse /qr.',
+            qrAvailable: true,
+            timestamp: new Date().toISOString()
+          });
+        }
+        return res.json({
+          success: false,
+          message: 'Falha ao gerar QR Code. Tente novamente.',
+          qrAvailable: false,
+          timestamp: new Date().toISOString()
+        });
+      } catch (e) {
+        console.error('❌ force-qr:', e);
+        return res.status(500).json({ success: false, error: e?.message || String(e) });
+      }
+    });
+
+    // Exibe o QR (SVG). Espera alguns ciclos para dar tempo do Baileys emitir o evento.
+    this.app.get('/qr', async (req, res) => {
+      const wa = this.initWhatsApp();
+      try {
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        let tries = 0;
+
+        // aguarda até ~6s (20 * 300ms)
+        while (!wa.getQRCode() && tries < 20) {
+          await wait(300);
+          tries++;
+        }
+
+        const qr = wa.getQRCode();
+        if (!qr) {
+          return res
+            .status(404)
+            .json({ error: 'QR Code não disponível', message: 'WhatsApp pode já estar conectado ou aguardando conexão' });
+        }
+
+        const svg = await QRCode.toString(qr, { type: 'svg', margin: 1, width: 300 });
+        res.set('Content-Type', 'image/svg+xml').send(svg);
+      } catch (e) {
+        console.error('❌ /qr:', e);
+        res.status(500).json({ error: e?.message || String(e) });
+      }
+    });
+
+    // (Opcional) Mostra Pairing Code, se habilitado por env e disponível
+    this.app.get('/code', (req, res) => {
+      const wa = this.initWhatsApp();
+      const code = wa.getPairingCode();
+      if (!code) return res.status(404).json({ error: 'Pairing code não disponível' });
+      return res.json({ pairingCode: code });
+    });
+  }
+
+  listen() {
+    this.initWhatsApp();
+    this.app.listen(PORT, () => {
+      console.log(`🚀 Server listening on :${PORT}`);
+    });
   }
 }
 
-// Inicializar aplicação se executado diretamente
-if (require.main === module) {
-  const app = new App();
-  app.initialize().catch((error) => {
-    // ❗ Não sair; agendar retry
-    logger.error('❌ Falha ao inicializar (retry em 10s):', error);
-    setTimeout(() => app.initialize().catch(() => {}), 10_000);
-  });
-}
-
-module.exports = App;
+new App().listen();
