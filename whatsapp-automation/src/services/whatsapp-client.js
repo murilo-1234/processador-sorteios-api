@@ -1,3 +1,17 @@
+// ===== POLYFILL CRYPTO PARA BAILEYS 6.7.8 + RENDER =====
+// CORREÇÃO ESPECÍFICA PARA ERRO: Cannot destructure property 'subtle' of 'globalThis.crypto'
+if (!globalThis.crypto) {
+  const { webcrypto } = require('crypto');
+  globalThis.crypto = webcrypto;
+  console.log('✅ Polyfill crypto aplicado (globalThis.crypto)');
+}
+if (!globalThis.crypto.subtle) {
+  const { webcrypto } = require('crypto');
+  globalThis.crypto.subtle = webcrypto.subtle;
+  console.log('✅ Polyfill crypto.subtle aplicado');
+}
+// ===== FIM DO POLYFILL =====
+
 const {
   default: makeWASocket,
   DisconnectReason,
@@ -97,8 +111,25 @@ class WhatsAppClient extends EventEmitter {
         retryRequestDelayMs: 5000,
         maxMsgRetryCount: 3,
         connectTimeoutMs: 60_000,
-        // Logger undefined para evitar erros
-        logger: undefined,
+        // CORREÇÃO: Logger silencioso ao invés de undefined
+        logger: {
+          level: 'silent',
+          child: () => ({ 
+            level: 'silent', 
+            info: () => {}, 
+            error: () => {}, 
+            warn: () => {}, 
+            debug: () => {},
+            trace: () => {},
+            fatal: () => {}
+          }),
+          info: () => {},
+          error: () => {},
+          warn: () => {},
+          debug: () => {},
+          trace: () => {},
+          fatal: () => {}
+        },
         getMessage: async () => ({ conversation: 'Mensagem não encontrada' }),
       });
 
