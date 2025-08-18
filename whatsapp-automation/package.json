@@ -1,0 +1,26 @@
+{
+  "name": "whatsapp-automation",
+  "version": "1.0.0",
+  "type": "module",
+  "engines": { 
+    "node": ">=18 <19" 
+  },
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "NODE_ENV=development node src/app.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.6.0",
+    "sqlite3": "^5.1.6",
+    "sqlite": "^5.1.1",
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "helmet": "^7.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
+    "node-cron": "^3.0.3",
+    "qrcode": "^1.5.3"
+  }
+}
+
