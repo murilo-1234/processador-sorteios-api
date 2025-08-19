@@ -1,3 +1,28 @@
+# === EXPORTS exigidas pelo cron_task.py (NÃO remover) ========================
+
+# Ajuste os caminhos dos imports abaixo conforme o seu projeto:
+# ex.: from utils.sheets_manager import SheetsManager
+#      from processor import Processador
+from sheets_manager import SheetsManager          # <- ajuste o caminho se preciso
+from image_processor import Processador           # <- ajuste o caminho se preciso
+
+# Instâncias únicas usadas por toda a app e pelo cron
+sheets_manager = SheetsManager()
+processador = Processador()
+
+# Estado global que o cron atualiza
+sistema_status = {
+    "status": "Pronto",
+    "ultima_execucao": None,
+    "produtos_processados": 0,
+    "erros": 0,
+}
+
+# Expõe explicitamente para "from main import …"
+__all__ = ["sheets_manager", "processador", "sistema_status"]
+
+# ============================================================================
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
