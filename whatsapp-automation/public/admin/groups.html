@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Grupos WhatsApp • Seleção</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:#0f172a; color:#e2e8f0; margin:0; }
+    .wrap { max-width: 960px; margin: 40px auto; padding: 0 16px; }
+    .card { background:#111827; border:1px solid #1f2937; border-radius:14px; padding:18px; box-shadow:0 10px 30px rgba(0,0,0,.35); }
+    h1 { margin:0 0 8px; font-weight:700; color:#f8fafc; }
+    .muted { color:#94a3b8; font-size:14px; margin-bottom:18px; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
+    button { background:#2563eb; color:#fff; border:0; border-radius:12px; padding:10px 14px; cursor:pointer; font-weight:600; }
+    button.secondary { background:#334155; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    table { width:100%; border-collapse: collapse; margin-top:12px; }
+    th, td { padding:10px; border-bottom:1px solid #1f2937; }
+    th { text-align:left; color:#cbd5e1; }
+    tr:hover { background:#0b1220; }
+    .right { text-align:right; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:#0ea5e9; color:#08121d; font-weight:700; }
+    .ok { color:#22c55e; font-weight:700; }
+    .warn { color:#f59e0b; font-weight:700; }
+    .error { color:#ef4444; font-weight:700; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Grupos do WhatsApp</h1>
+      <div class="muted">Sincronize os grupos e escolha **um** para postar os resultados dos sorteios.</div>
+
+      <div class="row">
+        <button id="btnSync">🔄 Sincronizar grupos</button>
+        <button id="btnSave" class="secondary">💾 Salvar seleção</button>
+        <button id="btnTest" class="secondary">🧪 Testar postagem</button>
+        <span id="status" class="muted"></span>
+      </div>
+
+      <div id="meta" class="muted">Carregando…</div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Selecionar</th>
+            <th>Nome do grupo</th>
+            <th class="right">Participantes</th>
+            <th>JID</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const $ = (s) => document.querySelector(s);
+    const tbody = $('#tbody');
+    const meta = $('#meta');
+    const status = $('#status');
+    const btnSync = $('#btnSync');
+    const btnSave = $('#btnSave');
+    const btnTest = $('#btnTest');
+
+    let groups = [];
+    let selected = null;
+
+    async function getJSON(url, opts) {
+      const r = await fetch(url, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts));
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || JSON.stringify(j));
+      return j;
+    }
+
+    function render() {
+      tbody.innerHTML = groups.map(g => `
+        <tr>
+          <td><input type="radio" name="g" value="${g.jid}" ${g.jid === selected ? 'checked' : ''}></td>
+          <td>${g.name}</td>
+          <td class="right"><span class="pill">${g.participants ?? 0}</span></td>
+          <td><small>${g.jid}</small></td>
+        </tr>`).join('');
+      tbody.querySelectorAll('input[name="g"]').forEach(i => i.addEventListener('change', e => {
+        selected = e.target.value;
+      }));
+    }
+
+    async function loadSaved() {
+      const data = await getJSON('/api/groups');
+      const st = data.settings || {};
+      groups = st.groups || [];
+      selected = st.resultGroupJid || null;
+      render();
+      meta.textContent = st.lastSyncAt ? `Última sincronização: ${new Date(st.lastSyncAt).toLocaleString()}` : 'Ainda não sincronizado';
+    }
+
+    btnSync.onclick = async () => {
+      try {
+        status.textContent = 'Sincronizando...';
+        const data = await getJSON('/api/groups/sync');
+        groups = data.groups || [];
+        selected = (data.saved && data.saved.resultGroupJid) || selected || null;
+        render();
+        meta.textContent = data.saved?.lastSyncAt ? `Última sincronização: ${new Date(data.saved.lastSyncAt).toLocaleString()}` : '';
+        status.textContent = 'Feito ✅';
+      } catch (e) {
+        status.textContent = 'Erro ao sincronizar ❌';
+        alert(e.message);
+      }
+    };
+
+    btnSave.onclick = async () => {
+      try {
+        if (!selected) return alert('Selecione um grupo.');
+        status.textContent = 'Salvando...';
+        await getJSON('/api/groups/select', {
+          method: 'POST',
+          body: JSON.stringify({ resultGroupJid: selected })
+        });
+        status.textContent = 'Salvo ✅';
+      } catch (e) {
+        status.textContent = 'Erro ao salvar ❌';
+        alert(e.message);
+      }
+    };
+
+    btnTest.onclick = async () => {
+      try {
+        status.textContent = 'Enviando teste...';
+        await getJSON('/api/groups/test-post', { method: 'POST' });
+        status.textContent = 'Mensagem enviada ✅';
+      } catch (e) {
+        status.textContent = 'Falha no teste ❌';
+        alert(e.message);
+      }
+    };
+
+    loadSaved().catch(console.error);
+  </script>
+</body>
+</html>
