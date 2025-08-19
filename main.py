@@ -24,7 +24,6 @@ Autor: Sistema Manus V6.0
 Data: Janeiro 2025
 """
 
-# IMPORTS ORIGINAIS DO SISTEMA
 from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 import os
@@ -38,15 +37,13 @@ from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageFont
 import io
 import re
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import tempfile
 
-# IMPORTS PARA INTEGRAÇÃO MANYCHAT
 from openai import OpenAI
 
-# Configurar logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -56,11 +53,8 @@ CORS(app)
 # ================================
 # CONFIGURAÇÕES GLOBAIS
 # ================================
-
-# Configuração Google Sheets
 PLANILHA_ID = "1D84AsjVlCeXmW2hJEIVKBj6EHWe4xYfB6wd-JpHf_Ug"
 
-# Status global do sistema
 sistema_status = {
     "ultima_execucao": None,
     "produtos_processados": 0,
@@ -71,39 +65,29 @@ sistema_status = {
 # ================================
 # INTEGRAÇÃO MANYCHAT-CHATGPT
 # ================================
-
-# Configuração do cliente OpenAI
 def get_openai_client():
-    """Obtém cliente OpenAI configurado"""
     api_key = os.getenv('OPENAI_API_KEY')
     if not api_key:
         raise ValueError("OPENAI_API_KEY não configurada")
     return OpenAI(api_key=api_key)
 
-# Armazenamento de conversas (em produção, usar Redis ou banco)
 user_conversations = {}
 ASSISTANT_ID = "asst_AQjafiLKeePeACy6mzPX1Mqo"
 MAX_CONVERSAS = 1000
-TIMEOUT_CONVERSA = 1800  # 30 minutos
+TIMEOUT_CONVERSA = 1800  # 30 min
 
 def limpar_conversas_antigas():
-    """Remove conversas antigas para economizar memória"""
     agora = time.time()
     usuarios_para_remover = []
-    
     for user_id, conversa in user_conversations.items():
         if agora - conversa['last_activity'] > TIMEOUT_CONVERSA:
             usuarios_para_remover.append(user_id)
-    
     for user_id in usuarios_para_remover:
         del user_conversations[user_id]
         logger.info(f"🧹 Conversa removida por timeout: {user_id}")
 
 def detectar_automacao(message):
-    """Detecta tipo de automação baseado na mensagem"""
     message_lower = message.lower()
-    
-    # Palavras-chave para diferentes automações
     automacoes = {
         'sorteio': ['sorteio', 'concurso', 'prêmio', 'ganhar', 'participar', 'sorteios'],
         'produto': ['produto', 'natura', 'catálogo', 'preço', 'perfume', 'maquiagem', 'creme'],
@@ -111,8 +95,6 @@ def detectar_automacao(message):
         'pedido': ['pedido', 'compra', 'carrinho', 'quero', 'comprar', 'adquirir'],
         'entrega': ['entrega', 'prazo', 'rastreamento', 'correios', 'quando chega']
     }
-    
-    # Scoring para priorizar automações
     scores = {}
     for tipo, palavras in automacoes.items():
         score = 0
@@ -121,218 +103,138 @@ def detectar_automacao(message):
                 score += 1
         if score > 0:
             scores[tipo] = score
-    
     if scores:
-        # Retorna automação com maior score
         return max(scores, key=scores.get)
-    
     return None
 
 def processar_com_chatgpt(message, user_name, user_id):
-    """Processar mensagem usando Assistants API com assistente específico"""
     try:
         logger.info(f"🤖 Iniciando processamento ChatGPT para {user_name}")
-        
-        # Obter cliente OpenAI
         client = get_openai_client()
         logger.info("✅ Cliente OpenAI criado")
-        
-        # ID do assistente específico
-        ASSISTANT_ID = "asst_AQjafiLKeePeACy6mzPX1Mqo"
+
         logger.info(f"🎯 Usando assistente: {ASSISTANT_ID}")
-        
-        # Gerenciar threads por usuário
         global user_conversations
-        
-        # Limpar conversas antigas (mais de 30 minutos)
+
         current_time = time.time()
         expired_users = [uid for uid, conv in user_conversations.items() 
-                        if current_time - conv.get('last_activity', 0) > 1800]
+                         if current_time - conv.get('last_activity', 0) > 1800]
         for uid in expired_users:
             del user_conversations[uid]
             logger.info(f"🧹 Conversa expirada removida: {uid}")
-        
-        # Criar ou recuperar thread do usuário
+
         if user_id not in user_conversations:
-            # Criar nova thread
             logger.info(f"🆕 Criando nova thread para {user_name}")
             thread = client.beta.threads.create()
-            user_conversations[user_id] = {
-                'thread_id': thread.id,
-                'last_activity': current_time
-            }
+            user_conversations[user_id] = {'thread_id': thread.id, 'last_activity': current_time}
             logger.info(f"✅ Thread criada: {thread.id}")
         else:
-            # Usar thread existente
             thread_id = user_conversations[user_id]['thread_id']
             user_conversations[user_id]['last_activity'] = current_time
             logger.info(f"🔄 Usando thread existente: {thread_id}")
-        
+
         thread_id = user_conversations[user_id]['thread_id']
-        
-        # Verificar se há runs ativos na thread
+
         logger.info("🔍 Verificando runs ativos na thread")
         try:
-            active_runs = client.beta.threads.runs.list(
-                thread_id=thread_id,
-                limit=5
-            )
-            
-            # Verificar se há run ativo
+            active_runs = client.beta.threads.runs.list(thread_id=thread_id, limit=5)
             for run in active_runs.data:
                 if run.status in ['queued', 'in_progress']:
                     logger.info(f"⏳ Run ativo encontrado: {run.id} (status: {run.status})")
-                    logger.info("⏳ Aguardando run anterior terminar...")
-                    
-                    # Aguardar run terminar (máximo 30 segundos)
                     wait_attempts = 30
                     for attempt in range(wait_attempts):
-                        run_status = client.beta.threads.runs.retrieve(
-                            thread_id=thread_id,
-                            run_id=run.id
-                        )
-                        
+                        run_status = client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
                         if run_status.status not in ['queued', 'in_progress']:
                             logger.info(f"✅ Run anterior terminou: {run_status.status}")
                             break
-                        
                         time.sleep(1)
-                    
                     if attempt >= wait_attempts - 1:
                         logger.warning("⚠️ Timeout aguardando run anterior - cancelando")
                         try:
-                            client.beta.threads.runs.cancel(
-                                thread_id=thread_id,
-                                run_id=run.id
-                            )
+                            client.beta.threads.runs.cancel(thread_id=thread_id, run_id=run.id)
                             logger.info("🚫 Run anterior cancelado")
                         except:
                             logger.warning("⚠️ Não foi possível cancelar run anterior")
                     break
-            
             logger.info("✅ Thread livre para nova mensagem")
-            
         except Exception as e:
             logger.warning(f"⚠️ Erro verificando runs ativos: {e}")
-        
-        # Adicionar mensagem à thread
-        logger.info(f"📝 Adicionando mensagem à thread")
-        client.beta.threads.messages.create(
-            thread_id=thread_id,
-            role="user",
-            content=f"{user_name}: {message}"
-        )
-        
-        # Executar assistente
+
+        logger.info("📝 Adicionando mensagem à thread")
+        client.beta.threads.messages.create(thread_id=thread_id, role="user", content=f"{user_name}: {message}")
+
         logger.info(f"🚀 Executando assistente {ASSISTANT_ID}")
-        run = client.beta.threads.runs.create(
-            thread_id=thread_id,
-            assistant_id=ASSISTANT_ID
-        )
-        
-        # Aguardar conclusão
+        run = client.beta.threads.runs.create(thread_id=thread_id, assistant_id=ASSISTANT_ID)
+
         logger.info("⏳ Aguardando resposta do assistente...")
-        max_attempts = 30  # 30 segundos máximo
+        max_attempts = 30
         attempt = 0
-        
         while attempt < max_attempts:
-            run_status = client.beta.threads.runs.retrieve(
-                thread_id=thread_id,
-                run_id=run.id
-            )
-            
+            run_status = client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
             if run_status.status == 'completed':
                 logger.info("✅ Assistente concluído")
                 break
             elif run_status.status in ['failed', 'cancelled', 'expired']:
                 logger.error(f"❌ Assistente falhou: {run_status.status}")
                 raise Exception(f"Assistente falhou: {run_status.status}")
-            
             time.sleep(1)
             attempt += 1
-        
         if attempt >= max_attempts:
             logger.error("❌ Timeout aguardando assistente")
             raise Exception("Timeout aguardando resposta do assistente")
-        
-        # Obter mensagens da thread
+
         logger.info("📥 Obtendo resposta do assistente")
-        messages = client.beta.threads.messages.list(
-            thread_id=thread_id,
-            order="desc",
-            limit=1
-        )
-        
+        messages = client.beta.threads.messages.list(thread_id=thread_id, order="desc", limit=1)
         if not messages.data:
             logger.error("❌ Nenhuma resposta encontrada")
             raise Exception("Nenhuma resposta encontrada")
-        
-        # Extrair resposta
+
         resposta = messages.data[0].content[0].text.value
         logger.info("✅ Resposta recebida do assistente")
-        
         logger.info(f"✅ Resposta para {user_name}: {resposta[:50]}...")
         return resposta
-        
     except Exception as e:
         logger.error(f"❌ Erro ChatGPT: {e}")
         return f"Desculpe {user_name}, estou com dificuldades técnicas. Tente novamente! 😊"
 
 @app.route('/webhook/manychat', methods=['GET', 'POST'])
 def webhook_manychat():
-    """Webhook para receber mensagens do ManyChat - Suporta GET e POST"""
     try:
         logger.info(f"🔄 Webhook ManyChat - Método: {request.method}")
-        
-        # Tratamento para GET (teste/debug)
         if request.method == 'GET':
             logger.info("📋 Requisição GET recebida - Webhook funcionando")
-            return jsonify({
-                "status": "ok",
-                "message": "Webhook ManyChat funcionando",
-                "method": "GET",
-                "endpoint": "/webhook/manychat"
-            })
-        
-        # Tratamento para POST (dados reais)
+            return jsonify({"status": "ok", "message": "Webhook ManyChat funcionando", "method": "GET",
+                            "endpoint": "/webhook/manychat"})
         data = request.get_json()
-        
-        # Validar dados recebidos
         if not data:
             logger.warning("⚠️ Dados não fornecidos na requisição POST")
             return jsonify({"error": "Dados não fornecidos"}), 400
-        
+
         message = data.get('message', '').strip()
         user_name = data.get('nome', 'Usuário')
         user_id = data.get('user_id', 'unknown')
         platform = data.get('platform', '')
-        
+
         logger.info(f"🔄 Webhook recebido - Usuário: {user_name} ({user_id}) - Platform: {platform}")
         logger.info(f"📝 Mensagem: {message}")
-        
-        # Validar plataformas suportadas
+
         valid_platforms = ['manychat', 'instagram', 'messenger']
         if platform not in valid_platforms:
             logger.warning(f"⚠️ Platform inválida: {platform}. Plataformas suportadas: {valid_platforms}")
             return jsonify({"error": f"Platform inválida. Suportadas: {valid_platforms}"}), 400
-        
+
         if not message:
-            return jsonify({
-                "messages": [{"text": "Desculpe, não consegui entender sua mensagem. Pode tentar novamente? 😊"}]
-            })
-        
-        # Detectar automação
+            return jsonify({"messages": [{"text": "Desculpe, não consegui entender sua mensagem. Pode tentar novamente? 😊"}]})
+
         logger.info("🔍 Iniciando detecção de automação")
         tipo_automacao = detectar_automacao(message)
         if tipo_automacao:
             logger.info(f"🎯 Automação detectada: {tipo_automacao}")
         else:
             logger.info("📝 Nenhuma automação específica detectada")
-        
-        # Processar com ChatGPT
+
         logger.info("🚀 CHAMANDO FUNÇÃO processar_com_chatgpt")
         logger.info(f"📋 Parâmetros: message='{message}', user_name='{user_name}', user_id='{user_id}'")
-        
         try:
             resposta = processar_com_chatgpt(message, user_name, user_id)
             logger.info(f"✅ FUNÇÃO processar_com_chatgpt RETORNOU: {resposta[:50]}...")
@@ -340,43 +242,27 @@ def webhook_manychat():
             logger.error(f"❌ ERRO NA FUNÇÃO processar_com_chatgpt: {e}")
             logger.error(f"❌ Tipo do erro: {type(e).__name__}")
             resposta = f"Desculpe {user_name}, estou com dificuldades técnicas. Tente novamente! 😊"
-        
-        # Adicionar indicador de automação se detectada
+
         if tipo_automacao:
             resposta += f"\n\n[Automação {tipo_automacao} detectada]"
             logger.info(f"🏷️ Adicionado indicador de automação: {tipo_automacao}")
-        
-        # Formato de resposta para ManyChat
-        logger.info("📦 Preparando resposta para ManyChat")
-        response = {
-            "messages": [
-                {
-                    "text": resposta
-                }
-            ]
-        }
-        
+
+        response = {"messages": [{"text": resposta}]}
         logger.info(f"✅ Resposta enviada para {user_name}")
         logger.info(f"📤 JSON resposta: {response}")
         return jsonify(response)
-        
     except Exception as e:
         logger.error(f"❌ Erro no webhook ManyChat: {e}")
-        return jsonify({
-            "messages": [{"text": "Erro interno do servidor. Tente novamente mais tarde."}]
-        }), 500
+        return jsonify({"messages": [{"text": "Erro interno do servidor. Tente novamente mais tarde."}]}), 500
 
 @app.route('/api/manychat/stats', methods=['GET'])
 def stats_manychat():
-    """Retorna estatísticas da integração ManyChat"""
     try:
         agora = time.time()
         conversas_ativas = 0
-        
         for conversa in user_conversations.values():
             if agora - conversa['last_activity'] < TIMEOUT_CONVERSA:
                 conversas_ativas += 1
-        
         stats = {
             "status": "ok",
             "timestamp": datetime.now().isoformat(),
@@ -387,17 +273,14 @@ def stats_manychat():
                 "max_conversas": MAX_CONVERSAS
             }
         }
-        
         return jsonify(stats)
-        
     except Exception as e:
         logger.error(f"❌ Erro ao obter stats: {e}")
         return jsonify({"error": "Erro interno"}), 500
 
 # ================================
-# PROCESSADOR DE IMAGENS V5.0 CORRIGIDO
+# PROCESSADOR DE IMAGENS V5.0
 # ================================
-
 class ProcessadorSorteioV5:
     def __init__(self):
         self.session = requests.Session()
@@ -407,7 +290,6 @@ class ProcessadorSorteioV5:
         logger.info("🎯 PROCESSADOR V5.0 INICIADO - Extração por código + validação fundo branco")
 
     def extrair_codigo_produto(self, url):
-        """Extrai o código NATBRA do produto da URL"""
         try:
             match = re.search(r'NATBRA-(\d+)', url)
             if match:
@@ -422,117 +304,92 @@ class ProcessadorSorteioV5:
             return None
 
     def validar_fundo_branco(self, img):
-        """Valida se a imagem tem ≥60% de fundo branco"""
         try:
             if img.mode != 'RGB':
                 img = img.convert('RGB')
-            
             width, height = img.size
             pixels_brancos = 0
             pixels_amostrados = 0
-            
-            # Amostragem das bordas (mais eficiente)
             border_size = min(width, height) // 10
-            
-            # Amostragem das bordas
+
             for x in range(0, width, 5):
                 for y in range(border_size):
                     r, g, b = img.getpixel((x, y))
                     if r > 240 and g > 240 and b > 240:
                         pixels_brancos += 1
                     pixels_amostrados += 1
-            
             for x in range(0, width, 5):
                 for y in range(height - border_size, height):
                     r, g, b = img.getpixel((x, y))
                     if r > 240 and g > 240 and b > 240:
                         pixels_brancos += 1
                     pixels_amostrados += 1
-            
             for y in range(0, height, 5):
                 for x in range(border_size):
                     r, g, b = img.getpixel((x, y))
                     if r > 240 and g > 240 and b > 240:
                         pixels_brancos += 1
                     pixels_amostrados += 1
-                
                 for x in range(width - border_size, width):
                     r, g, b = img.getpixel((x, y))
                     if r > 240 and g > 240 and b > 240:
                         pixels_brancos += 1
                     pixels_amostrados += 1
-            
+
             if pixels_amostrados > 0:
                 percentual = (pixels_brancos / pixels_amostrados) * 100
                 logger.info(f"🎨 Fundo branco: {percentual:.1f}%")
                 return percentual >= 60.0, percentual
             else:
                 return False, 0.0
-                
         except Exception as e:
             logger.error(f"❌ Erro na validação de fundo branco: {e}")
             return False, 0.0
 
     def extrair_imagens_por_codigo(self, url, codigo_produto):
-        """Extrai imagens baseado no código do produto"""
         try:
             logger.info(f"🔍 Buscando imagens para código: {codigo_produto}")
-            
             response = self.session.get(url, timeout=15)
             if response.status_code != 200:
                 return [], "Erro ao acessar página do produto"
-            
+
             soup = BeautifulSoup(response.content, 'html.parser')
             imgs = soup.find_all('img')
             candidatas = []
-            
             for img in imgs:
                 src = img.get('src') or img.get('data-src') or img.get('data-lazy-src')
                 if not src:
                     continue
-                
                 if src.startswith('//'):
                     src = 'https:' + src
                 elif src.startswith('/'):
                     src = urljoin(url, src)
-                
-                # Filtrar apenas imagens que contêm o código do produto
                 if codigo_produto in src or codigo_produto.replace('-', '') in src:
-                    candidatas.append({
-                        'url': src,
-                        'score': 0,
-                        'motivo': f'Contém código {codigo_produto}'
-                    })
+                    candidatas.append({'url': src, 'score': 0, 'motivo': f'Contém código {codigo_produto}'})
                     logger.info(f"✅ Candidata: {src}")
-            
+
             if not candidatas:
                 logger.error(f"❌ Nenhuma imagem com código {codigo_produto}")
                 return [], "Nenhuma imagem encontrada com o código do produto"
-            
+
             logger.info(f"📋 Candidatas encontradas: {len(candidatas)}")
             return candidatas, "Candidatas extraídas com sucesso"
-            
         except Exception as e:
             logger.error(f"❌ Erro ao extrair imagens: {e}")
             return [], f"Erro na extração: {str(e)}"
 
     def avaliar_e_selecionar_imagem(self, candidatas):
-        """Avalia candidatas e seleciona a melhor com base no fundo branco"""
         try:
             logger.info("🔍 Avaliando candidatas...")
             melhores = []
-            
             for i, candidata in enumerate(candidatas):
                 logger.info(f"📋 Avaliando {i+1}/{len(candidatas)}: {candidata['url']}")
-                
                 try:
                     response = self.session.get(candidata['url'], timeout=10)
                     if response.status_code != 200:
                         continue
-                    
                     img = Image.open(io.BytesIO(response.content))
                     tem_fundo_branco, percentual = self.validar_fundo_branco(img)
-                    
                     if tem_fundo_branco:
                         score = 1000
                         if percentual >= 80:
@@ -541,61 +398,45 @@ class ProcessadorSorteioV5:
                             score += 300
                         else:
                             score += 100
-                        
                         width, height = img.size
                         if width >= 800 and height >= 800:
                             score += 200
                         elif width >= 400 and height >= 400:
                             score += 100
-                        
                         candidata['score'] = score
                         candidata['percentual_branco'] = percentual
                         candidata['imagem'] = img
                         melhores.append(candidata)
-                        
                         logger.info(f"✅ APROVADA - Score: {score}, Fundo: {percentual:.1f}%")
                     else:
                         logger.info(f"❌ REJEITADA - Fundo: {percentual:.1f}%")
-                
                 except Exception as e:
                     logger.error(f"❌ Erro ao avaliar: {e}")
                     continue
-            
+
             if not melhores:
                 return None, "Nenhuma imagem com fundo branco adequado (≥60%)"
-            
+
             melhores.sort(key=lambda x: x['score'], reverse=True)
             melhor = melhores[0]
-            
             logger.info(f"🏆 MELHOR: Score {melhor['score']}, Fundo {melhor['percentual_branco']:.1f}%")
             return melhor['imagem'], "Imagem selecionada com sucesso"
-            
         except Exception as e:
             logger.error(f"❌ Erro na avaliação: {e}")
             return None, f"Erro na avaliação: {str(e)}"
 
     def processar_imagem_sorteio(self, img_produto):
-        """Processa a imagem para sorteio conforme especificações do PDF"""
         try:
             logger.info("🎨 Processando imagem para sorteio...")
-            
-            # Redimensionar produto para máximo 540x540 mantendo proporção
             img_produto.thumbnail((540, 540), Image.Resampling.LANCZOS)
-            
-            # Criar canvas 600x600 branco
             canvas = Image.new('RGB', (600, 600), (255, 255, 255))
-            
-            # Centralizar produto no canvas
             produto_width, produto_height = img_produto.size
             pos_x = (600 - produto_width) // 2
             pos_y = (600 - produto_height) // 2
-            
             if img_produto.mode == 'RGBA':
                 canvas.paste(img_produto, (pos_x, pos_y), img_produto)
             else:
                 canvas.paste(img_produto, (pos_x, pos_y))
-            
-            # Configurar fontes
             try:
                 fonte_media = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 60)
                 fonte_grande = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 96)
@@ -606,87 +447,55 @@ class ProcessadorSorteioV5:
                 except:
                     fonte_media = ImageFont.load_default()
                     fonte_grande = ImageFont.load_default()
-            
+
             draw = ImageDraw.Draw(canvas)
-            cor_vermelha = (139, 0, 0)  # #8B0000
+            cor_vermelha = (139, 0, 0)
             cor_contorno = (255, 255, 255)
-            
-            # TEXTO SUPERIOR: "Ganhe esse Top!"
+
             texto_superior = "Ganhe esse Top!"
             bbox_superior = draw.textbbox((0, 0), texto_superior, font=fonte_media)
             largura_superior = bbox_superior[2] - bbox_superior[0]
             x_superior = (600 - largura_superior) // 2
             y_superior = 20
-            
-            # Contorno branco (4px)
             for dx in range(-4, 5):
                 for dy in range(-4, 5):
                     if dx != 0 or dy != 0:
-                        draw.text((x_superior + dx, y_superior + dy), texto_superior, 
-                                font=fonte_media, fill=cor_contorno)
-            
-            draw.text((x_superior, y_superior), texto_superior, 
-                     font=fonte_media, fill=cor_vermelha)
-            
-            # TEXTO INFERIOR: "Sorteio"
+                        draw.text((x_superior + dx, y_superior + dy), texto_superior, font=fonte_media, fill=cor_contorno)
+            draw.text((x_superior, y_superior), texto_superior, font=fonte_media, fill=cor_vermelha)
+
             texto_inferior = "Sorteio"
             bbox_inferior = draw.textbbox((0, 0), texto_inferior, font=fonte_grande)
             largura_inferior = bbox_inferior[2] - bbox_inferior[0]
             altura_inferior = bbox_inferior[3] - bbox_inferior[1]
             x_inferior = (600 - largura_inferior) // 2
             y_inferior = 600 - altura_inferior - 20
-            
-            # Contorno branco (6px)
             for dx in range(-6, 7):
                 for dy in range(-6, 7):
                     if dx != 0 or dy != 0:
-                        draw.text((x_inferior + dx, y_inferior + dy), texto_inferior, 
-                                font=fonte_grande, fill=cor_contorno)
-            
-            draw.text((x_inferior, y_inferior), texto_inferior, 
-                     font=fonte_grande, fill=cor_vermelha)
-            
-            # Salvar em buffer
+                        draw.text((x_inferior + dx, y_inferior + dy), texto_inferior, font=fonte_grande, fill=cor_contorno)
+            draw.text((x_inferior, y_inferior), texto_inferior, font=fonte_grande, fill=cor_vermelha)
+
             buffer = io.BytesIO()
             canvas.save(buffer, format='PNG', quality=95)
             buffer.seek(0)
-            
             logger.info("✅ Imagem processada com sucesso")
             return buffer, "Imagem processada conforme PDF"
-            
         except Exception as e:
             logger.error(f"❌ Erro ao processar imagem: {e}")
             return None, f"Erro no processamento: {str(e)}"
 
     def upload_catbox(self, buffer_imagem):
-        """Faz upload da imagem para Catbox.moe"""
         try:
             logger.info("📤 Upload para Catbox.moe...")
             buffer_imagem.seek(0)
-            
-            files = {
-                'fileToUpload': ('sorteio.png', buffer_imagem, 'image/png')
-            }
-            
-            data = {
-                'reqtype': 'fileupload'
-            }
-            
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            
-            response = requests.post('https://catbox.moe/user/api.php', 
-                                   files=files, 
-                                   data=data, 
-                                   headers=headers,
-                                   timeout=60 )
-            
+            files = {'fileToUpload': ('sorteio.png', buffer_imagem, 'image/png')}
+            data = {'reqtype': 'fileupload'}
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            response = requests.post('https://catbox.moe/user/api.php', files=files, data=data, headers=headers, timeout=60)
             logger.info(f"📊 Status Code: {response.status_code}")
-            
             if response.status_code == 200:
                 url = response.text.strip()
-                if url.startswith('https://files.catbox.moe/' ):
+                if url.startswith('https://files.catbox.moe/'):
                     logger.info(f"✅ Upload concluído: {url}")
                     return url, "Upload realizado com sucesso"
                 else:
@@ -695,149 +504,96 @@ class ProcessadorSorteioV5:
             else:
                 logger.error(f"❌ Erro HTTP {response.status_code}")
                 return None, f"Erro HTTP {response.status_code}"
-            
         except Exception as e:
             logger.error(f"❌ Erro no upload: {e}")
             return None, f"Erro no upload: {str(e)}"
 
     def processar_produto_completo(self, url_produto):
-        """Processa um produto completo"""
         try:
             logger.info(f"🚀 PROCESSAMENTO V5.0: {url_produto}")
-            
-            # 1. Extrair código do produto
             codigo = self.extrair_codigo_produto(url_produto)
             if not codigo:
                 return None, "❌ Código NATBRA não encontrado na URL"
-            
-            # 2. Extrair imagens por código
             candidatas, msg_extracao = self.extrair_imagens_por_codigo(url_produto, codigo)
             if not candidatas:
                 return None, f"❌ Extração falhou: {msg_extracao}"
-            
-            # 3. Avaliar e selecionar melhor imagem
             img_produto, msg_selecao = self.avaliar_e_selecionar_imagem(candidatas)
             if not img_produto:
                 return None, f"❌ Seleção falhou: {msg_selecao}"
-            
-            # 4. Processar para sorteio
             buffer_processado, msg_processamento = self.processar_imagem_sorteio(img_produto)
             if not buffer_processado:
                 return None, f"❌ Processamento falhou: {msg_processamento}"
-            
-            # 5. Upload para Catbox
             url_final, msg_upload = self.upload_catbox(buffer_processado)
             if not url_final:
                 return None, f"❌ Upload falhou: {msg_upload}"
-            
             logger.info(f"🎉 SUCESSO: {url_final}")
             return url_final, "✅ Produto processado com sucesso"
-            
         except Exception as e:
             logger.error(f"❌ Erro geral: {e}")
             return None, f"❌ Erro geral: {str(e)}"
 
 # ================================
-# GERENCIADOR GOOGLE SHEETS COM SECRETS
+# GERENCIADOR GOOGLE SHEETS
 # ================================
-
 class GoogleSheetsManager:
     def __init__(self):
         self.planilha = None
         self.conectar()
     
     def conectar(self):
-        """Conecta ao Google Sheets usando credenciais do GitHub Secrets"""
         try:
             logger.info("🔗 Conectando ao Google Sheets...")
-            
-            # Obter credenciais do ambiente (GitHub Secrets)
             creds_json = os.getenv('GOOGLE_CREDENTIALS')
             if not creds_json:
                 raise ValueError("GOOGLE_CREDENTIALS não encontrada no ambiente")
-            
-            # Parse das credenciais JSON
             creds_dict = json.loads(creds_json)
-            
-            # Configurar escopo
-            scope = [
-                'https://spreadsheets.google.com/feeds',
-                'https://www.googleapis.com/auth/drive'
-            ]
-            
-            # Criar credenciais
+            scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
             creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-            
-            # Autorizar cliente
             client = gspread.authorize(creds)
-            
-            # Abrir planilha
             self.planilha = client.open_by_key(PLANILHA_ID)
-            
             logger.info("✅ Conectado ao Google Sheets com sucesso")
             return True
-            
         except Exception as e:
             logger.error(f"❌ Erro ao conectar Google Sheets: {e}")
             self.planilha = None
             return False
     
     def obter_produtos_pendentes(self):
-        """Obtém produtos pendentes da planilha"""
         try:
-            if not self.planilha:
-                if not self.conectar():
-                    return []
-            
-            # Acessar primeira aba
+            if not self.planilha and not self.conectar():
+                return []
             worksheet = self.planilha.get_worksheet(0)
-            
-            # Obter todos os dados
             dados = worksheet.get_all_records()
-            
             produtos_pendentes = []
-            for i, linha in enumerate(dados, start=2):  # Linha 2 = primeira linha de dados
+            for i, linha in enumerate(dados, start=2):
                 url_produto = linha.get('URL do Produto', '').strip()
                 status = linha.get('Status', '').strip()
-                
                 if url_produto and status.lower() in ['pendente', '']:
-                    produtos_pendentes.append({
-                        'linha': i,
-                        'url': url_produto,
-                        'dados': linha
-                    })
-            
+                    produtos_pendentes.append({'linha': i, 'url': url_produto, 'dados': linha})
             logger.info(f"📋 Produtos pendentes encontrados: {len(produtos_pendentes)}")
             return produtos_pendentes
-            
         except Exception as e:
             logger.error(f"❌ Erro ao obter produtos pendentes: {e}")
             return []
     
     def atualizar_resultado(self, linha, url_imagem=None, erro=None):
-        """Atualiza resultado na planilha"""
         try:
-            if not self.planilha:
-                if not self.conectar():
-                    return False
-            
+            if not self.planilha and not self.conectar():
+                return False
             worksheet = self.planilha.get_worksheet(0)
-            
-            # Determinar colunas baseado no cabeçalho
             headers = worksheet.row_values(1)
             col_status = None
             col_imagem = None
             col_erro = None
-            
             for i, header in enumerate(headers, 1):
-                if 'status' in header.lower():
+                h = header.lower()
+                if 'status' in h:
                     col_status = i
-                elif 'imagem' in header.lower() ou 'resultado' in header.lower():
+                elif 'imagem' in h or 'resultado' in h:   # <-- corrigido (or)
                     col_imagem = i
-                elif 'erro' in header.lower() or 'observ' in header.lower():
+                elif 'erro' in h or 'observ' in h:
                     col_erro = i
-            
-            # Atualizar células
+
             if url_imagem:
                 if col_status:
                     worksheet.update_cell(linha, col_status, "✅ Processado")
@@ -850,11 +606,9 @@ class GoogleSheetsManager:
                 if col_status:
                     worksheet.update_cell(linha, col_status, "❌ Erro")
                 if col_erro:
-                    worksheet.update_cell(linha, col_erro, erro ou "Erro desconhecido")
+                    worksheet.update_cell(linha, col_erro, erro or "Erro desconhecido")  # <-- corrigido (or)
                 logger.info(f"❌ Linha {linha} atualizada com erro")
-            
             return True
-            
         except Exception as e:
             logger.error(f"❌ Erro ao atualizar planilha: {e}")
             return False
@@ -862,92 +616,63 @@ class GoogleSheetsManager:
 # ================================
 # AUTOMAÇÃO PRINCIPAL
 # ================================
-
 def executar_processamento_automatico():
-    """Executa processamento automático dos produtos"""
     global sistema_status
-    
     try:
         logger.info("🚀 INICIANDO PROCESSAMENTO AUTOMÁTICO V5.0")
-        
-        # Atualizar status
         sistema_status["status"] = "Processando produtos..."
         sistema_status["ultima_execucao"] = datetime.now().isoformat()
-        
-        # Inicializar componentes
         sheets_manager = GoogleSheetsManager()
         processador = ProcessadorSorteioV5()
-        
-        # Obter produtos pendentes
         produtos = sheets_manager.obter_produtos_pendentes()
-        
         if not produtos:
             logger.info("📋 Nenhum produto pendente encontrado")
             sistema_status["status"] = "Nenhum produto pendente. Sistema em standby."
             return
-        
         logger.info(f"📋 Processando {len(produtos)} produtos...")
-        
         sucessos = 0
         erros = 0
-        
         for produto in produtos:
             try:
                 logger.info(f"🔄 Processando linha {produto['linha']}: {produto['url']}")
-                
-                # Processar produto
                 url_imagem, mensagem = processador.processar_produto_completo(produto['url'])
-                
                 if url_imagem:
-                    # Sucesso
                     sheets_manager.atualizar_resultado(produto['linha'], url_imagem=url_imagem)
                     sucessos += 1
                     logger.info(f"✅ Linha {produto['linha']} processada com sucesso")
                 else:
-                    # Erro
                     sheets_manager.atualizar_resultado(produto['linha'], erro=mensagem)
                     erros += 1
                     logger.error(f"❌ Linha {produto['linha']} falhou: {mensagem}")
-                
-                # Delay entre processamentos
                 time.sleep(2)
-                
             except Exception as e:
                 logger.error(f"❌ Erro ao processar linha {produto['linha']}: {e}")
                 sheets_manager.atualizar_resultado(produto['linha'], erro=str(e))
                 erros += 1
-        
-        # Atualizar status final
         sistema_status["produtos_processados"] = sucessos
         sistema_status["erros"] = erros
         sistema_status["status"] = f"Processamento concluído. {sucessos} sucessos, {erros} erros."
-        
         logger.info(f"🎉 PROCESSAMENTO CONCLUÍDO: {sucessos} sucessos, {erros} erros")
-        
     except Exception as e:
         logger.error(f"❌ Erro no processamento automático: {e}")
         sistema_status["status"] = f"Erro no processamento: {str(e)}"
         sistema_status["erros"] += 1
 
 def executar_cron_job():
-    """Executa o cron job em thread separada"""
     while True:
         try:
-            # Executar a cada 30 minutos
             time.sleep(1800)
             logger.info("⏰ Executando cron job automático...")
             executar_processamento_automatico()
         except Exception as e:
             logger.error(f"❌ Erro no cron job: {e}")
-            time.sleep(300)  # Aguardar 5 minutos em caso de erro
+            time.sleep(300)
 
 # ================================
 # ROTAS DA API
 # ================================
-
 @app.route('/')
 def dashboard():
-    """Dashboard principal do sistema"""
     html = """
     <!DOCTYPE html>
     <html lang="pt-BR">
@@ -1025,17 +750,13 @@ def dashboard():
     </body>
     </html>
     """
-    
-    # Calcular conversas ativas
     agora = time.time()
     conversas_ativas = sum(1 for conversa in user_conversations.values() 
-                          if agora - conversa['last_activity'] < TIMEOUT_CONVERSA)
-    
+                           if agora - conversa['last_activity'] < TIMEOUT_CONVERSA)
     return render_template_string(html, status=sistema_status, conversas_ativas=conversas_ativas)
 
 @app.route('/api/sorteios/health')
 def health_check():
-    """Health check do sistema"""
     return jsonify({
         "status": "ok",
         "version": "6.0",
@@ -1049,7 +770,6 @@ def health_check():
 
 @app.route('/api/sorteios/status')
 def status_sistema():
-    """Retorna status detalhado do sistema"""
     return jsonify({
         "sistema": sistema_status,
         "timestamp": datetime.now().isoformat(),
@@ -1060,21 +780,17 @@ def status_sistema():
         }
     })
 
-# >>> ÚNICA MUDANÇA AQUI: aceitar GET e POST <<<
+# aceitar GET e POST para o cron HTTP
 @app.route('/api/sorteios/processar-planilha', methods=['GET', 'POST'])
 def processar_planilha():
-    """Endpoint para processar planilha manualmente"""
     try:
-        # Executar em thread separada para não bloquear
-        thread = threading.Thread(target=executar_processamento_automatico)
-        thread.daemon = True
+        thread = threading.Thread(target=executar_processamento_automatico, daemon=True)
         thread.start()
-        
         return jsonify({
             "status": "ok",
             "message": "Processamento iniciado em background",
             "timestamp": datetime.now().isoformat()
-        })
+        }), 202
     except Exception as e:
         return jsonify({
             "status": "error",
@@ -1084,56 +800,32 @@ def processar_planilha():
 
 @app.route('/api/sorteios/processar-produto', methods=['POST'])
 def processar_produto():
-    """Endpoint para processar produto individual"""
     try:
         data = request.get_json()
         url_produto = data.get('url')
-        
         if not url_produto:
             return jsonify({"error": "URL do produto é obrigatória"}), 400
-        
-        # Processar produto
         processador = ProcessadorSorteioV5()
         url_imagem, mensagem = processador.processar_produto_completo(url_produto)
-        
         if url_imagem:
-            return jsonify({
-                "status": "success",
-                "url_imagem": url_imagem,
-                "message": mensagem,
-                "timestamp": datetime.now().isoformat()
-            })
+            return jsonify({"status": "success", "url_imagem": url_imagem, "message": mensagem,
+                            "timestamp": datetime.now().isoformat()})
         else:
-            return jsonify({
-                "status": "error",
-                "message": mensagem,
-                "timestamp": datetime.now().isoformat()
-            }), 400
-            
+            return jsonify({"status": "error", "message": mensagem,
+                            "timestamp": datetime.now().isoformat()}), 400
     except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": str(e),
-            "timestamp": datetime.now().isoformat()
-        }), 500
+        return jsonify({"status": "error", "message": str(e),
+                        "timestamp": datetime.now().isoformat()}), 500
 
 # ================================
 # INICIALIZAÇÃO DO SISTEMA
 # ================================
-
 if __name__ == '__main__':
     logger.info("🚀 INICIANDO SISTEMA PROCESSADOR DE SORTEIOS V6.0")
     logger.info("🤖 Integração ManyChat-ChatGPT: ATIVA")
-    
-    # Iniciar cron job em thread separada
-    cron_thread = threading.Thread(target=executar_cron_job)
-    cron_thread.daemon = True
+    cron_thread = threading.Thread(target=executar_cron_job, daemon=True)
     cron_thread.start()
     logger.info("⏰ Cron job iniciado")
-    
-    # Obter porta do ambiente (Render)
     port = int(os.environ.get('PORT', 5000))
-    
-    # Iniciar servidor Flask
     logger.info(f"🌐 Servidor iniciando na porta {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
