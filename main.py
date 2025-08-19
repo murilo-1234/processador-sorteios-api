@@ -493,7 +493,7 @@ class ProcessadorSorteioV5:
                 
                 if src.startswith('//'):
                     src = 'https:' + src
-                elif src.startswith('/' ):
+                elif src.startswith('/'):
                     src = urljoin(url, src)
                 
                 # Filtrar apenas imagens que contêm o código do produto
@@ -832,7 +832,7 @@ class GoogleSheetsManager:
             for i, header in enumerate(headers, 1):
                 if 'status' in header.lower():
                     col_status = i
-                elif 'imagem' in header.lower() or 'resultado' in header.lower():
+                elif 'imagem' in header.lower() ou 'resultado' in header.lower():
                     col_imagem = i
                 elif 'erro' in header.lower() or 'observ' in header.lower():
                     col_erro = i
@@ -850,7 +850,7 @@ class GoogleSheetsManager:
                 if col_status:
                     worksheet.update_cell(linha, col_status, "❌ Erro")
                 if col_erro:
-                    worksheet.update_cell(linha, col_erro, erro or "Erro desconhecido")
+                    worksheet.update_cell(linha, col_erro, erro ou "Erro desconhecido")
                 logger.info(f"❌ Linha {linha} atualizada com erro")
             
             return True
@@ -1060,7 +1060,8 @@ def status_sistema():
         }
     })
 
-@app.route('/api/sorteios/processar-planilha')
+# >>> ÚNICA MUDANÇA AQUI: aceitar GET e POST <<<
+@app.route('/api/sorteios/processar-planilha', methods=['GET', 'POST'])
 def processar_planilha():
     """Endpoint para processar planilha manualmente"""
     try:
