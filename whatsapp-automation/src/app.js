@@ -9,11 +9,14 @@ try {
 }
 // ===================================================================================================
 
+const path = require('path');
 const express = require('express');
 const morgan = require('morgan');
 const QRCode = require('qrcode');
 const rateLimit = require('express-rate-limit');
+
 const WhatsAppClient = require('./services/whatsapp-client');
+const settings = require('./services/settings'); // << persistência de seleção de grupos
 
 const PORT = process.env.PORT || 3000;
 
@@ -35,6 +38,9 @@ class App {
     this.app.use(morgan('dev'));
     this.app.use(express.json());
     this.app.use(express.urlencoded({ extended: true }));
+
+    // servir estáticos (páginas em /public)
+    this.app.use(express.static(path.join(__dirname, '../public')));
 
     // trust proxy só se explicitamente habilitado (evita warnings)
     const tp = process.env.TRUST_PROXY === '1' ? 1 : false;
@@ -173,6 +179,61 @@ class App {
       const code = wa.getPairingCode();
       if (!code) return res.status(404).json({ error: 'Pairing code não disponível' });
       return res.json({ pairingCode: code });
+    });
+
+    // ==========================
+    //     ROTAS PARA GRUPOS
+    // ==========================
+
+    // Página administrativa de grupos
+    this.app.get('/admin/groups', (_req, res) => {
+      res.sendFile(path.join(__dirname, '../public/admin/groups.html'));
+    });
+
+    // Sincroniza grupos a partir do WhatsApp e salva em /data/config/settings.json
+    this.app.get('/api/groups/sync', async (_req, res) => {
+      try {
+        const wa = this.initWhatsApp();
+        if (!wa.isConnected) return res.status(400).json({ ok: false, error: 'WhatsApp não conectado' });
+
+        const groups = await wa.listGroups();
+        const saved = settings.set({ groups, lastSyncAt: new Date().toISOString() });
+        res.json({ ok: true, groups, saved });
+      } catch (e) {
+        res.status(500).json({ ok: false, error: e?.message || String(e) });
+      }
+    });
+
+    // Retorna grupos salvos + seleção atual
+    this.app.get('/api/groups', (_req, res) => {
+      res.json({ ok: true, settings: settings.get() });
+    });
+
+    // Define o grupo de resultados dos sorteios
+    this.app.post('/api/groups/select', (req, res) => {
+      try {
+        const { resultGroupJid } = req.body || {};
+        if (!resultGroupJid) return res.status(400).json({ ok: false, error: 'resultGroupJid é obrigatório' });
+        const out = settings.set({ resultGroupJid });
+        res.json({ ok: true, settings: out });
+      } catch (e) {
+        res.status(500).json({ ok: false, error: e?.message || String(e) });
+      }
+    });
+
+    // Envia uma mensagem de teste para o grupo escolhido
+    this.app.post('/api/groups/test-post', async (_req, res) => {
+      try {
+        const wa = this.initWhatsApp();
+        const st = settings.get();
+        if (!wa.isConnected) return res.status(400).json({ ok: false, error: 'WhatsApp não conectado' });
+        if (!st.resultGroupJid) return res.status(400).json({ ok: false, error: 'Nenhum grupo selecionado' });
+
+        await wa.sendToGroup(st.resultGroupJid, '🔔 Teste de postagem de sorteio (ok)');
+        res.json({ ok: true });
+      } catch (e) {
+        res.status(500).json({ ok: false, error: e?.message || String(e) });
+      }
     });
   }
 
