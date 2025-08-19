@@ -1,18 +1,23 @@
 const fs = require('fs');
 const path = require('path');
 const P = require('@whiskeysockets/baileys');
+
 const {
   makeWASocket,
   Browsers,
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
-  DisconnectReason
+  DisconnectReason,
+  makeInMemoryStore
 } = P;
 
 class WhatsAppClient {
   constructor() {
     this.sessionPath = process.env.WHATSAPP_SESSION_PATH || '/tmp/whatsapp-session';
     this.sock = null;
+
+    // store do Baileys (mantém lista de chats, útil p/ pegar "Avisos/Comunidade")
+    this.store = makeInMemoryStore({ logger: undefined });
 
     // estado
     this.isConnected = false;
@@ -47,11 +52,14 @@ class WhatsAppClient {
       syncFullHistory: false
     });
 
+    // bind da store aos eventos do socket (precisa ser DEPOIS de criar o socket)
+    this.store.bind(this.sock.ev);
+
     // eventos
     this.sock.ev.on('creds.update', saveCreds);
 
-    this.sock.ev.on('connection.update', (update) => {
-      const { connection, lastDisconnect, qr } = update || {};
+    this.sock.ev.on('connection.update', (update = {}) => {
+      const { connection, lastDisconnect, qr } = update;
 
       // >>>>>>> CAPTURA DO QR <<<<<<<
       if (qr) {
@@ -72,7 +80,10 @@ class WhatsAppClient {
         this.isConnected = false;
         this.user = null;
 
-        const code = lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.code;
+        const code =
+          lastDisconnect?.error?.output?.statusCode ||
+          lastDisconnect?.error?.code;
+
         const shouldReconnect = code !== DisconnectReason.loggedOut;
 
         if (shouldReconnect && this.currentRetry < this.maxRetries) {
@@ -162,20 +173,68 @@ class WhatsAppClient {
   }
 
   // =========================
-  // NOVAS FUNÇÕES PARA GRUPOS
+  // FUNÇÕES PARA GRUPOS
   // =========================
 
-  // Lista todos os grupos que a conta participa (jid, nome, total de participantes)
+  /**
+   * Retorna a lista de grupos, mesclando:
+   *  - Grupos "normais" em que a conta participa (groupFetchAllParticipating)
+   *  - Chats de Comunidade/Avisos vindos da store (heurística)
+   * Cada item: { jid, name, participants, kind }
+   *  kind = 'group' | 'community-announce'
+   */
   async listGroups() {
     if (!this.sock) throw new Error('WhatsApp não inicializado');
-    const participating = await this.sock.groupFetchAllParticipating();
-    const groups = Object.values(participating || {}).map(g => ({
+
+    // 1) Grupos "normais" (API oficial do Baileys para grupos)
+    const participating = await this.sock
+      .groupFetchAllParticipating()
+      .catch(() => ({}));
+
+    const regular = Object.values(participating || {}).map(g => ({
       jid: g.id,
       name: g.subject,
-      participants: Array.isArray(g.participants) ? g.participants.length : (g.size || 0)
+      participants: Array.isArray(g.participants) ? g.participants.length : (g.size || 0),
+      kind: 'group'
     }));
-    // ordena alfabeticamente
-    return groups.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+
+    // 2) Heurística para pegar "Avisos/Comunidade" a partir da store de chats
+    //    (Essa lista inclui chats que nem sempre aparecem em groupFetchAllParticipating)
+    const chats = this.store?.chats?.all?.() || [];
+
+    const announces = chats
+      .filter(c => {
+        // somente JIDs de grupo
+        if (!c?.id || !String(c.id).endsWith('@g.us')) return false;
+
+        // Heurísticas de flags usadas por diferentes builds:
+        // - isCommunityAnnounce / isParentGroup / community / announce
+        // - Fallback textual (nome contém 'aviso'/'avisos')
+        const nameLC = String(c?.name || c?.subject || '').toLowerCase();
+        const looksAnnouncement =
+          c?.isCommunityAnnounce === true ||
+          c?.isParentGroup === true ||
+          c?.community === true ||
+          c?.announce === true ||
+          nameLC.includes('aviso');
+
+        return looksAnnouncement;
+      })
+      .map(c => ({
+        jid: c.id,
+        name: c.name || c.subject || '(Avisos da Comunidade)',
+        participants: c.size || 0,
+        kind: 'community-announce'
+      }));
+
+    // 3) Mescla e remove duplicados por JID
+    const map = new Map();
+    [...regular, ...announces].forEach(g => map.set(g.jid, g));
+
+    // 4) Ordena alfabeticamente
+    return [...map.values()].sort((a, b) =>
+      String(a.name).localeCompare(String(b.name), 'pt-BR')
+    );
   }
 
   // Envia mensagem de texto para um grupo específico
