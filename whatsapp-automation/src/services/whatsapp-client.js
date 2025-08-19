@@ -160,6 +160,30 @@ class WhatsAppClient {
       console.error('clearSession error:', e?.message || e);
     }
   }
+
+  // =========================
+  // NOVAS FUNÇÕES PARA GRUPOS
+  // =========================
+
+  // Lista todos os grupos que a conta participa (jid, nome, total de participantes)
+  async listGroups() {
+    if (!this.sock) throw new Error('WhatsApp não inicializado');
+    const participating = await this.sock.groupFetchAllParticipating();
+    const groups = Object.values(participating || {}).map(g => ({
+      jid: g.id,
+      name: g.subject,
+      participants: Array.isArray(g.participants) ? g.participants.length : (g.size || 0)
+    }));
+    // ordena alfabeticamente
+    return groups.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+  }
+
+  // Envia mensagem de texto para um grupo específico
+  async sendToGroup(jid, text) {
+    if (!this.isConnected) throw new Error('WhatsApp não está conectado');
+    if (!jid) throw new Error('jid do grupo não informado');
+    await this.sock.sendMessage(jid, { text: String(text) });
+  }
 }
 
 module.exports = WhatsAppClient;
