@@ -1,30 +1,16 @@
-const fs = require('fs');
-
+// src/jobs/post-winner.js
+const { parse, format } = require('date-fns');
+const { zonedTimeToUtc, utcToZonedTime } = require('date-fns-tz');
 const settings = require('../services/settings');
 const { getRows, updateCellByHeader } = require('../services/sheets');
 const { fetchResultInfo } = require('../services/result');
 const { fetchFirstCoupon } = require('../services/coupons');
 const { generatePoster } = require('../services/media');
 const { makeOverlayVideo } = require('../services/video');
-const templates = require('../services/texts');
 
-// ===== Util: parse "dd/MM/yyyy" + "HH:mm" como hora de São Paulo (UTC-3) e retorna em UTC =====
-function parseSPToUTC(dateStr, timeStr) {
-  // dateStr: dd/MM/yyyy   timeStr: HH:mm
-  const [dd, mm, yyyy] = String(dateStr).split('/').map((v) => parseInt(v, 10));
-  const [HH, MM] = String(timeStr).split(':').map((v) => parseInt(v, 10));
-  if (!yyyy || !mm || !dd || isNaN(HH) || isNaN(MM)) {
-    return null;
-  }
-  // São Paulo (atual) = UTC-3  ->  UTC = SP + 3h
-  const utcDate = new Date(Date.UTC(yyyy, mm - 1, dd, HH + 3, MM, 0, 0));
-  return utcDate;
-}
+const TZ = 'America/Sao_Paulo';
 
-function chooseTemplate() {
-  return templates[Math.floor(Math.random() * templates.length)];
-}
-
+function choose(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 function mergeText(tpl, vars) {
   return tpl
     .replaceAll('{{WINNER}}', vars.WINNER)
@@ -32,108 +18,130 @@ function mergeText(tpl, vars) {
     .replaceAll('{{COUPON}}', vars.COUPON);
 }
 
+function findHeader(headers, aliases) {
+  const low = headers.map(h => (h || '').toLowerCase());
+  for (const name of aliases) {
+    const idx = low.indexOf(name.toLowerCase());
+    if (idx !== -1) return headers[idx];
+  }
+  return null;
+}
+
 async function runOnce(app) {
   const wa = app.locals.whatsappClient || app.whatsappClient;
-  const delayMin = Number(process.env.POST_DELAY_MINUTES || 10);
-  const mediaType = (process.env.POST_MEDIA_TYPE || 'image').toLowerCase();
-
   const { headers, items, spreadsheetId, tab, sheets } = await getRows();
+  if (!headers.length) return { ok: true, processed: 0, reason: 'no-rows' };
 
-  // mapa case-insensitive dos cabeçalhos
-  const H = (name) => headers.find(h => (h || '').toLowerCase() === String(name).toLowerCase());
+  // mapeia cabeçalhos reais da sua planilha
+  const H = (aliases) => findHeader(headers, Array.isArray(aliases) ? aliases : [aliases]);
 
-  const hId   = H('id');
-  const hProd = H('nome_do_produto') || H('nome');
-  const hData = H('data');
-  const hHora = H('horario') || H('hora');
-  const hImg  = H('url_imagem_processada') || H('url_imagem');
+  const hId     = H(['id']);
+  const hName   = H(['nome_do_produto', 'nome']);
+  const hDate   = H(['data']);
+  const hTime   = H(['horario', 'hora']);
+  const hImg    = H(['url_imagem_processada', 'imagem', 'img', 'image']);
+  const hWAPost = H(['wa_post']);
+  const hWAPostAt = H(['wa_post_at']);
 
-  if (!hId || !hProd || !hData || !hHora || !hImg) {
-    throw new Error('Cabeçalhos esperados: id, nome/nome_do_produto, data, horario, url_imagem_processada');
+  // valida cabeçalhos mínimos
+  if (!hId || !hName || !hDate || !hTime || !hImg) {
+    return {
+      ok: false,
+      error: 'missing-headers',
+      need: { id: !!hId, nome: !!hName, data: !!hDate, horario: !!hTime, url_imagem_processada: !!hImg }
+    };
   }
 
   const now = new Date();
   const pending = [];
 
   items.forEach((row, i) => {
-    const rowIndex1 = i + 2; // 1-based, considerando header na linha 1
+    const ridx = i + 2; // linha 2 em diante
     const id = (row[hId] || '').trim();
-    const status = (row['Status'] || row['status'] || '').trim();
-
     if (!id) return;
-    if (settings.hasPosted(id)) return;                 // já postado (cache)
-    if (status.toLowerCase() === 'postado') return;     // já marcado na planilha
 
-    const dateStr = (row[hData] || '').trim();
-    const timeStr = (row[hHora] || '').trim();
+    // já postado?
+    const waPost = (row[hWAPost] || '').toString().trim().toLowerCase();
+    if (settings.hasPosted(id) || waPost === 'postado') return;
+
+    // data/hora
+    const dateStr = (row[hDate] || '').trim();
+    const timeStr = (row[hTime] || '').trim();
     if (!dateStr || !timeStr) return;
 
-    const eventUTC = parseSPToUTC(dateStr, timeStr);
-    if (!eventUTC) return;
+    // parse no fuso SP
+    const dtSPBase = utcToZonedTime(now, TZ);
+    const dtSP = parse(`${dateStr} ${timeStr}`, 'dd/MM/yyyy HH:mm', dtSPBase);
+    const dtUTC = zonedTimeToUtc(dtSP, TZ);
 
-    const readyAt = new Date(eventUTC.getTime() + delayMin * 60000);
+    const delayMin = Number(process.env.POST_DELAY_MINUTES || 10);
+    const readyAt = new Date(dtUTC.getTime() + delayMin * 60000);
     if (now >= readyAt) {
       pending.push({
         id,
-        rowIndex1,
-        productName: row[hProd] || '',
+        rowIndex1: ridx,
+        productName: row[hName] || '',
         imgUrl: row[hImg] || '',
-        // já temos o texto formatado, aproveitamos o original
-        dateTimeStr: `${dateStr} às ${timeStr}`,
-        eventUTC
+        dtSP
       });
     }
   });
 
-  if (!pending.length) return { ok: true, processed: 0 };
+  if (!pending.length) return { ok: true, processed: 0, sent: 0, reason: 'no-pending' };
 
+  // carrega textos/templates (lazy load para evitar require circular)
+  const templates = require('../services/texts');
   const coupon = await fetchFirstCoupon();
 
   let sent = 0;
   const errors = [];
-
   for (const p of pending) {
     try {
+      // busca info do resultado (ganhador, participantes)
       const { url: resultUrl, winner, participants } = await fetchResultInfo(p.id);
 
-      // pôster (imagem)
+      // gera arte (pôster)
+      const dateTimeStr = format(p.dtSP, "dd/MM/yyyy 'às' HH:mm", { timeZone: TZ });
       const posterPath = await generatePoster({
         productImageUrl: p.imgUrl,
         productName: p.productName,
-        dateTimeStr: p.dateTimeStr,
+        dateTimeStr,
         winner,
         participants
       });
 
       // imagem ou vídeo overlay
-      let mediaMsg;
-      if (mediaType === 'video') {
+      let media = { image: require('fs').createReadStream(posterPath) };
+      if ((process.env.POST_MEDIA_TYPE || 'image') === 'video') {
         const vid = await makeOverlayVideo({
           posterPath,
           duration: Number(process.env.VIDEO_DURATION || 7),
           res: process.env.VIDEO_RES || '1080x1350',
           bitrate: process.env.VIDEO_BITRATE || '2000k'
         });
-        mediaMsg = { video: fs.createReadStream(vid) };
-      } else {
-        mediaMsg = { image: fs.createReadStream(posterPath) };
+        media = { video: require('fs').createReadStream(vid) };
       }
 
-      // texto (template aleatório)
-      const caption = mergeText(chooseTemplate(), {
+      // texto final
+      const caption = mergeText(choose(templates), {
         WINNER: winner,
         RESULT_URL: resultUrl,
         COUPON: coupon
       });
 
-      // destino
+      // destino(s)
       const st = settings.get();
-      if (!st.resultGroupJid) throw new Error('Nenhum grupo selecionado para postagem (settings.resultGroupJid vazio)');
+      const targets = [];
+      if (st.resultGroupJid) targets.push(st.resultGroupJid);
+      if (!targets.length) throw new Error('Nenhum grupo selecionado para postagem');
 
-      await wa.sock.sendMessage(st.resultGroupJid, { ...mediaMsg, caption });
+      for (const jid of targets) {
+        await wa.sock.sendMessage(jid, { ...media, caption });
+      }
 
-      // marca como postado (planilha + cache)
-      await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, 'Status', 'Postado');
+      // marca na planilha: WA_POST / WA_POST_AT
+      await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, 'WA_POST', 'Postado');
+      await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, 'WA_POST_AT', new Date().toISOString());
       settings.addPosted(p.id);
 
       sent++;
