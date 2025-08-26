@@ -1,6 +1,4 @@
 const fs = require('fs');
-const { parse } = require('date-fns');
-const { zonedTimeToUtc, formatInTimeZone } = require('date-fns-tz');
 
 const settings = require('../services/settings');
 const { getRows, updateCellByHeader } = require('../services/sheets');
@@ -10,7 +8,18 @@ const { generatePoster } = require('../services/media');
 const { makeOverlayVideo } = require('../services/video');
 const templates = require('../services/texts');
 
-const TZ = 'America/Sao_Paulo';
+// ===== Util: parse "dd/MM/yyyy" + "HH:mm" como hora de São Paulo (UTC-3) e retorna em UTC =====
+function parseSPToUTC(dateStr, timeStr) {
+  // dateStr: dd/MM/yyyy   timeStr: HH:mm
+  const [dd, mm, yyyy] = String(dateStr).split('/').map((v) => parseInt(v, 10));
+  const [HH, MM] = String(timeStr).split(':').map((v) => parseInt(v, 10));
+  if (!yyyy || !mm || !dd || isNaN(HH) || isNaN(MM)) {
+    return null;
+  }
+  // São Paulo (atual) = UTC-3  ->  UTC = SP + 3h
+  const utcDate = new Date(Date.UTC(yyyy, mm - 1, dd, HH + 3, MM, 0, 0));
+  return utcDate;
+}
 
 function chooseTemplate() {
   return templates[Math.floor(Math.random() * templates.length)];
@@ -33,7 +42,6 @@ async function runOnce(app) {
   // mapa case-insensitive dos cabeçalhos
   const H = (name) => headers.find(h => (h || '').toLowerCase() === String(name).toLowerCase());
 
-  // tolerância a nomes alternativos
   const hId   = H('id');
   const hProd = H('nome_do_produto') || H('nome');
   const hData = H('data');
@@ -48,29 +56,30 @@ async function runOnce(app) {
   const pending = [];
 
   items.forEach((row, i) => {
-    const rowIndex1 = i + 2; // linha na planilha (1-based com cabeçalho)
+    const rowIndex1 = i + 2; // 1-based, considerando header na linha 1
     const id = (row[hId] || '').trim();
     const status = (row['Status'] || row['status'] || '').trim();
 
     if (!id) return;
-    if (settings.hasPosted(id)) return;
-    if (status.toLowerCase() === 'postado') return;
+    if (settings.hasPosted(id)) return;                 // já postado (cache)
+    if (status.toLowerCase() === 'postado') return;     // já marcado na planilha
 
     const dateStr = (row[hData] || '').trim();
     const timeStr = (row[hHora] || '').trim();
     if (!dateStr || !timeStr) return;
 
-    // Parse do texto "dd/MM/yyyy HH:mm" como se fosse horário de SP
-    const localParsed = parse(`${dateStr} ${timeStr}`, 'dd/MM/yyyy HH:mm', new Date());
-    const eventUTC = zonedTimeToUtc(localParsed, TZ); // converte o horário de SP para UTC
-    const readyAt = new Date(eventUTC.getTime() + delayMin * 60000);
+    const eventUTC = parseSPToUTC(dateStr, timeStr);
+    if (!eventUTC) return;
 
+    const readyAt = new Date(eventUTC.getTime() + delayMin * 60000);
     if (now >= readyAt) {
       pending.push({
         id,
         rowIndex1,
         productName: row[hProd] || '',
         imgUrl: row[hImg] || '',
+        // já temos o texto formatado, aproveitamos o original
+        dateTimeStr: `${dateStr} às ${timeStr}`,
         eventUTC
       });
     }
@@ -87,14 +96,11 @@ async function runOnce(app) {
     try {
       const { url: resultUrl, winner, participants } = await fetchResultInfo(p.id);
 
-      // data/hora formatadas em PT-BR (zona SP)
-      const dateTimeStr = formatInTimeZone(p.eventUTC, TZ, "dd/MM/yyyy 'às' HH:mm");
-
       // pôster (imagem)
       const posterPath = await generatePoster({
         productImageUrl: p.imgUrl,
         productName: p.productName,
-        dateTimeStr,
+        dateTimeStr: p.dateTimeStr,
         winner,
         participants
       });
