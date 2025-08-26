@@ -12,12 +12,14 @@ try {
   }
 } catch (_) { /* ignora */ }
 if (typeof zonedTimeToUtcSafe !== 'function') {
-  // Fallback simples para SP (UTC-03). Permite ajustar por env se precisar.
-  const FALLBACK_OFFSET_MIN = Number(process.env.TZ_OFFSET_MINUTES || -180); // SP = -180
+  // Fallback simples via offset em minutos (ex.: SP = -180).
+  const FALLBACK_OFFSET_MIN = Number(process.env.TZ_OFFSET_MINUTES ?? -180);
   zonedTimeToUtcSafe = (date /*, tz */) => {
     const d = date instanceof Date ? date : new Date(date);
-    // "data/hora de SP" -> UTC: somar +3h
-    return new Date(d.getTime() + Math.abs(FALLBACK_OFFSET_MIN) * 60 * 1000);
+    // Converter "data/hora local" -> UTC.
+    // Ex.: SP (-180) => somar +180min.
+    const minutesToAdd = Math.abs(FALLBACK_OFFSET_MIN);
+    return new Date(d.getTime() + minutesToAdd * 60 * 1000);
   };
 }
 // ==========================================================
@@ -30,8 +32,10 @@ const { generatePoster } = require('../services/media');
 const { makeOverlayVideo } = require('../services/video');
 const templates = require('../services/texts');
 
-const TZ = 'America/Sao_Paulo';
-const DELAY_MIN = Number(process.env.POST_DELAY_MINUTES || 10);
+// Agora o fuso é configurável por ENV (Render -> Environment -> TZ)
+const TZ = process.env.TZ || 'America/Sao_Paulo';
+// Usa ?? para aceitar 0 (zero) como válido
+const DELAY_MIN = Number(process.env.POST_DELAY_MINUTES ?? 10);
 
 // ---------- utilitários defensivos ----------
 function chooseTemplate() {
@@ -140,7 +144,7 @@ async function runOnce(app) {
       return;
     }
 
-    // data/hora -> Date SP
+    // data/hora -> Date local (string "dd/MM/yyyy HH:mm")
     const text = `${data} ${hora}`;
     let spDate;
     try {
