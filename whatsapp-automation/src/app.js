@@ -14,11 +14,11 @@ const express = require('express');
 const morgan = require('morgan');
 const QRCode = require('qrcode');
 const rateLimit = require('express-rate-limit');
-const cron = require('node-cron');                 // <<< NOVO
+const cron = require('node-cron');                 // <<< mantém
 
 const WhatsAppClient = require('./services/whatsapp-client');
-const settings = require('./services/settings');   // << persistência de seleção de grupos
-const { runOnce } = require('./jobs/post-winner'); // <<< NOVO
+const settings = require('./services/settings');   // mantém
+const { runOnce } = require('./jobs/post-winner'); // mantém
 
 const PORT = process.env.PORT || 3000;
 
@@ -61,6 +61,16 @@ class App {
       });
     }
     return this.whatsappClient;
+  }
+
+  // <<< NOVO: aguarda conexão "de fato" por até 8s
+  async waitForWAConnected(wa, timeoutMs = 8000) {
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const start = Date.now();
+    while ((!wa.isConnected || !wa.sock) && Date.now() - start < timeoutMs) {
+      await wait(250);
+    }
+    return wa.isConnected && !!wa.sock;
   }
 
   routes() {
@@ -196,7 +206,14 @@ class App {
     this.app.get('/api/groups/sync', async (_req, res) => {
       try {
         const wa = this.initWhatsApp();
-        if (!wa.isConnected) return res.status(400).json({ ok: false, error: 'WhatsApp não conectado' });
+
+        // <<< alteração: aguarda a conexão de verdade por alguns segundos
+        const okConn = await this.waitForWAConnected(wa, 8000);
+        if (!okConn) {
+          return res
+            .status(503)
+            .json({ ok: false, error: 'WhatsApp ainda conectando… tente novamente em alguns segundos.' });
+        }
 
         const groups = await wa.listGroups();
         const saved = settings.set({ groups, lastSyncAt: new Date().toISOString() });
@@ -238,7 +255,7 @@ class App {
       }
     });
 
-    // ========= NOVO: rodar o job 1x manual =========
+    // ========= job manual =========
     this.app.post('/api/jobs/run-once', async (req, res) => {
       try {
         const out = await runOnce(this.app);
@@ -252,7 +269,7 @@ class App {
   listen() {
     this.initWhatsApp();
 
-    // ========= NOVO: cron a cada 1 minuto =========
+    // ========= cron a cada 1 minuto =========
     cron.schedule('*/1 * * * *', async () => {
       try { await runOnce(this.app); }
       catch (e) { console.error('cron runOnce error:', e?.message || e); }
