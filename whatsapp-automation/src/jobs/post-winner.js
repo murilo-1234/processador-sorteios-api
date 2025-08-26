@@ -190,11 +190,30 @@ async function runOnce(app) {
         COUPON: coupon
       });
 
-      // 5.5) enviar
+      // 5.5) enviar (JID normalizado; compatível com postGroupJids OU resultGroupJid)
       try {
         const st = settings.get();
-        if (!st.resultGroupJid) throw new Error('Nenhum grupo selecionado em /admin/groups');
-        await wa.sock.sendMessage(st.resultGroupJid, { ...media, caption });
+
+        const baseJids = Array.isArray(st.postGroupJids) && st.postGroupJids.length
+          ? st.postGroupJids
+          : [st.resultGroupJid];
+
+        const jids = baseJids
+          .map(j => String(j ?? '').trim())
+          .filter(Boolean);
+
+        if (!jids.length) throw new Error('Nenhum grupo selecionado em /admin/groups');
+
+        if (!wa?.sock?.sendMessage) {
+          throw new Error('WhatsApp socket indisponível (sock.sendMessage ausente)');
+        }
+
+        const payload = { ...media, caption: String(caption ?? '') };
+
+        // envia para 1 ou mais grupos (sem quebrar compatibilidade)
+        for (const jid of jids) {
+          await wa.sock.sendMessage(jid, payload);
+        }
       } catch (e) {
         errors.push({ id: p.id, stage: 'sendMessage', error: e?.message || String(e) });
         continue;
