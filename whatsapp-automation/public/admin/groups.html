@@ -10,12 +10,12 @@
     .card { background:#111827; border:1px solid #1f2937; border-radius:14px; padding:18px; box-shadow:0 10px 30px rgba(0,0,0,.35); }
     h1 { margin:0 0 8px; font-weight:700; color:#f8fafc; }
     .muted { color:#94a3b8; font-size:14px; margin-bottom:18px; }
-    .row { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px; align-items:center; }
     button { background:#2563eb; color:#fff; border:0; border-radius:12px; padding:10px 14px; cursor:pointer; font-weight:600; }
     button.secondary { background:#334155; }
     button:disabled { opacity:.5; cursor:not-allowed; }
     table { width:100%; border-collapse: collapse; margin-top:12px; }
-    th, td { padding:10px; border-bottom:1px solid #1f2937; }
+    th, td { padding:10px; border-bottom:1px solid #1f2937; vertical-align: middle; }
     th { text-align:left; color:#cbd5e1; }
     tr:hover { background:#0b1220; }
     .right { text-align:right; }
@@ -23,13 +23,14 @@
     .ok { color:#22c55e; font-weight:700; }
     .warn { color:#f59e0b; font-weight:700; }
     .error { color:#ef4444; font-weight:700; }
+    .tag { display:inline-block; padding:2px 6px; border-radius:6px; background:#0b3b6d; font-size:12px; color:#93c5fd; margin-left:8px; }
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="card">
       <h1>Grupos do WhatsApp</h1>
-      <div class="muted">Sincronize os grupos e escolha **um** para postar os resultados dos sorteios.</div>
+      <div class="muted">Sincronize os grupos e escolha <b>um ou mais</b> para postar os resultados dos sorteios.</div>
 
       <div class="row">
         <button id="btnSync">🔄 Sincronizar grupos</button>
@@ -56,15 +57,15 @@
 
   <script>
     const $ = (s) => document.querySelector(s);
-    const tbody = $('#tbody');
-    const meta = $('#meta');
-    const status = $('#status');
+    const tbody   = $('#tbody');
+    const meta    = $('#meta');
+    const status  = $('#status');
     const btnSync = $('#btnSync');
     const btnSave = $('#btnSave');
     const btnTest = $('#btnTest');
 
     let groups = [];
-    let selected = null;
+    let selected = new Set(); // agora vários
 
     async function getJSON(url, opts) {
       const r = await fetch(url, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts));
@@ -74,25 +75,44 @@
     }
 
     function render() {
-      tbody.innerHTML = groups.map(g => `
-        <tr>
-          <td><input type="radio" name="g" value="${g.jid}" ${g.jid === selected ? 'checked' : ''}></td>
-          <td>${g.name}</td>
-          <td class="right"><span class="pill">${g.participants ?? 0}</span></td>
-          <td><small>${g.jid}</small></td>
-        </tr>`).join('');
-      tbody.querySelectorAll('input[name="g"]').forEach(i => i.addEventListener('change', e => {
-        selected = e.target.value;
-      }));
+      tbody.innerHTML = groups.map(g => {
+        const checked = selected.has(g.jid) ? 'checked' : '';
+        const annTag  = g.announce ? '<span class="tag">somente admin</span>' : '';
+        return `
+          <tr>
+            <td><input class="group-select" type="checkbox" data-jid="${g.jid}" ${checked}></td>
+            <td>${g.name} ${annTag}</td>
+            <td class="right"><span class="pill">${g.participants ?? 0}</span></td>
+            <td><small>${g.jid}</small></td>
+          </tr>`;
+      }).join('');
+
+      tbody.querySelectorAll('.group-select').forEach(el => {
+        el.addEventListener('change', (ev) => {
+          const jid = ev.target.dataset.jid;
+          if (ev.target.checked) selected.add(jid);
+          else selected.delete(jid);
+        });
+      });
     }
 
     async function loadSaved() {
       const data = await getJSON('/api/groups');
       const st = data.settings || {};
+
       groups = st.groups || [];
-      selected = st.resultGroupJid || null;
+
+      // converte legado: se só tiver resultGroupJid, seleciona ele
+      const list = Array.isArray(st.postGroupJids) && st.postGroupJids.length
+        ? st.postGroupJids
+        : (st.resultGroupJid ? [st.resultGroupJid] : []);
+
+      selected = new Set(list);
       render();
-      meta.textContent = st.lastSyncAt ? `Última sincronização: ${new Date(st.lastSyncAt).toLocaleString()}` : 'Ainda não sincronizado';
+
+      meta.textContent = st.lastSyncAt
+        ? `Última sincronização: ${new Date(st.lastSyncAt).toLocaleString()}`
+        : 'Ainda não sincronizado';
     }
 
     btnSync.onclick = async () => {
@@ -100,9 +120,12 @@
         status.textContent = 'Sincronizando...';
         const data = await getJSON('/api/groups/sync');
         groups = data.groups || [];
-        selected = (data.saved && data.saved.resultGroupJid) || selected || null;
+
+        // preserva seleção atual ao re-renderizar
         render();
-        meta.textContent = data.saved?.lastSyncAt ? `Última sincronização: ${new Date(data.saved.lastSyncAt).toLocaleString()}` : '';
+        meta.textContent = data.saved?.lastSyncAt
+          ? `Última sincronização: ${new Date(data.saved.lastSyncAt).toLocaleString()}`
+          : '';
         status.textContent = 'Feito ✅';
       } catch (e) {
         status.textContent = 'Erro ao sincronizar ❌';
@@ -112,13 +135,14 @@
 
     btnSave.onclick = async () => {
       try {
-        if (!selected) return alert('Selecione um grupo.');
+        if (!selected.size) return alert('Selecione pelo menos um grupo.');
         status.textContent = 'Salvando...';
         await getJSON('/api/groups/select', {
           method: 'POST',
-          body: JSON.stringify({ resultGroupJid: selected })
+          body: JSON.stringify({ postGroupJids: Array.from(selected) })
         });
         status.textContent = 'Salvo ✅';
+        setTimeout(() => (status.textContent = ''), 2500);
       } catch (e) {
         status.textContent = 'Erro ao salvar ❌';
         alert(e.message);
@@ -128,8 +152,9 @@
     btnTest.onclick = async () => {
       try {
         status.textContent = 'Enviando teste...';
-        await getJSON('/api/groups/test-post', { method: 'POST' });
-        status.textContent = 'Mensagem enviada ✅';
+        const r = await getJSON('/api/groups/test-post', { method: 'POST' });
+        status.textContent = `Mensagem enviada ✅ (${r.sentTo} grupo(s))`;
+        setTimeout(() => (status.textContent = ''), 2500);
       } catch (e) {
         status.textContent = 'Falha no teste ❌';
         alert(e.message);
