@@ -1,7 +1,26 @@
 // src/jobs/post-winner.js
 const fs = require('fs');
 const { parse, format } = require('date-fns');
-const { zonedTimeToUtc } = require('date-fns-tz');
+// ==== IMPORT RESILIENTE + FALLBACK PARA zonedTimeToUtc ====
+let zonedTimeToUtcSafe;
+try {
+  const tz = require('date-fns-tz');
+  zonedTimeToUtcSafe = tz?.zonedTimeToUtc || tz?.default?.zonedTimeToUtc;
+  if (!zonedTimeToUtcSafe) {
+    // alguns builds expõem por submódulo
+    zonedTimeToUtcSafe = require('date-fns-tz/zonedTimeToUtc');
+  }
+} catch (_) { /* ignora */ }
+if (typeof zonedTimeToUtcSafe !== 'function') {
+  // Fallback simples para SP (UTC-03). Permite ajustar por env se precisar.
+  const FALLBACK_OFFSET_MIN = Number(process.env.TZ_OFFSET_MINUTES || -180); // SP = -180
+  zonedTimeToUtcSafe = (date /*, tz */) => {
+    const d = date instanceof Date ? date : new Date(date);
+    // Queremos "data/hora do relógio de SP" -> UTC: somar +3h
+    return new Date(d.getTime() + Math.abs(FALLBACK_OFFSET_MIN) * 60 * 1000);
+  };
+}
+// ==========================================================
 
 const settings = require('../services/settings');
 const { getRows, updateCellByHeader } = require('../services/sheets');
@@ -88,7 +107,7 @@ async function runOnce(app) {
     } catch {
       return; // formato inválido
     }
-    const utcDate = zonedTimeToUtc(spDate, TZ);
+    const utcDate = zonedTimeToUtcSafe(spDate, TZ);
     const readyAt = new Date(utcDate.getTime() + DELAY_MIN * 60000);
     if (now >= readyAt) {
       pending.push({
