@@ -10,9 +10,11 @@ try {
   if (!zonedTimeToUtcSafe) zonedTimeToUtcSafe = require('date-fns-tz/zonedTimeToUtc');
 } catch (_) {}
 if (typeof zonedTimeToUtcSafe !== 'function') {
+  // Fallback simples para SP (UTC-03). Permite ajustar por env se precisar.
   const FALLBACK_OFFSET_MIN = Number(process.env.TZ_OFFSET_MINUTES || -180); // SP = -180
   zonedTimeToUtcSafe = (date /*, tz */) => {
     const d = date instanceof Date ? date : new Date(date);
+    // "data/hora de SP" -> UTC: somar +3h
     return new Date(d.getTime() + Math.abs(FALLBACK_OFFSET_MIN) * 60 * 1000);
   };
 }
@@ -74,8 +76,8 @@ async function runOnce(app) {
   // 0) grupos-alvo
   const st = settings.get();
   const targetJids = Array.isArray(st.postGroupJids) && st.postGroupJids.length
-    ? st.postGroupJids.filter(Boolean).map(String)
-    : (st.resultGroupJid ? [String(st.resultGroupJid)] : []);
+    ? st.postGroupJids.filter(Boolean).map((x) => String(x).trim())
+    : (st.resultGroupJid ? [String(st.resultGroupJid).trim()] : []);
 
   if (!targetJids.length) {
     return { ok: false, processed: 0, sent: 0, errors: [{ stage: 'precheck', error: 'Nenhum grupo selecionado em /admin/groups' }] };
@@ -177,19 +179,23 @@ async function runOnce(app) {
         continue;
       }
 
-      // 5.3) preparar mídia
-      let media;
+      // 5.3) preparar mídia (usar Buffer + mimetype explícito)
+      let media, usedPath;
       try {
+        usedPath = posterPath; // para debug
         if ((process.env.POST_MEDIA_TYPE || 'image') === 'video') {
-          const vid = await makeOverlayVideo({
+          const vidPath = await makeOverlayVideo({
             posterPath,
             duration: Number(process.env.VIDEO_DURATION || 7),
             res: process.env.VIDEO_RES || '1080x1350',
             bitrate: process.env.VIDEO_BITRATE || '2000k'
           });
-          media = { video: fs.createReadStream(vid) };
+          usedPath = vidPath;
+          const buf = fs.readFileSync(vidPath);
+          media = { video: buf, mimetype: 'video/mp4' };
         } else {
-          media = { image: fs.createReadStream(posterPath) };
+          const buf = fs.readFileSync(posterPath);
+          media = { image: buf, mimetype: 'image/png' }; // pôster gerado em PNG
         }
       } catch (e) {
         errors.push({ id: p.id, stage: 'prepareMedia', error: e?.message || String(e) });
@@ -203,19 +209,24 @@ async function runOnce(app) {
         COUPON: coupon
       });
 
-      // 5.5) enviar (para 1..N grupos)
-      for (const jid of targetJids) {
+      // 5.5) enviar (para 1..N grupos) — com JID saneado e debug
+      for (const rawJid of targetJids) {
+        let jid = safeStr(rawJid).trim();
         try {
+          if (!jid || !jid.endsWith('@g.us')) {
+            throw new Error(`JID inválido: "${jid}"`);
+          }
           const payload = { ...media, caption: safeStr(caption) };
-          // usa diretamente o sock (mais previsível com mídia)
-          await wa.sock.sendMessage(safeStr(jid), payload);
+          await wa.sock.sendMessage(jid, payload);
           anySentForThisRow = true;
         } catch (e) {
           errors.push({
             id: p.id,
             stage: 'sendMessage',
-            jid: safeStr(jid),
-            media: Object.keys(media || {}),
+            jid,
+            mediaKeys: Object.keys(media || {}),
+            captionLen: (caption || '').length,
+            usedPath,
             error: e?.message || String(e)
           });
         }
