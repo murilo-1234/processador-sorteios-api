@@ -11,9 +11,15 @@ function ensureDir() {
 function load() {
   try {
     const raw = fs.readFileSync(SETTINGS_FILE, 'utf8');
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    // garante campos padrão sem quebrar o que já existe
+    if (!Array.isArray(parsed.postedIds)) parsed.postedIds = [];
+    if (!('resultGroupJid' in parsed)) parsed.resultGroupJid = null;
+    if (!Array.isArray(parsed.groups)) parsed.groups = [];
+    if (!('lastSyncAt' in parsed)) parsed.lastSyncAt = null;
+    return parsed;
   } catch {
-    return { resultGroupJid: null, groups: [], lastSyncAt: null };
+    return { resultGroupJid: null, groups: [], lastSyncAt: null, postedIds: [] };
   }
 }
 
@@ -24,10 +30,27 @@ function save(data) {
 
 module.exports = {
   get() { return load(); },
+
   set(upd) {
     const cur = load();
     const out = { ...cur, ...upd };
     save(out);
     return out;
+  },
+
+  // NOVO: evita postar duas vezes o mesmo id
+  addPosted(id) {
+    const cur = load();
+    if (!Array.isArray(cur.postedIds)) cur.postedIds = [];
+    if (!cur.postedIds.includes(id)) {
+      cur.postedIds.push(id);
+      save(cur);
+    }
+    return cur;
+  },
+
+  hasPosted(id) {
+    const cur = load();
+    return Array.isArray(cur.postedIds) && cur.postedIds.includes(id);
   }
 };
