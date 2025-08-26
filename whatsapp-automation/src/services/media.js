@@ -1,3 +1,4 @@
+// src/services/media.js
 const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp');
@@ -12,7 +13,15 @@ async function downloadToBuffer(url) {
 }
 
 function svgText({ width, height, productName, dateTime, winner, stats }) {
-  const safe = (s='').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+  // ✅ agora "safe" é uma FUNÇÃO (antes era uma string)
+  const safe = (s = '') =>
+    String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+
   return `
 <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
   <defs>
@@ -28,7 +37,7 @@ function svgText({ width, height, productName, dateTime, winner, stats }) {
   <text x="54" y="320" font-size="26" fill="#cbd5e1">${safe(dateTime)}</text>
 
   <rect x="54" y="${height - 230}" rx="14" width="${width - 108}" height="140" fill="#0b1220" opacity="0.6"/>
-  <text x="84" y="${height - 170}" font-size="26" fill="#93c5fd">Participantes: ${stats.participants}</text>
+  <text x="84" y="${height - 170}" font-size="26" fill="#93c5fd">Participantes: ${stats.participants || 0}</text>
   <text x="84" y="${height - 130}" font-size="26" fill="#93c5fd">Ganhadores: 1  •  100% Transparência</text>
 </svg>`;
 }
@@ -36,10 +45,12 @@ function svgText({ width, height, productName, dateTime, winner, stats }) {
 async function generatePoster({ productImageUrl, productName, dateTimeStr, winner, participants }) {
   const W = 1080, H = 1350;
 
-  const bg = Buffer.from(await sharp({
-    create: { width: W, height: H, channels: 4, background: '#0b1220' }
-  }).png().toBuffer());
+  const bg = Buffer.from(
+    await sharp({ create: { width: W, height: H, channels: 4, background: '#0b1220' } })
+      .png().toBuffer()
+  );
 
+  // imagem do produto
   let productBuf = null;
   try { productBuf = await downloadToBuffer(productImageUrl); } catch {}
   const product = productBuf
