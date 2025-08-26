@@ -14,9 +14,11 @@ const express = require('express');
 const morgan = require('morgan');
 const QRCode = require('qrcode');
 const rateLimit = require('express-rate-limit');
+const cron = require('node-cron');                 // <<< NOVO
 
 const WhatsAppClient = require('./services/whatsapp-client');
-const settings = require('./services/settings'); // << persistência de seleção de grupos
+const settings = require('./services/settings');   // << persistência de seleção de grupos
+const { runOnce } = require('./jobs/post-winner'); // <<< NOVO
 
 const PORT = process.env.PORT || 3000;
 
@@ -235,10 +237,27 @@ class App {
         res.status(500).json({ ok: false, error: e?.message || String(e) });
       }
     });
+
+    // ========= NOVO: rodar o job 1x manual =========
+    this.app.post('/api/jobs/run-once', async (req, res) => {
+      try {
+        const out = await runOnce(this.app);
+        res.json(out);
+      } catch (e) {
+        res.status(500).json({ ok: false, error: e?.message || String(e) });
+      }
+    });
   }
 
   listen() {
     this.initWhatsApp();
+
+    // ========= NOVO: cron a cada 1 minuto =========
+    cron.schedule('*/1 * * * *', async () => {
+      try { await runOnce(this.app); }
+      catch (e) { console.error('cron runOnce error:', e?.message || e); }
+    });
+
     this.app.listen(PORT, () => {
       console.log(`🚀 Server listening on :${PORT}`);
     });
