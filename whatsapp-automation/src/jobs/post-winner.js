@@ -7,8 +7,10 @@ let zonedTimeToUtcSafe;
 try {
   const tz = require('date-fns-tz');
   zonedTimeToUtcSafe = tz?.zonedTimeToUtc || tz?.default?.zonedTimeToUtc;
-  if (!zonedTimeToUtcSafe) zonedTimeToUtcSafe = require('date-fns-tz/zonedTimeToUtc');
-} catch (_) {}
+  if (!zonedTimeToUtcSafe) {
+    zonedTimeToUtcSafe = require('date-fns-tz/zonedTimeToUtc');
+  }
+} catch (_) { /* ignora */ }
 if (typeof zonedTimeToUtcSafe !== 'function') {
   // Fallback simples para SP (UTC-03). Permite ajustar por env se precisar.
   const FALLBACK_OFFSET_MIN = Number(process.env.TZ_OFFSET_MINUTES || -180); // SP = -180
@@ -31,21 +33,20 @@ const templates = require('../services/texts');
 const TZ = 'America/Sao_Paulo';
 const DELAY_MIN = Number(process.env.POST_DELAY_MINUTES || 10);
 
-// pega um template válido, com fallback seguro
+// ---------- utilitários defensivos ----------
 function chooseTemplate() {
   if (Array.isArray(templates) && templates.length) {
     return templates[Math.floor(Math.random() * templates.length)];
   }
+  // fallback seguro
   return '🎉 Resultado: {{WINNER}}\n🔗 Detalhes: {{RESULT_URL}}\n💸 Cupom: {{COUPON}}';
 }
 
-// sempre retorna string, mesmo com undefined/null
 function safeStr(v) {
   try { return v == null ? '' : String(v); }
   catch { return ''; }
 }
 
-// legenda sempre como string (evita toString interno do Baileys)
 function mergeText(tpl, vars) {
   const s = safeStr(tpl);
   return s
@@ -59,7 +60,7 @@ function findHeader(headers, candidates) {
   const lower = headers.map((h) => (h || '').trim().toLowerCase());
   for (const cand of candidates) {
     const i = lower.indexOf(cand.toLowerCase());
-    if (i !== -1) return headers[i]; // devolve o nome exato da planilha
+    if (i !== -1) return headers[i]; // devolve o nome exato
   }
   return null;
 }
@@ -70,8 +71,10 @@ function coerceStr(v) {
   catch { return ''; }
 }
 
+// --------------------------------------------
+
 async function runOnce(app) {
-  const wa = app.locals.whatsappClient || app.whatsappClient;
+  const wa = app.locals?.whatsappClient || app.whatsappClient;
 
   // 0) grupos-alvo
   const st = settings.get();
@@ -80,7 +83,12 @@ async function runOnce(app) {
     : (st.resultGroupJid ? [String(st.resultGroupJid).trim()] : []);
 
   if (!targetJids.length) {
-    return { ok: false, processed: 0, sent: 0, errors: [{ stage: 'precheck', error: 'Nenhum grupo selecionado em /admin/groups' }] };
+    return {
+      ok: false,
+      processed: 0,
+      sent: 0,
+      errors: [{ stage: 'precheck', error: 'Nenhum grupo selecionado em /admin/groups' }]
+    };
   }
 
   // 1) Lê a planilha toda
@@ -105,40 +113,69 @@ async function runOnce(app) {
   // 3) Seleciona linhas "prontas" (data/hora + delay) e ainda não postadas
   const now = new Date();
   const pending = [];
+  const skipped = []; // para debug
 
   items.forEach((row, i) => {
     const rowIndex1 = i + 2; // 1-based + header
-    const id   = coerceStr(row[H_ID]);
-    const data = coerceStr(row[H_DATA]);
-    const hora = coerceStr(row[H_HORA]);
-    if (!id || !data || !hora) return;
 
+    const id        = coerceStr(row[H_ID]);
+    const data      = coerceStr(row[H_DATA]);
+    const hora      = coerceStr(row[H_HORA]);
+    const imgUrl    = coerceStr(row[H_IMG]);
+    const product   = coerceStr(row[H_PROD]);
+
+    if (!id || !data || !hora) {
+      skipped.push({ row: rowIndex1, id, reason: 'faltando id/data/hora' });
+      return;
+    }
+
+    // Se já marcado como postado, ignora
     const flagPosted = coerceStr(row[H_WA_POST]).toLowerCase() === 'postado';
-    if (flagPosted || settings.hasPosted(id)) return;
+    if (flagPosted) {
+      skipped.push({ row: rowIndex1, id, reason: 'WA_POST=Postado' });
+      return;
+    }
+    if (settings.hasPosted(id)) {
+      skipped.push({ row: rowIndex1, id, reason: 'settings.hasPosted' });
+      return;
+    }
 
+    // data/hora -> Date SP
     const text = `${data} ${hora}`;
     let spDate;
     try {
       spDate = parse(text, 'dd/MM/yyyy HH:mm', new Date());
+      if (isNaN(spDate?.getTime?.())) throw new Error('data/hora inválida');
     } catch {
-      return; // formato inválido
+      skipped.push({ row: rowIndex1, id, reason: 'parseDateFail', raw: text });
+      return;
     }
 
+    // pronto pra postar?
     const utcDate = zonedTimeToUtcSafe(spDate, TZ);
     const readyAt = new Date(utcDate.getTime() + DELAY_MIN * 60000);
-    if (now >= readyAt) {
-      pending.push({
-        rowIndex1,
-        id,
-        productName: coerceStr(row[H_PROD]),
-        imgUrl: coerceStr(row[H_IMG]),
-        spDate
-      });
+    if (now < readyAt) {
+      skipped.push({ row: rowIndex1, id, reason: 'ainda_nao_chegou', readyAt: readyAt.toISOString() });
+      return;
     }
+
+    // precisa ter imagem e nome do produto
+    if (!imgUrl || !product) {
+      skipped.push({ row: rowIndex1, id, reason: 'faltando imgUrl/nome' });
+      return;
+    }
+
+    pending.push({
+      rowIndex1,
+      id,
+      productName: product,
+      imgUrl,
+      spDate
+    });
   });
 
   if (!pending.length) {
-    return { ok: true, processed: 0, sent: 0, note: 'sem linhas prontas' };
+    return { ok: true, processed: 0, sent: 0, note: 'sem linhas prontas', skipped };
   }
 
   // 4) Cupom (uma vez por execução)
@@ -179,10 +216,10 @@ async function runOnce(app) {
         continue;
       }
 
-      // 5.3) preparar mídia (usar Buffer + mimetype explícito)
+      // 5.3) preparar mídia (usa Buffer + mimetype explícito)
       let media, usedPath;
       try {
-        usedPath = posterPath; // para debug
+        usedPath = posterPath; // debug
         if ((process.env.POST_MEDIA_TYPE || 'image') === 'video') {
           const vidPath = await makeOverlayVideo({
             posterPath,
@@ -195,7 +232,7 @@ async function runOnce(app) {
           media = { video: buf, mimetype: 'video/mp4' };
         } else {
           const buf = fs.readFileSync(posterPath);
-          media = { image: buf, mimetype: 'image/png' }; // pôster gerado em PNG
+          media = { image: buf, mimetype: 'image/png' };
         }
       } catch (e) {
         errors.push({ id: p.id, stage: 'prepareMedia', error: e?.message || String(e) });
@@ -209,7 +246,7 @@ async function runOnce(app) {
         COUPON: coupon
       });
 
-      // 5.5) enviar (para 1..N grupos) — com JID saneado e debug
+      // 5.5) enviar (para 1..N grupos) — com JID saneado
       for (const rawJid of targetJids) {
         let jid = safeStr(rawJid).trim();
         try {
@@ -249,7 +286,7 @@ async function runOnce(app) {
     }
   }
 
-  return { ok: true, processed: pending.length, sent, errors };
+  return { ok: true, processed: pending.length, sent, errors, skipped };
 }
 
 module.exports = { runOnce };
