@@ -11,15 +11,13 @@ try {
     zonedTimeToUtcSafe = require('date-fns-tz/zonedTimeToUtc');
   }
 } catch (_) { /* ignora */ }
+
 if (typeof zonedTimeToUtcSafe !== 'function') {
-  // Fallback simples via offset em minutos (ex.: SP = -180).
-  const FALLBACK_OFFSET_MIN = Number(process.env.TZ_OFFSET_MINUTES ?? -180);
+  // Fallback simples baseado em offset configurável
+  const FALLBACK_OFFSET_MIN = Number(process.env.TZ_OFFSET_MINUTES || -180); // SP = -180
   zonedTimeToUtcSafe = (date /*, tz */) => {
     const d = date instanceof Date ? date : new Date(date);
-    // Converter "data/hora local" -> UTC.
-    // Ex.: SP (-180) => somar +180min.
-    const minutesToAdd = Math.abs(FALLBACK_OFFSET_MIN);
-    return new Date(d.getTime() + minutesToAdd * 60 * 1000);
+    return new Date(d.getTime() + Math.abs(FALLBACK_OFFSET_MIN) * 60 * 1000);
   };
 }
 // ==========================================================
@@ -32,9 +30,7 @@ const { generatePoster } = require('../services/media');
 const { makeOverlayVideo } = require('../services/video');
 const templates = require('../services/texts');
 
-// Agora o fuso é configurável por ENV (Render -> Environment -> TZ)
 const TZ = process.env.TZ || 'America/Sao_Paulo';
-// Usa ?? para aceitar 0 (zero) como válido
 const DELAY_MIN = Number(process.env.POST_DELAY_MINUTES ?? 10);
 
 // ---------- utilitários defensivos ----------
@@ -42,15 +38,11 @@ function chooseTemplate() {
   if (Array.isArray(templates) && templates.length) {
     return templates[Math.floor(Math.random() * templates.length)];
   }
-  // fallback seguro
   return '🎉 Resultado: {{WINNER}}\n🔗 Detalhes: {{RESULT_URL}}\n💸 Cupom: {{COUPON}}';
 }
-
 function safeStr(v) {
-  try { return v == null ? '' : String(v); }
-  catch { return ''; }
+  try { return v == null ? '' : String(v); } catch { return ''; }
 }
-
 function mergeText(tpl, vars) {
   const s = safeStr(tpl);
   return s
@@ -58,23 +50,38 @@ function mergeText(tpl, vars) {
     .replaceAll('{{RESULT_URL}}', safeStr(vars.RESULT_URL))
     .replaceAll('{{COUPON}}', safeStr(vars.COUPON));
 }
-
-// encontra um cabeçalho real da planilha aceitando alternativas
 function findHeader(headers, candidates) {
   const lower = headers.map((h) => (h || '').trim().toLowerCase());
   for (const cand of candidates) {
     const i = lower.indexOf(cand.toLowerCase());
-    if (i !== -1) return headers[i]; // devolve o nome exato
+    if (i !== -1) return headers[i];
   }
   return null;
 }
-
-// conversor seguro (evita "reading 'toString'")
 function coerceStr(v) {
-  try { return String(v ?? '').trim(); }
-  catch { return ''; }
+  try { return String(v ?? '').trim(); } catch { return ''; }
 }
 
+// ---- NOVO: evita dupla conversão de fuso ----
+function localLooksLikeConfiguredTZ() {
+  try {
+    const tzEnv = safeStr(process.env.TZ).toLowerCase();
+    const offsetCfg = Math.abs(Number(process.env.TZ_OFFSET_MINUTES || -180));
+    const offsetLocal = Math.abs(new Date().getTimezoneOffset()); // minutos
+    // Se o processo já está no fuso de SP (por TZ) ou o offset combina, não converte de novo
+    if (tzEnv.includes('sao_paulo') || tzEnv.includes('são_paulo')) return true;
+    if (offsetCfg && offsetCfg === offsetLocal) return true;
+  } catch {}
+  return false;
+}
+
+function toUtcFromSheet(spDate) {
+  // spDate é o Date produzido por parse('dd/MM/yyyy HH:mm', ...).
+  // Se o processo já está no fuso configurado, ele já representa o instante correto.
+  if (localLooksLikeConfiguredTZ()) return spDate;
+  // Caso contrário, converte do fuso desejado para UTC.
+  return zonedTimeToUtcSafe(spDate, TZ);
+}
 // --------------------------------------------
 
 async function runOnce(app) {
@@ -114,37 +121,29 @@ async function runOnce(app) {
     );
   }
 
-  // 3) Seleciona linhas "prontas" (data/hora + delay) e ainda não postadas
+  // 3) Seleciona linhas "prontas"
   const now = new Date();
   const pending = [];
-  const skipped = []; // para debug
+  const skipped = [];
 
   items.forEach((row, i) => {
-    const rowIndex1 = i + 2; // 1-based + header
+    const rowIndex1 = i + 2;
 
-    const id        = coerceStr(row[H_ID]);
-    const data      = coerceStr(row[H_DATA]);
-    const hora      = coerceStr(row[H_HORA]);
-    const imgUrl    = coerceStr(row[H_IMG]);
-    const product   = coerceStr(row[H_PROD]);
+    const id      = coerceStr(row[H_ID]);
+    const data    = coerceStr(row[H_DATA]);
+    const hora    = coerceStr(row[H_HORA]);
+    const imgUrl  = coerceStr(row[H_IMG]);
+    const product = coerceStr(row[H_PROD]);
 
     if (!id || !data || !hora) {
       skipped.push({ row: rowIndex1, id, reason: 'faltando id/data/hora' });
       return;
     }
 
-    // Se já marcado como postado, ignora
     const flagPosted = coerceStr(row[H_WA_POST]).toLowerCase() === 'postado';
-    if (flagPosted) {
-      skipped.push({ row: rowIndex1, id, reason: 'WA_POST=Postado' });
-      return;
-    }
-    if (settings.hasPosted(id)) {
-      skipped.push({ row: rowIndex1, id, reason: 'settings.hasPosted' });
-      return;
-    }
+    if (flagPosted) { skipped.push({ row: rowIndex1, id, reason: 'WA_POST=Postado' }); return; }
+    if (settings.hasPosted(id)) { skipped.push({ row: rowIndex1, id, reason: 'settings.hasPosted' }); return; }
 
-    // data/hora -> Date local (string "dd/MM/yyyy HH:mm")
     const text = `${data} ${hora}`;
     let spDate;
     try {
@@ -155,27 +154,19 @@ async function runOnce(app) {
       return;
     }
 
-    // pronto pra postar?
-    const utcDate = zonedTimeToUtcSafe(spDate, TZ);
+    const utcDate = toUtcFromSheet(spDate);
     const readyAt = new Date(utcDate.getTime() + DELAY_MIN * 60000);
     if (now < readyAt) {
       skipped.push({ row: rowIndex1, id, reason: 'ainda_nao_chegou', readyAt: readyAt.toISOString() });
       return;
     }
 
-    // precisa ter imagem e nome do produto
     if (!imgUrl || !product) {
       skipped.push({ row: rowIndex1, id, reason: 'faltando imgUrl/nome' });
       return;
     }
 
-    pending.push({
-      rowIndex1,
-      id,
-      productName: product,
-      imgUrl,
-      spDate
-    });
+    pending.push({ rowIndex1, id, productName: product, imgUrl, spDate });
   });
 
   if (!pending.length) {
@@ -185,7 +176,7 @@ async function runOnce(app) {
   // 4) Cupom (uma vez por execução)
   const coupon = await fetchFirstCoupon();
 
-  // 5) Para cada linha, processa e posta
+  // 5) Processa e posta
   let sent = 0;
   const errors = [];
 
@@ -220,10 +211,10 @@ async function runOnce(app) {
         continue;
       }
 
-      // 5.3) preparar mídia (usa Buffer + mimetype explícito)
+      // 5.3) preparar mídia
       let media, usedPath;
       try {
-        usedPath = posterPath; // debug
+        usedPath = posterPath;
         if ((process.env.POST_MEDIA_TYPE || 'image') === 'video') {
           const vidPath = await makeOverlayVideo({
             posterPath,
@@ -243,37 +234,31 @@ async function runOnce(app) {
         continue;
       }
 
-      // 5.4) legenda (string garantida)
+      // 5.4) legenda
       const caption = mergeText(chooseTemplate(), {
         WINNER: winner || 'Ganhador(a)',
         RESULT_URL: resultUrl,
         COUPON: coupon
       });
 
-      // 5.5) enviar (para 1..N grupos) — com JID saneado
+      // 5.5) enviar
       for (const rawJid of targetJids) {
         let jid = safeStr(rawJid).trim();
         try {
-          if (!jid || !jid.endsWith('@g.us')) {
-            throw new Error(`JID inválido: "${jid}"`);
-          }
+          if (!jid || !jid.endsWith('@g.us')) throw new Error(`JID inválido: "${jid}"`);
           const payload = { ...media, caption: safeStr(caption) };
           await wa.sock.sendMessage(jid, payload);
           anySentForThisRow = true;
         } catch (e) {
           errors.push({
-            id: p.id,
-            stage: 'sendMessage',
-            jid,
-            mediaKeys: Object.keys(media || {}),
-            captionLen: (caption || '').length,
-            usedPath,
-            error: e?.message || String(e)
+            id: p.id, stage: 'sendMessage', jid,
+            mediaKeys: Object.keys(media || {}), captionLen: (caption || '').length,
+            usedPath, error: e?.message || String(e)
           });
         }
       }
 
-      // 5.6) marcar na planilha apenas se pelo menos 1 envio OK
+      // 5.6) marcar na planilha
       try {
         if (anySentForThisRow) {
           const postAt = new Date().toISOString();
