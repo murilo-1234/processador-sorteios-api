@@ -252,10 +252,10 @@ async function runOnce(app) {
         const mode = (process.env.VIDEO_MODE || 'overlay').toLowerCase();
 
         // Escolhas (prioridade: planilha > listas/código > ENV CSV)
-        const headline  = p.customHeadline || pickHeadlineSafe();
-        const premio    = p.productName;
-        const videoBgUrl = p.bgUrl   || pickBgSafe();
-        const musicUrl   = p.musicUrl|| pickMusicSafe();
+        const headline   = p.customHeadline || pickHeadlineSafe();
+        const premio     = p.productName;
+        const videoBgUrl = p.bgUrl    || pickBgSafe();
+        const musicUrl   = p.musicUrl || pickMusicSafe();
 
         if (wantVideo && mode === 'creatomate' && typeof makeCreatomateVideo === 'function') {
           // ======= Creatomate =======
