@@ -1,5 +1,6 @@
 // src/jobs/post-winner.js
 const fs = require('fs');
+const path = require('path');
 const { parse, format } = require('date-fns');
 
 // ==== IMPORT RESILIENTE + FALLBACK PARA zonedTimeToUtc ====
@@ -28,13 +29,17 @@ const { fetchResultInfo } = require('../services/result');
 const { fetchFirstCoupon } = require('../services/coupons');
 const { generatePoster } = require('../services/media');
 const { makeOverlayVideo } = require('../services/video');
-const templates = require('../services/texts');
+// NOVO: integração Creatomate (apenas será usada se VIDEO_MODE=creatomate)
+let makeCreatomateVideo = null;
+try {
+  ({ makeCreatomateVideo } = require('../services/creatomate'));
+} catch { /* arquivo pode não existir em deploy antigo */ }
 
 const TZ = process.env.TZ || 'America/Sao_Paulo';
 const DELAY_MIN = Number(process.env.POST_DELAY_MINUTES ?? 10);
 
-// ---------- utilitários defensivos ----------
 function chooseTemplate() {
+  const templates = require('../services/texts');
   if (Array.isArray(templates) && templates.length) {
     return templates[Math.floor(Math.random() * templates.length)];
   }
@@ -61,28 +66,30 @@ function findHeader(headers, candidates) {
 function coerceStr(v) {
   try { return String(v ?? '').trim(); } catch { return ''; }
 }
-
-// ---- NOVO: evita dupla conversão de fuso ----
 function localLooksLikeConfiguredTZ() {
   try {
     const tzEnv = safeStr(process.env.TZ).toLowerCase();
     const offsetCfg = Math.abs(Number(process.env.TZ_OFFSET_MINUTES || -180));
-    const offsetLocal = Math.abs(new Date().getTimezoneOffset()); // minutos
-    // Se o processo já está no fuso de SP (por TZ) ou o offset combina, não converte de novo
+    const offsetLocal = Math.abs(new Date().getTimezoneOffset());
     if (tzEnv.includes('sao_paulo') || tzEnv.includes('são_paulo')) return true;
     if (offsetCfg && offsetCfg === offsetLocal) return true;
   } catch {}
   return false;
 }
-
 function toUtcFromSheet(spDate) {
-  // spDate é o Date produzido por parse('dd/MM/yyyy HH:mm', ...).
-  // Se o processo já está no fuso configurado, ele já representa o instante correto.
   if (localLooksLikeConfiguredTZ()) return spDate;
-  // Caso contrário, converte do fuso desejado para UTC.
   return zonedTimeToUtcSafe(spDate, TZ);
 }
-// --------------------------------------------
+
+function pickOne(listStr) {
+  if (!listStr) return null;
+  const arr = String(listStr)
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+  if (!arr.length) return null;
+  return arr[Math.floor(Math.random() * arr.length)];
+}
 
 async function runOnce(app) {
   const wa = app.locals?.whatsappClient || app.whatsappClient;
@@ -102,10 +109,10 @@ async function runOnce(app) {
     };
   }
 
-  // 1) Lê a planilha toda
+  // 1) Lê a planilha
   const { headers, items, spreadsheetId, tab, sheets } = await getRows();
 
-  // 2) Mapeia cabeçalhos (com alternativas)
+  // 2) Mapeia cabeçalhos
   const H_ID      = findHeader(headers, ['id', 'codigo', 'código']);
   const H_DATA    = findHeader(headers, ['data', 'date']);
   const H_HORA    = findHeader(headers, ['horario', 'hora', 'horário', 'time']);
@@ -194,54 +201,77 @@ async function runOnce(app) {
       }
       const { url: resultUrl, winner, participants } = info;
 
-      // 5.2) gerar arte
-      let posterPath;
-      try {
-        const dateTimeStr = format(p.spDate, "dd/MM/yyyy 'às' HH:mm");
-        posterPath = await generatePoster({
-          productImageUrl: p.imgUrl,
-          productName: p.productName,
-          dateTimeStr,
-          winner: winner || 'Ganhador(a)',
-          participants
-        });
-        if (!posterPath) throw new Error('posterPath vazio');
-      } catch (e) {
-        errors.push({ id: p.id, stage: 'generatePoster', error: e?.message || String(e) });
-        continue;
-      }
+      // 5.2) gerar mídia (poster ou vídeo)
+      let usedPath;
+      let media;
 
-      // 5.3) preparar mídia
-      let media, usedPath;
       try {
-        usedPath = posterPath;
-        if ((process.env.POST_MEDIA_TYPE || 'image') === 'video') {
-          const vidPath = await makeOverlayVideo({
-            posterPath,
-            duration: Number(process.env.VIDEO_DURATION || 7),
-            res: process.env.VIDEO_RES || '1080x1350',
-            bitrate: process.env.VIDEO_BITRATE || '2000k'
+        const wantVideo = (process.env.POST_MEDIA_TYPE || 'image').toLowerCase() === 'video';
+        const mode = (process.env.VIDEO_MODE || 'overlay').toLowerCase();
+
+        if (wantVideo && mode === 'creatomate' && typeof makeCreatomateVideo === 'function') {
+          // ======= Creatomate =======
+          const templateId = process.env.CREATOMATE_TEMPLATE_ID;
+          const headline = 'VEJA AQUI A GANHADORA!';
+          const premio = p.productName;
+          const bgUrl = pickOne(process.env.VIDEO_BG_URLS);
+          const musicUrl = pickOne(process.env.AUDIO_URLS);
+
+          usedPath = await makeCreatomateVideo({
+            templateId,
+            headline,
+            premio,
+            winner: winner || 'Ganhador(a)',
+            participants,
+            productImageUrl: p.imgUrl,
+            videoBgUrl: bgUrl,
+            musicUrl,
+            // outDir: resolve default in service
           });
-          usedPath = vidPath;
-          const buf = fs.readFileSync(vidPath);
+
+          const buf = fs.readFileSync(usedPath);
           media = { video: buf, mimetype: 'video/mp4' };
         } else {
-          const buf = fs.readFileSync(posterPath);
-          media = { image: buf, mimetype: 'image/png' };
+          // ======= Poster + Overlay (modo antigo) =======
+          const dateTimeStr = format(p.spDate, "dd/MM/yyyy 'às' HH:mm");
+          const posterPath = await generatePoster({
+            productImageUrl: p.imgUrl,
+            productName: p.productName,
+            dateTimeStr,
+            winner: winner || 'Ganhador(a)',
+            participants
+          });
+
+          usedPath = posterPath;
+
+          if (wantVideo) {
+            const vid = await makeOverlayVideo({
+              posterPath,
+              duration: Number(process.env.VIDEO_DURATION || 7),
+              res: process.env.VIDEO_RES || '1080x1350',
+              bitrate: process.env.VIDEO_BITRATE || '2000k'
+            });
+            usedPath = vid;
+            const buf = fs.readFileSync(vid);
+            media = { video: buf, mimetype: 'video/mp4' };
+          } else {
+            const buf = fs.readFileSync(posterPath);
+            media = { image: buf, mimetype: 'image/png' };
+          }
         }
       } catch (e) {
         errors.push({ id: p.id, stage: 'prepareMedia', error: e?.message || String(e) });
         continue;
       }
 
-      // 5.4) legenda
+      // 5.3) legenda
       const caption = mergeText(chooseTemplate(), {
         WINNER: winner || 'Ganhador(a)',
         RESULT_URL: resultUrl,
         COUPON: coupon
       });
 
-      // 5.5) enviar
+      // 5.4) enviar
       for (const rawJid of targetJids) {
         let jid = safeStr(rawJid).trim();
         try {
@@ -258,7 +288,7 @@ async function runOnce(app) {
         }
       }
 
-      // 5.6) marcar na planilha
+      // 5.5) marcar planilha
       try {
         if (anySentForThisRow) {
           const postAt = new Date().toISOString();
