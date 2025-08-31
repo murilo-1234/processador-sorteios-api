@@ -1,27 +1,43 @@
-// src/services/media-pool.js
-function parsePool(env, fallback) {
-  if (!env) return fallback;
-  try {
-    if (env.trim().startsWith('[')) return JSON.parse(env);
-    return env.split('|').map(s => s.trim()).filter(Boolean);
-  } catch { return fallback; }
+// whatsapp-automation/src/services/media-pool.js
+// Pool de músicas e vídeos de fundo. Sempre escolhemos 1 aleatório.
+
+const MUSICS = [
+  'https://files.catbox.moe/kz05mm.mp3',
+  'https://files.catbox.moe/b8juzn.mp3',
+  'https://files.catbox.moe/pyxx13.mp3',
+  'https://files.catbox.moe/v2z08j.mp3',
+  'https://files.catbox.moe/ujvd5v.mp3',
+  'https://files.catbox.moe/bh9obd.mp3',
+  'https://files.catbox.moe/q5mnku.mp3',
+  'https://files.catbox.moe/8mbuhe.mp3',
+  'https://files.catbox.moe/obw2km.mp3',
+  'https://files.catbox.moe/kjerii.mp3',
+];
+
+const BGS = [
+  'https://files.catbox.moe/1sxzyo.mp4',
+  'https://files.catbox.moe/y128k0.mp4',
+  'https://files.catbox.moe/awqmet.mp4',
+  'https://files.catbox.moe/z2q9zg.mp4',
+  'https://files.catbox.moe/ciwj3v.mp4',
+  'https://files.catbox.moe/k2rizo.mp4',
+  'https://files.catbox.moe/ofnmlk.mp4',
+  'https://files.catbox.moe/j9fx5g.mp4',
+  'https://files.catbox.moe/v22zl6.mp4',
+  'https://files.catbox.moe/vuggub.mp4',
+];
+
+function pick(arr) {
+  const i = Math.floor(Math.random() * arr.length);
+  return arr[i];
 }
-// coloque aqui 10 vídeos/músicas (URLs públicas) ou use ENV
-const DEFAULT_BG = [
-  // 'https://meus-arquivos/bg1.mp4', 'https://.../bg2.mp4', ...
-];
-const DEFAULT_MUSIC = [
-  // 'https://meus-arquivos/music1.mp3', 'https://.../music2.mp3', ...
-];
 
-const BG_POOL    = parsePool(process.env.CREATOMATE_BG_POOL, DEFAULT_BG);
-const MUSIC_POOL = parsePool(process.env.CREATOMATE_MUSIC_POOL, DEFAULT_MUSIC);
+function pickMusic() {
+  return pick(MUSICS);
+}
 
-const pick = (arr) => (arr && arr.length ? arr[Math.floor(Math.random() * arr.length)] : null);
+function pickBg() {
+  return pick(BGS);
+}
 
-module.exports = {
-  pickBg:    () => pick(BG_POOL),
-  pickMusic: () => pick(MUSIC_POOL),
-  BG_POOL,
-  MUSIC_POOL,
-};
+module.exports = { pickMusic, pickBg, MUSICS, BGS };
