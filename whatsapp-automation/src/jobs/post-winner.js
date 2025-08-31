@@ -29,15 +29,29 @@ const { fetchResultInfo } = require('../services/result');
 const { fetchFirstCoupon } = require('../services/coupons');
 const { generatePoster } = require('../services/media');
 const { makeOverlayVideo } = require('../services/video');
-// NOVO: integração Creatomate (apenas será usada se VIDEO_MODE=creatomate)
+
+// ====== OPCIONAIS (se existirem) ======
 let makeCreatomateVideo = null;
 try {
-  ({ makeCreatomateVideo } = require('../services/creatomate'));
-} catch { /* arquivo pode não existir em deploy antigo */ }
+  ({ makeCreatomateVideo } = require('../services/creatomate')); // serviço novo
+} catch { /* pode não existir em deploy antigo */ }
+
+let pickHeadline = null;
+try {
+  ({ pickHeadline } = require('../services/headlines')); // retorna string
+} catch {}
+
+let pickBg = null, pickMusic = null;
+try {
+  ({ pickBg, pickMusic } = require('../services/media-pool')); // retornam URLs
+} catch {}
+
+// ==========================================================
 
 const TZ = process.env.TZ || 'America/Sao_Paulo';
 const DELAY_MIN = Number(process.env.POST_DELAY_MINUTES ?? 10);
 
+// ---------- utilitários ----------
 function chooseTemplate() {
   const templates = require('../services/texts');
   if (Array.isArray(templates) && templates.length) {
@@ -80,8 +94,7 @@ function toUtcFromSheet(spDate) {
   if (localLooksLikeConfiguredTZ()) return spDate;
   return zonedTimeToUtcSafe(spDate, TZ);
 }
-
-function pickOne(listStr) {
+function pickOneCSV(listStr) {
   if (!listStr) return null;
   const arr = String(listStr)
     .split(',')
@@ -90,6 +103,20 @@ function pickOne(listStr) {
   if (!arr.length) return null;
   return arr[Math.floor(Math.random() * arr.length)];
 }
+// Fallbacks se os serviços opcionais não existirem
+function pickHeadlineSafe() {
+  if (typeof pickHeadline === 'function') return pickHeadline();
+  return pickOneCSV(process.env.HEADLINES) || 'VEJA AQUI A GANHADORA!';
+}
+function pickBgSafe() {
+  if (typeof pickBg === 'function') return pickBg();
+  return pickOneCSV(process.env.VIDEO_BG_URLS) || '';
+}
+function pickMusicSafe() {
+  if (typeof pickMusic === 'function') return pickMusic();
+  return pickOneCSV(process.env.AUDIO_URLS) || '';
+}
+// -------------------------------------
 
 async function runOnce(app) {
   const wa = app.locals?.whatsappClient || app.whatsappClient;
@@ -112,7 +139,7 @@ async function runOnce(app) {
   // 1) Lê a planilha
   const { headers, items, spreadsheetId, tab, sheets } = await getRows();
 
-  // 2) Mapeia cabeçalhos
+  // 2) Mapeia cabeçalhos (obrigatórios + opcionais)
   const H_ID      = findHeader(headers, ['id', 'codigo', 'código']);
   const H_DATA    = findHeader(headers, ['data', 'date']);
   const H_HORA    = findHeader(headers, ['horario', 'hora', 'horário', 'time']);
@@ -120,6 +147,11 @@ async function runOnce(app) {
   const H_PROD    = findHeader(headers, ['nome_do_produto', 'nome', 'produto', 'produto_nome']);
   const H_WA_POST = findHeader(headers, ['wa_post']);
   const H_WA_AT   = findHeader(headers, ['wa_post_at', 'wa_postado_em']);
+
+  // Opcionais (para permitir headline/bg/música por linha na planilha)
+  const H_CUSTOM_HEADLINE = findHeader(headers, ['headline']);
+  const H_BG_URL          = findHeader(headers, ['video_bg_url', 'bg_url']);
+  const H_MUSIC_URL       = findHeader(headers, ['music_url', 'audio_url']);
 
   if (!H_ID || !H_DATA || !H_HORA || !H_IMG || !H_PROD) {
     throw new Error(
@@ -173,7 +205,17 @@ async function runOnce(app) {
       return;
     }
 
-    pending.push({ rowIndex1, id, productName: product, imgUrl, spDate });
+    // opcionais da planilha (se existirem)
+    const customHeadline = H_CUSTOM_HEADLINE ? coerceStr(row[H_CUSTOM_HEADLINE]) : '';
+    const bgUrl          = H_BG_URL          ? coerceStr(row[H_BG_URL])          : '';
+    const musicUrl       = H_MUSIC_URL       ? coerceStr(row[H_MUSIC_URL])       : '';
+
+    pending.push({
+      rowIndex1, id,
+      productName: product,
+      imgUrl, spDate,
+      customHeadline, bgUrl, musicUrl,
+    });
   });
 
   if (!pending.length) {
@@ -209,13 +251,15 @@ async function runOnce(app) {
         const wantVideo = (process.env.POST_MEDIA_TYPE || 'image').toLowerCase() === 'video';
         const mode = (process.env.VIDEO_MODE || 'overlay').toLowerCase();
 
+        // Escolhas (prioridade: planilha > listas/código > ENV CSV)
+        const headline  = p.customHeadline || pickHeadlineSafe();
+        const premio    = p.productName;
+        const videoBgUrl = p.bgUrl   || pickBgSafe();
+        const musicUrl   = p.musicUrl|| pickMusicSafe();
+
         if (wantVideo && mode === 'creatomate' && typeof makeCreatomateVideo === 'function') {
           // ======= Creatomate =======
           const templateId = process.env.CREATOMATE_TEMPLATE_ID;
-          const headline = 'VEJA AQUI A GANHADORA!';
-          const premio = p.productName;
-          const bgUrl = pickOne(process.env.VIDEO_BG_URLS);
-          const musicUrl = pickOne(process.env.AUDIO_URLS);
 
           usedPath = await makeCreatomateVideo({
             templateId,
@@ -224,9 +268,8 @@ async function runOnce(app) {
             winner: winner || 'Ganhador(a)',
             participants,
             productImageUrl: p.imgUrl,
-            videoBgUrl: bgUrl,
+            videoBgUrl,
             musicUrl,
-            // outDir: resolve default in service
           });
 
           const buf = fs.readFileSync(usedPath);
