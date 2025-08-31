@@ -1,20 +1,22 @@
-// src/services/headlines.js
-function parsePool(env, fallback) {
-  if (!env) return fallback;
-  try {
-    if (env.trim().startsWith('[')) return JSON.parse(env);
-    return env.split('|').map(s => s.trim()).filter(Boolean);
-  } catch { return fallback; }
-}
+// whatsapp-automation/src/services/headlines.js
+// Lista de headlines aleatórias para os vídeos de ganhadores.
 
-const DEFAULT_HEADLINES = [
-  'VEJA AQUI A GANHADORA!', 'Saiu o resultado! 🎉', 'Tem ganhadora!',
-  'Resultado do sorteio 👇', 'Acabou de sair!', 'Confira quem levou 🥳',
-  'Encerrado! Veja quem ganhou', 'Atenção: resultado no ar', 'Hora da verdade!',
-  'O prêmio tem dona!'
+const HEADLINES = [
+  'VEJA AQUI A GANHADORA!',
+  'OLHA QUEM GANHOU!',
+  'TEMOS A GANHADORA!',
+  'VOCÊ GANHOU O PRÊMIO!?',
+  'SURPRESA! TEM GANHADORA!',
+  'OLHA QUEM GANHOU AQUI!',
+  'VEJA SE VOCÊ GANHOU!',
+  'PRÊMIO SAIU PRA VOCÊ!?',
+  'OLHA QUEM GANHOU HOJE!',
+  'PRÊMIO SAIU. FOI VOCÊ!?'
 ];
 
-const HEADLINES = parsePool(process.env.CREATOMATE_HEADLINES, DEFAULT_HEADLINES);
-const pickHeadline = () => HEADLINES[Math.floor(Math.random() * HEADLINES.length)] || DEFAULT_HEADLINES[0];
+function pickHeadline() {
+  const i = Math.floor(Math.random() * HEADLINES.length);
+  return HEADLINES[i];
+}
 
 module.exports = { pickHeadline, HEADLINES };
