@@ -52,14 +52,39 @@ function httpJson({ method, path: urlPath, apiKey, body }) {
   });
 }
 
-// Suporta 302 (redirect) para URL assinada
-function httpDownload({ path: urlPath, apiKey, outPath, _redirects = 0 }) {
+/**
+ * Downloader que suporta:
+ *  - URL absoluta (ex.: https://cdn.creatomate.com/renders/ID.mp4)
+ *  - OU path relativo ao host da API (ex.: /v2/renders/ID/..)
+ * Segue redirects (até 5 saltos) tanto a partir da API quanto da CDN.
+ */
+function httpDownload({ url, path: urlPath, apiKey, outPath, _redirects = 0 }) {
   return new Promise((resolve, reject) => {
+    let hostname;
+    let pathname;
+    let headers = {};
+
+    // Se veio URL absoluta, usamos exatamente esse host/path.
+    if (url && /^https?:\/\//i.test(url)) {
+      const u = new URL(url);
+      hostname = u.hostname;
+      pathname = u.pathname + (u.search || '');
+      // Só manda Authorization quando o host é o da API.
+      if (hostname === API_HOST && apiKey) {
+        headers.Authorization = `Bearer ${apiKey}`;
+      }
+    } else {
+      // Modo antigo: caminho relativo na própria API
+      hostname = API_HOST;
+      pathname = urlPath;
+      if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+    }
+
     const opts = {
       method: 'GET',
-      hostname: API_HOST,
-      path: urlPath,
-      headers: { Authorization: `Bearer ${apiKey}` },
+      hostname,
+      path: pathname,
+      headers,
     };
 
     const handleStreamToFile = (res) => {
@@ -70,7 +95,7 @@ function httpDownload({ path: urlPath, apiKey, outPath, _redirects = 0 }) {
     };
 
     const req = https.request(opts, (res) => {
-      // Segue redirects do endpoint /download, se ocorrerem
+      // Redirecionamentos
       if (
         res.statusCode >= 300 &&
         res.statusCode < 400 &&
@@ -79,12 +104,33 @@ function httpDownload({ path: urlPath, apiKey, outPath, _redirects = 0 }) {
       ) {
         const loc = res.headers.location;
 
-        // URL absoluta (ex.: S3 presigned)
+        // URL absoluta (ex.: S3/CDN presigned)
         if (/^https?:\/\//i.test(loc)) {
           try {
             const u = new URL(loc);
             https
               .get(u, (r2) => {
+                if (
+                  r2.statusCode >= 300 &&
+                  r2.statusCode < 400 &&
+                  r2.headers.location &&
+                  _redirects + 1 < 5
+                ) {
+                  // segue redirecionamento encadeado
+                  const next = r2.headers.location.startsWith('http')
+                    ? r2.headers.location
+                    : `https://${u.hostname}${r2.headers.location}`;
+                  r2.resume();
+                  return resolve(
+                    httpDownload({
+                      url: next,
+                      apiKey,
+                      outPath,
+                      _redirects: _redirects + 2,
+                    })
+                  );
+                }
+
                 if (r2.statusCode !== 200) {
                   let b = '';
                   r2.setEncoding('utf8');
@@ -179,8 +225,7 @@ async function makeCreatomateVideo({
   }
 
   // Algumas respostas vêm em array
-  let renderId =
-    json?.id || json?.render_id || json?.data?.id || null;
+  let renderId = json?.id || json?.render_id || json?.data?.id || null;
   if (!renderId && Array.isArray(json) && json[0]) {
     renderId =
       json[0]?.id || json[0]?.render_id || json[0]?.data?.id || null;
@@ -235,11 +280,22 @@ async function makeCreatomateVideo({
   // 3) Baixa
   ensureDir(outDir);
   const outPath = path.join(outDir, `creatomate_${renderId}.mp4`);
-  await httpDownload({
-    path: `/v2/renders/${renderId}/download`,
-    apiKey,
-    outPath,
-  });
+
+  // Preferimos o URL direto retornado pelo status (CDN),
+  // mas mantemos fallback para o caminho antigo, se necessário.
+  const directUrl = info?.url || info?.download_url || null;
+
+  if (directUrl) {
+    await httpDownload({ url: directUrl, apiKey, outPath });
+  } else {
+    // Fallback (mantido por compatibilidade)
+    await httpDownload({
+      path: `/v2/renders/${renderId}/download`,
+      apiKey,
+      outPath,
+    });
+  }
+
   return outPath;
 }
 
