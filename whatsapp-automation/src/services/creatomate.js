@@ -1,135 +1,147 @@
-// src/services/creatomate.js
-// Render de vídeo via Creatomate usando fetch nativo do Node 18/20
+// whatsapp-automation/src/services/creatomate.js
+// Gera um MP4 via Creatomate e baixa para /data/media.
+
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
 
-const API_BASE = 'https://api.creatomate.com/v2';
+const API_HOST = 'api.creatomate.com';
 
-function pickOne(listStr) {
-  if (!listStr) return null;
-  const arr = String(listStr)
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean);
-  if (!arr.length) return null;
-  return arr[Math.floor(Math.random() * arr.length)];
+function ensureDir(p) {
+  if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
+  return p;
 }
 
-async function httpJson(method, url, key, body) {
-  const res = await fetch(url, {
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+function httpJson({ method, path: urlPath, apiKey, body }) {
+  const data = body ? Buffer.from(JSON.stringify(body)) : null;
+
+  const opts = {
     method,
+    hostname: API_HOST,
+    path: urlPath,
     headers: {
-      'Authorization': `Bearer ${key}`,
+      'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
-    body: body ? JSON.stringify(body) : undefined,
+  };
+  if (data) opts.headers['Content-Length'] = data.length;
+
+  return new Promise((resolve, reject) => {
+    const req = https.request(opts, res => {
+      let buf = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => (buf += chunk));
+      res.on('end', () => {
+        try {
+          const json = buf ? JSON.parse(buf) : {};
+          resolve({ status: res.statusCode, json });
+        } catch (e) {
+          resolve({ status: res.statusCode, json: { raw: buf } });
+        }
+      });
+    });
+    req.on('error', reject);
+    if (data) req.write(data);
+    req.end();
   });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`${method} ${url} -> ${res.status}: ${text}`);
-  }
-  return res.json();
 }
 
-async function pollUntilDone(id, key, timeoutMs = 120000) {
-  const started = Date.now();
-  while (true) {
-    const data = await httpJson('GET', `${API_BASE}/renders/${id}`, key);
-    const status = (data.status || '').toLowerCase();
-    if (status === 'succeeded' || status === 'success' || status === 'completed') {
-      // vários nomes possíveis, usamos os mais comuns
-      const u = data.download_url || data.url || data.result_url;
-      if (!u) throw new Error('Render ok mas sem download_url');
-      return u;
-    }
-    if (status === 'failed' || status === 'error') {
-      throw new Error(`Render ${id} falhou: ${data.error || data.message || 'desconhecido'}`);
-    }
-    if (Date.now() - started > timeoutMs) {
-      throw new Error(`Timeout aguardando render ${id}`);
-    }
-    await new Promise(r => setTimeout(r, 2000));
-  }
-}
-
-async function downloadToFile(fileUrl, outPath) {
-  const res = await fetch(fileUrl);
-  if (!res.ok) throw new Error(`GET ${fileUrl} -> ${res.status}`);
-  await fs.promises.mkdir(path.dirname(outPath), { recursive: true });
-
-  const file = fs.createWriteStream(outPath);
-  await new Promise((resolve, reject) => {
-    res.body.pipe(file);
-    res.body.on('error', reject);
-    file.on('finish', resolve);
+function httpDownload({ path: urlPath, apiKey, outPath }) {
+  return new Promise((resolve, reject) => {
+    const opts = {
+      method: 'GET',
+      hostname: API_HOST,
+      path: urlPath,
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+      },
+    };
+    const req = https.request(opts, res => {
+      if (res.statusCode !== 200) {
+        let buf = '';
+        res.setEncoding('utf8');
+        res.on('data', c => (buf += c));
+        res.on('end', () =>
+          reject(new Error(`Download falhou ${res.statusCode}: ${buf}`))
+        );
+        return;
+      }
+      const ws = fs.createWriteStream(outPath);
+      res.pipe(ws);
+      ws.on('finish', () => resolve(outPath));
+      ws.on('error', reject);
+    });
+    req.on('error', reject);
+    req.end();
   });
-  return outPath;
 }
 
 /**
- * Gera vídeo pelo Creatomate.
- * Espera que o template tenha elementos:
- *  - HEADLINE, PREMIO, WINNER, PREMIO_TOP (text)
- *  - produto (image), video_bg (video), musica (audio)
+ * Cria um vídeo a partir do template do Creatomate.
+ * Retorna o caminho do MP4 salvo.
  */
 async function makeCreatomateVideo({
   templateId,
   headline,
   premio,
   winner,
-  participants,             // número
-  productImageUrl,          // imagem do produto
-  videoBgUrl,               // vídeo de fundo
-  musicUrl,                 // trilha
-  outDir = process.env.MEDIA_DIR || path.join(__dirname, '../../data/media'),
-  filename = `creatomate_${Date.now()}.mp4`,
+  productImageUrl,
+  videoBgUrl,   // opcional
+  musicUrl,     // opcional
+  modificationsExtra = {},
+  outDir = '/data/media',
+  apiKey = process.env.CREATOMATE_API_KEY,
 }) {
-  const key = process.env.CREATOMATE_API_KEY;
-  if (!key) throw new Error('CREATOMATE_API_KEY não configurada');
-  if (!templateId) throw new Error('Template ID não informado');
+  if (!apiKey) throw new Error('CREATOMATE_API_KEY não configurada');
+  if (!templateId) templateId = process.env.CREATOMATE_TEMPLATE_ID;
+  if (!templateId) throw new Error('templateId não informado');
 
-  // pega random se não vier explícito
-  const bg = videoBgUrl || pickOne(process.env.VIDEO_BG_URLS);
-  const au = musicUrl  || pickOne(process.env.AUDIO_URLS);
+  // Mapeia campos do seu template
+  const modifications = {
+    'HEADLINE.text':      headline || '',
+    'PREMIO_TOP.text':    premio || '',
+    'WINNER.text':        winner || '',
+    'produto.image_url':  productImageUrl || '',
+    // opcionais
+    ...(videoBgUrl ? { 'video_bg.video_url': videoBgUrl } : {}),
+    ...(musicUrl   ? { 'musica.audio_url': musicUrl }   : {}),
+    ...modificationsExtra,
+  };
 
-  // monta as modificações
-  const modifications = {};
+  // 1) cria render
+  const { status, json } = await httpJson({
+    method: 'POST',
+    path: '/v2/renders',
+    apiKey,
+    body: { template_id: templateId, modifications },
+  });
+  if (status >= 400) {
+    throw new Error(`Creatomate POST /renders falhou: ${status} ${JSON.stringify(json)}`);
+  }
+  const renderId = json?.id || json?.render_id || json?.data?.id;
+  if (!renderId) throw new Error(`Não consegui obter renderId: ${JSON.stringify(json)}`);
 
-  if (headline)  modifications['HEADLINE.text']  = String(headline);
-  if (premio)    modifications['PREMIO.text']    = String(premio);
-  if (winner)    modifications['WINNER.text']    = String(winner);
-  if (participants != null) {
-    modifications['PREMIO_TOP.text'] = `Foram ${participants} participantes`;
+  // 2) poll até terminar
+  let info = null;
+  for (;;) {
+    const r = await httpJson({ method: 'GET', path: `/v2/renders/${renderId}`, apiKey });
+    info = r.json;
+    const st = info?.status || info?.state;
+    if (st === 'succeeded' || st === 'failed' || st === 'cancelled') break;
+    await sleep(2000);
+  }
+  if ((info?.status || info?.state) !== 'succeeded') {
+    throw new Error(`Render não sucedeu: ${JSON.stringify(info)}`);
   }
 
-  if (productImageUrl) modifications['produto.source'] = String(productImageUrl);
-  if (bg)              modifications['video_bg.source'] = String(bg);
-  if (au)              modifications['musica.source'] = String(au);
-
-  // um ajuste útil comum no áudio
-  modifications['musica.audio_fade_out'] = 1;
-
-  // 1) cria o render
-  const create = await httpJson('POST', `${API_BASE}/renders`, key, {
-    template_id: templateId,
-    modifications,
-  });
-
-  // a API pode retornar { id, ... } ou { renders: [ { id } ] }
-  const renderId =
-    create?.id ||
-    create?.render_id ||
-    (Array.isArray(create?.renders) && create.renders[0]?.id);
-  if (!renderId) throw new Error(`Resposta inesperada: ${JSON.stringify(create)}`);
-
-  // 2) aguarda conclusão
-  const url = await pollUntilDone(renderId, key,
-    Number(process.env.CREATOMATE_TIMEOUT_SECONDS || 180) * 1000
-  );
-
-  // 3) baixa o arquivo
-  const outPath = path.join(outDir, filename);
-  await downloadToFile(url, outPath);
+  // 3) baixa
+  ensureDir(outDir);
+  const outPath = path.join(outDir, `creatomate_${renderId}.mp4`);
+  await httpDownload({ path: `/v2/renders/${renderId}/download`, apiKey, outPath });
   return outPath;
 }
 
