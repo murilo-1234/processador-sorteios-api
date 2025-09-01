@@ -45,6 +45,15 @@ class App {
     const tp = process.env.TRUST_PROXY === '1' ? 1 : false;
     this.app.set('trust proxy', tp);
 
+    // === PAINEL ADMIN (WhatsApp) ===
+    try {
+      const waAdmin = require('../admin-wa-bundle.js'); // arquivo na raiz do repo
+      this.app.use('/admin', waAdmin);                   // monta tudo em /admin
+    } catch (e) {
+      console.warn('⚠️ Admin bundle indisponível:', e?.message || e);
+    }
+    // === fim do bloco ===
+
     this.routes();
   }
 
