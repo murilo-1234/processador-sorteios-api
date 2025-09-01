@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Painel do WhatsApp</title>
+  <style>
+    :root{
+      --bg:#0b1220; --card:#111827; --muted:#9ca3af; --text:#e5e7eb;
+      --b:#374151; --ok:#34d399; --bad:#ef4444; --primary:#2563eb;
+    }
+    html,body{height:100%}
+    body{
+      margin:0; background:var(--bg); color:var(--text);
+      font:16px/1.45 Inter,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial;
+      display:flex; align-items:flex-start; justify-content:center;
+    }
+    .wrap{
+      width:100%; max-width:560px; padding:28px 16px;
+    }
+
+    .card{
+      background:var(--card);
+      border:1px solid var(--b);
+      border-radius:14px;
+      padding:16px;
+      box-shadow:0 8px 30px rgba(0,0,0,.35);
+    }
+
+    h2{margin:0 0 12px 0; font-size:18px; display:flex; align-items:center; gap:8px}
+    .dot{width:10px;height:10px;border-radius:999px;display:inline-block}
+    .dot.red{background:var(--bad)} .dot.green{background:var(--ok)}
+
+    .row{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
+    .btn{
+      padding:.65rem 1rem; border-radius:10px; border:1px solid var(--b);
+      background:#1f2937; color:#fff; cursor:pointer;
+    }
+    .btn.primary{ background:var(--primary); border-color:transparent }
+    .btn:disabled{ opacity:.65; cursor:not-allowed }
+    .link{ color:#9bbcff; text-decoration:none; padding:.6rem 0; }
+    .link:hover{ text-decoration:underline }
+
+    .qr-card{
+      margin-top:14px;
+      background:var(--card); border:1px solid var(--b);
+      border-radius:14px; padding:16px; text-align:center;
+    }
+    #qr{
+      display:none; width:300px; height:300px; background:#fff; border-radius:8px;
+      margin:12px auto 0 auto; object-fit:contain;
+      box-shadow:0 0 0 1px rgba(0,0,0,.08);
+    }
+    .placeholder{
+      width:300px; height:300px; border-radius:8px; margin:12px auto 0 auto;
+      background:#0e1626; border:1px dashed var(--b); color:var(--muted);
+      display:flex; align-items:center; justify-content:center; text-align:center;
+      padding:0 12px;
+    }
+
+    small.note{ display:block; color:var(--muted); margin-top:10px }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h2> Status <span id="dot" class="dot red" title="desconectado"></span></h2>
+
+      <div class="row" style="margin-bottom:4px">
+        <button id="btnConnect" class="btn primary">📲 Conectar</button>
+        <button id="btnDisconnect" class="btn">🔌 Desconectar</button>
+        <a class="link" href="/admin/groups">➡ Ir para Grupos</a>
+      </div>
+
+      <div class="qr-card">
+        <div id="qrPlaceholder" class="placeholder">Aguardando geração do QR…</div>
+        <img id="qr" alt="QR Code" />
+        <small class="note">
+          iPhone: Ajustes → Dispositivos conectados → Conectar um dispositivo.
+          Android: “Conectar um dispositivo” no WhatsApp → escaneie o QR.
+        </small>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const dot    = document.getElementById('dot');
+    const btnC   = document.getElementById('btnConnect');
+    const btnD   = document.getElementById('btnDisconnect');
+    const qr     = document.getElementById('qr');
+    const ph     = document.getElementById('qrPlaceholder');
+
+    let polling = null;
+
+    function setDot(ok){
+      dot.classList.toggle('green', ok);
+      dot.classList.toggle('red', !ok);
+      dot.title = ok ? 'conectado' : 'desconectado';
+    }
+
+    function showQR(dataURL){
+      if (dataURL){
+        qr.src = dataURL;
+        qr.style.display = 'block';
+        ph.style.display = 'none';
+      } else {
+        qr.style.display = 'none';
+        ph.style.display = 'flex';
+      }
+    }
+
+    async function getStatus(){
+      try{
+        const r = await fetch('/admin/wa/status', { cache:'no-store' });
+        const s = await r.json();
+
+        setDot(!!s.connected);
+        btnC.disabled = !!s.connected || !!s.connecting;
+        btnD.disabled = !s.connected && !s.connecting;
+
+        // quando o backend retornar o base64 em `qr`, exibimos
+        if (s.qr) showQR(s.qr); else if (!s.connected) showQR(null);
+
+        // se estiver conectando, mantém o polling mais frequent
+        if (s.connecting && !polling){
+          polling = setInterval(getStatus, 2000);
+        }
+        if (!s.connecting && polling){
+          clearInterval(polling); polling = null;
+        }
+      }catch(e){
+        console.error(e);
+      }
+    }
+
+    async function doConnect(){
+      try{
+        await fetch('/admin/wa/connect', { method:'POST' });
+        if (!polling) polling = setInterval(getStatus, 2000);
+        await getStatus();
+      }catch(e){ console.error(e); }
+    }
+    async function doDisconnect(){
+      try{
+        await fetch('/admin/wa/disconnect', { method:'POST' });
+        await getStatus();
+      }catch(e){ console.error(e); }
+    }
+
+    btnC.addEventListener('click', doConnect);
+    btnD.addEventListener('click', doDisconnect);
+
+    getStatus();
+  </script>
+</body>
+</html>
