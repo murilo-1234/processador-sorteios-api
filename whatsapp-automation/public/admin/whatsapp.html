@@ -9,22 +9,18 @@
       --bg:#0b1220; --card:#111827; --muted:#9ca3af; --text:#e5e7eb;
       --b:#374151; --ok:#34d399; --bad:#ef4444; --primary:#2563eb;
     }
-    html,body{height:100%}
+    /* garante que nada gere rolagem horizontal */
+    html,body{height:100%; overflow-x:hidden}
     body{
       margin:0; background:var(--bg); color:var(--text);
       font:16px/1.45 Inter,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial;
       display:flex; align-items:flex-start; justify-content:center;
     }
-    .wrap{
-      width:100%; max-width:560px; padding:28px 16px;
-    }
+    .wrap{ width:100%; max-width:560px; padding:28px 16px; }
 
     .card{
-      background:var(--card);
-      border:1px solid var(--b);
-      border-radius:14px;
-      padding:16px;
-      box-shadow:0 8px 30px rgba(0,0,0,.35);
+      background:var(--card); border:1px solid var(--b);
+      border-radius:14px; padding:16px; box-shadow:0 8px 30px rgba(0,0,0,.35);
     }
 
     h2{margin:0 0 12px 0; font-size:18px; display:flex; align-items:center; gap:8px}
@@ -35,6 +31,7 @@
     .btn{
       padding:.65rem 1rem; border-radius:10px; border:1px solid var(--b);
       background:#1f2937; color:#fff; cursor:pointer;
+      transition:opacity .15s ease-in-out;
     }
     .btn.primary{ background:var(--primary); border-color:transparent }
     .btn:disabled{ opacity:.65; cursor:not-allowed }
@@ -42,14 +39,12 @@
     .link:hover{ text-decoration:underline }
 
     .qr-card{
-      margin-top:14px;
-      background:var(--card); border:1px solid var(--b);
+      margin-top:14px; background:var(--card); border:1px solid var(--b);
       border-radius:14px; padding:16px; text-align:center;
     }
     #qr{
       display:none; width:300px; height:300px; background:#fff; border-radius:8px;
-      margin:12px auto 0 auto; object-fit:contain;
-      box-shadow:0 0 0 1px rgba(0,0,0,.08);
+      margin:12px auto 0 auto; object-fit:contain; box-shadow:0 0 0 1px rgba(0,0,0,.08);
     }
     .placeholder{
       width:300px; height:300px; border-radius:8px; margin:12px auto 0 auto;
@@ -57,7 +52,6 @@
       display:flex; align-items:center; justify-content:center; text-align:center;
       padding:0 12px;
     }
-
     small.note{ display:block; color:var(--muted); margin-top:10px }
   </style>
 </head>
@@ -84,11 +78,13 @@
   </div>
 
   <script>
-    const dot    = document.getElementById('dot');
-    const btnC   = document.getElementById('btnConnect');
-    const btnD   = document.getElementById('btnDisconnect');
-    const qr     = document.getElementById('qr');
-    const ph     = document.getElementById('qrPlaceholder');
+    const API = '/admin/wa';
+
+    const dot  = document.getElementById('dot');
+    const btnC = document.getElementById('btnConnect');
+    const btnD = document.getElementById('btnDisconnect');
+    const qr   = document.getElementById('qr');
+    const ph   = document.getElementById('qrPlaceholder');
 
     let polling = null;
 
@@ -109,47 +105,78 @@
       }
     }
 
+    // fetch com timeout para não travar a UI
+    async function jsonFetch(url, opts={}, timeout=8000){
+      const ctrl = new AbortController();
+      const id   = setTimeout(() => ctrl.abort(), timeout);
+      try{
+        const res = await fetch(url, { ...opts, signal: ctrl.signal, cache:'no-store' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return await res.json();
+      } finally { clearTimeout(id); }
+    }
+
     async function getStatus(){
       try{
-        const r = await fetch('/admin/wa/status', { cache:'no-store' });
-        const s = await r.json();
+        const s = await jsonFetch(`${API}/status`);
 
         setDot(!!s.connected);
+        // estados dos botões
         btnC.disabled = !!s.connected || !!s.connecting;
         btnD.disabled = !s.connected && !s.connecting;
 
-        // quando o backend retornar o base64 em `qr`, exibimos
-        if (s.qr) showQR(s.qr); else if (!s.connected) showQR(null);
+        // exibe/oculta o QR conforme disponibilidade
+        if (s.qr) showQR(s.qr);
+        else if (!s.connected) showQR(null);
 
-        // se estiver conectando, mantém o polling mais frequent
+        // enquanto estiver conectando, mantemos polling mais frequente
         if (s.connecting && !polling){
           polling = setInterval(getStatus, 2000);
         }
         if (!s.connecting && polling){
-          clearInterval(polling); polling = null;
+          clearInterval(polling);
+          polling = null;
         }
       }catch(e){
-        console.error(e);
+        console.error('status error:', e);
+        // em erro de rede, não muda nada – próxima chamada tenta de novo
       }
     }
 
     async function doConnect(){
       try{
-        await fetch('/admin/wa/connect', { method:'POST' });
+        btnC.disabled = true; btnD.disabled = true;
+        await jsonFetch(`${API}/connect`, { method:'POST' });
+        // inicia polling imediato após solicitar conexão
         if (!polling) polling = setInterval(getStatus, 2000);
         await getStatus();
-      }catch(e){ console.error(e); }
+      }catch(e){ console.error('connect error:', e); }
+      finally{
+        // o getStatus acima já ajusta os botões; aqui só garantimos que nada fica “preso”
+        // (se já conectou/está conectando, continuarão desabilitados conforme a lógica)
+      }
     }
+
     async function doDisconnect(){
       try{
-        await fetch('/admin/wa/disconnect', { method:'POST' });
+        btnC.disabled = true; btnD.disabled = true;
+        await jsonFetch(`${API}/disconnect`, { method:'POST' });
         await getStatus();
-      }catch(e){ console.error(e); }
+      }catch(e){ console.error('disconnect error:', e); }
+      finally{
+        // estado final será definido por getStatus()
+      }
     }
 
     btnC.addEventListener('click', doConnect);
     btnD.addEventListener('click', doDisconnect);
 
+    // limpa polling ao sair da página (boa prática)
+    window.addEventListener('beforeunload', () => {
+      if (polling) clearInterval(polling);
+    });
+
+    // status inicial
     getStatus();
   </script>
 </body>
