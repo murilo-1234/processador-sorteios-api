@@ -17,7 +17,7 @@ const {
 } = require('@whiskeysockets/baileys');
 
 /* ===================== DIAGNÓSTICO ===================== */
-// ATIVE logs de debug colocando WA_DEBUG=1 no ambiente (ex.: Render)
+// Ative logs extras com WA_DEBUG=1 no ambiente (Render)
 const WA_DEBUG = process.env.WA_DEBUG === '1';
 const ts = () => new Date().toISOString();
 const dlog   = (...a) => console.log('[WA-ADMIN]', ts(), ...a);
@@ -41,12 +41,14 @@ let sock = null;
 let lastQRDataUrl = null;
 let connecting = false;
 let connected  = false;
+let retryTimer = null;
 
 function ensureDir(p) {
   if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
 }
 function authDirPath() {
-  return path.join(process.cwd(), 'data', 'baileys');
+  const p = process.env.WA_SESSION_PATH || path.join(process.cwd(), 'data', 'baileys');
+  return path.resolve(p);
 }
 
 async function status() {
@@ -71,8 +73,9 @@ async function connect() {
   if (connecting) { ddebug('connect(): já conectando'); return status(); }
 
   connecting = true;
-  lastQRDataUrl = null;                   // evita mostrar QR velho
-  await safeEndSocket();                  // garante que não ficou resíduo
+  lastQRDataUrl = null;                   // evita QR velho
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+  await safeEndSocket();                  // evita resíduo
 
   const dir = authDirPath();
   ensureDir(dir);
@@ -99,6 +102,7 @@ async function connect() {
     try { saveCreds(); } catch (e) { ddebug('saveCreds err:', e?.message || e); }
   });
 
+  // ====== AQUI FICA O connection.update ======
   sock.ev.on('connection.update', async (u) => {
     const { connection, lastDisconnect, qr } = u;
 
@@ -124,10 +128,11 @@ async function connect() {
         payload: err?.output?.payload,
       }));
 
-      if (code === DisconnectReason.badSession)       DIAG.push('MOTIVO: badSession (credenciais corrompidas)');
-      if (code === DisconnectReason.connectionReplaced) DIAG.push('MOTIVO: connectionReplaced (outro processo usando a sessão)');
-      if (code === DisconnectReason.loggedOut)        DIAG.push('MOTIVO: loggedOut (sessão removida)');
-      if (code === 401)                               DIAG.push('MOTIVO: 401 not-authorized (pareamento rejeitado)');
+      if (code === DisconnectReason.badSession)         DIAG.push('MOTIVO: badSession (credenciais corrompidas)');
+      if (code === DisconnectReason.connectionReplaced) DIAG.push('MOTIVO: connectionReplaced (outra instância usando a sessão)');
+      if (code === DisconnectReason.loggedOut)          DIAG.push('MOTIVO: loggedOut (sessão removida pelo WA)');
+      if (code === 401)                                 DIAG.push('MOTIVO: 401 not-authorized (pareamento rejeitado)');
+      if (code === 515)                                 DIAG.push('MOTIVO: 515 restartRequired (WA pediu reinício do socket)');
     }
 
     if (connection === 'open') {
@@ -141,9 +146,23 @@ async function connect() {
       const err  = lastDisconnect?.error;
       const code = err?.output?.statusCode ?? err?.data?.statusCode ?? err?.status ?? err?.code ?? null;
 
+      // 515: o WA pede restart do WebSocket → reconectar sozinho
+      if (code === 515 /* restartRequired */) {
+        connected = false; connecting = false; lastQRDataUrl = null;
+        DIAG.push('restartRequired: tentando reconectar em 2s');
+        if (retryTimer) clearTimeout(retryTimer);
+        retryTimer = setTimeout(() => {
+          if (!connecting && !connected) {
+            connect().catch(e => DIAG.push('auto-reconnect error:', e?.message || String(e)));
+          }
+        }, 2000);
+        return; // não seguir limpando mais nada
+      }
+
       if (code === DisconnectReason.loggedOut) {
         try { await sock?.logout(); DIAG.push('logout() após loggedOut'); } catch {}
       }
+
       connected  = false;
       connecting = false;
       lastQRDataUrl = null;
@@ -224,6 +243,22 @@ router.post('/wa/reset', async (_req, res) => {
 // === LOGS de diagnóstico (leitura simples) ===
 router.get('/wa/logs', (_req, res) => {
   res.type('text/plain').send(DIAG.lines.join('\n'));
+});
+
+// === PAREAMENTO POR CÓDIGO (opcional; não quebra nada existente) ===
+router.post('/wa/pair-code', async (req, res) => {
+  try {
+    const phone = (req.body?.phone || process.env.WHATSAPP_PHONE_NUMBER || '').replace(/\D/g,'');
+    if (!sock) await connect();
+    if (!sock?.requestPairingCode) return res.status(400).json({ ok:false, error:'Baileys sem suporte a pairing code nesta versão' });
+    if (!phone) return res.status(400).json({ ok:false, error:'Informe phone no body ou defina WHATSAPP_PHONE_NUMBER' });
+    const code = await sock.requestPairingCode(phone);
+    DIAG.push('Pairing code gerado para', phone, 'code=', code);
+    return res.json({ ok:true, phone, code });
+  } catch (e) {
+    DIAG.push('Erro pair-code:', e?.message || String(e));
+    return res.status(500).json({ ok:false, error: e?.message || String(e) });
+  }
 });
 
 // (mantido) redireciona /admin -> /admin/whatsapp
