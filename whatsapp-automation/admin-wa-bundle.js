@@ -20,13 +20,8 @@ const {
 /** =====================  DIAGNÓSTICO (logs)  ===================== **/
 const WA_DEBUG = process.env.WA_DEBUG === '1'; // liga verboso com WA_DEBUG=1
 function ts() { return new Date().toISOString(); }
-function dlog(...args) {
-  // Logs "essenciais" sempre; detalhes a mais só com WA_DEBUG=1
-  console.log('[WA-ADMIN]', ts(), ...args);
-}
-function ddebug(...args) {
-  if (WA_DEBUG) console.log('[WA-ADMIN:DEBUG]', ts(), ...args);
-}
+function dlog(...args)    { console.log('[WA-ADMIN]', ts(), ...args); }
+function ddebug(...args)  { if (WA_DEBUG) console.log('[WA-ADMIN:DEBUG]', ts(), ...args); }
 function mask(str, keep = 32) {
   if (!str || typeof str !== 'string') return String(str);
   if (str.length <= keep) return str;
@@ -79,11 +74,9 @@ async function connect() {
     const { connection, lastDisconnect, qr } = u;
 
     if (qr) {
-      // gera imagem base64 do QR para mostrar no painel
       try {
-        const prev = qr; // string do QR "puro" (não base64)
-        ddebug('QR recebido (raw):', mask(prev));
-        lastQRDataUrl = await qrcode.toDataURL(prev);
+        ddebug('QR recebido (raw):', mask(qr));
+        lastQRDataUrl = await qrcode.toDataURL(qr);
         dlog('QR gerado (dataURL)', { length: lastQRDataUrl.length });
       } catch (err) {
         lastQRDataUrl = null;
@@ -100,25 +93,20 @@ async function connect() {
     }
 
     if (connection === 'close') {
-      const boom = lastDisconnect?.error;
+      const boom  = lastDisconnect?.error;
       const code =
         boom?.output?.statusCode ||
         boom?.data?.statusCode ||
         boom?.status ||
-        boom?.code ||
-        null;
+        boom?.code || null;
 
-      // Mapeia motivo conhecido quando possível
       let reason = 'desconhecido';
       if (code === DisconnectReason.loggedOut) reason = 'loggedOut';
-      // (outros motivos variam por infra / rede; logamos a mensagem/stack)
 
       dlog('conexão fechada ❌', {
-        code, reason,
-        message: boom?.message || String(boom || ''),
+        code, reason, message: boom?.message || String(boom || ''),
       });
 
-      // se desconectou por "logged out" ou conflito, limpa o estado
       if (code === DisconnectReason.loggedOut) {
         try { await sock?.logout(); ddebug('logout() após loggedOut'); } catch {}
       }
@@ -144,10 +132,20 @@ async function disconnect() {
   return status();
 }
 
+// ===== utilitário: limpar pasta de credenciais =====
+function clearAuthFolder() {
+  const dir = path.join(process.cwd(), 'data', 'baileys');
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+    dlog('clearAuthFolder(): removido', { dir });
+  } catch (e) {
+    dlog('clearAuthFolder(): erro ao remover', { dir, error: e?.message || String(e) });
+  }
+}
+
 // ====== ROTAS DE ADMIN (API) — MANTIDAS ======
 router.get('/wa/status', async (_req, res) => {
   const st = await status();
-  // Log leve (somente mudança relevante ajuda no diagnóstico)
   ddebug('GET /admin/wa/status ->', { connected: st.connected, connecting: st.connecting, qr: !!st.qr });
   res.json(st);
 });
@@ -162,6 +160,19 @@ router.post('/wa/disconnect', async (_req, res) => {
   dlog('POST /admin/wa/disconnect');
   const st = await disconnect();
   res.json(st);
+});
+
+// ====== NOVO: limpar sessão (apaga credenciais e zera estado) ======
+router.post('/wa/clear', async (_req, res) => {
+  try {
+    dlog('POST /admin/wa/clear (limpar sessão)');
+    await disconnect();           // garante socket fechado
+    clearAuthFolder();            // apaga ./data/baileys
+    res.json({ ok: true, cleared: true, ts: ts() });
+  } catch (e) {
+    dlog('clear error:', e?.message || String(e));
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
 });
 
 // ====== (MANTIDO) redireciona /admin -> /admin/whatsapp
@@ -212,6 +223,7 @@ router.get('/whatsapp', (_req, res) => {
         <div class="row" style="margin-bottom:10px">
           <button onclick="doConnect()">📷 Conectar</button>
           <button onclick="doDisconnect()">🔌 Desconectar</button>
+          <button onclick="doClear()">🗑️ Limpar sessão</button>
           <a class="link" href="/admin/groups">➡️ Ir para Grupos</a>
         </div>
         <pre id="statusBox" class="muted">{ "ok": true, "connected": false, "connecting": false }</pre>
@@ -232,9 +244,8 @@ router.get('/whatsapp', (_req, res) => {
 let poll = null;
 
 function renderStatus(obj){
-  // NÃO inclui o base64 do QR no painel de status
   const view = { ...obj };
-  delete view.qr;
+  delete view.qr; // não exibe o base64 no painel
   document.getElementById('statusBox').textContent = JSON.stringify(view, null, 2);
 }
 
@@ -272,6 +283,12 @@ async function doConnect(){
 
 async function doDisconnect(){
   await fetch('/admin/wa/disconnect', { method:'POST' });
+  if (poll) { clearInterval(poll); poll = null; }
+  await getStatus();
+}
+
+async function doClear(){
+  await fetch('/admin/wa/clear', { method:'POST' });
   if (poll) { clearInterval(poll); poll = null; }
   await getStatus();
 }
