@@ -90,6 +90,7 @@
         <div class="row" style="margin-bottom:4px">
           <button id="btnConnect" class="btn primary">📲 Conectar</button>
           <button id="btnDisconnect" class="btn">🔌 Desconectar</button>
+          <button id="btnReset" class="btn">🧹 Limpar sessão</button>
           <a class="link" href="/admin/groups">➡ Ir para Grupos</a>
         </div>
 
@@ -113,6 +114,7 @@
     const dot    = document.getElementById('dot');
     const btnC   = document.getElementById('btnConnect');
     const btnD   = document.getElementById('btnDisconnect');
+    const btnR   = document.getElementById('btnReset');
     const qr     = document.getElementById('qr');
     const ph     = document.getElementById('qrPlaceholder');
     const box    = document.getElementById('statusBox');
@@ -185,8 +187,17 @@
       }catch(e){ console.error(e); }
     }
 
+    async function doReset(){
+      try{
+        await fetch('/admin/wa/reset', { method:'POST' });
+        if (polling) { clearInterval(polling); polling = null; }
+        await getStatus();
+      }catch(e){ console.error(e); }
+    }
+
     btnC.addEventListener('click', doConnect);
     btnD.addEventListener('click', doDisconnect);
+    btnR.addEventListener('click', doReset);
 
     getStatus();
   </script>
