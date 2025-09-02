@@ -102,7 +102,7 @@ async function connect() {
     try { saveCreds(); } catch (e) { ddebug('saveCreds err:', e?.message || e); }
   });
 
-  // ====== AQUI FICA O connection.update ======
+  // ====== connection.update ======
   sock.ev.on('connection.update', async (u) => {
     const { connection, lastDisconnect, qr } = u;
 
@@ -265,13 +265,11 @@ router.post('/wa/pair-code', async (req, res) => {
 router.get('/', (_req, res) => res.redirect('/admin/whatsapp'));
 
 // (mantido) PÁGINA COMPLETA /admin/whatsapp
-// Serve o arquivo real do /public, para não duplicar markup.
 router.get('/whatsapp', (req, res) => {
   const file = path.join(__dirname, 'public', 'admin', 'whatsapp.html');
   if (fs.existsSync(file)) {
     return res.sendFile(file);
   }
-  // Fallback se não existir (evita quebrar)
   res.set('Content-Type', 'text/html; charset=utf-8').send(
     '<!doctype html><meta charset="utf-8"><title>WhatsApp</title><p>Suba <code>public/admin/whatsapp.html</code>.</p>'
   );
@@ -386,5 +384,7 @@ router.get('/wa/ui.js', (_req, res) => {
 `);
 });
 
-// ====== EXPORTA O ROUTER ======
+// ====== EXPORTA O ROUTER + helpers p/ outros módulos ======
 module.exports = router;
+module.exports.getStatus = status;
+module.exports.getSock   = () => sock;
