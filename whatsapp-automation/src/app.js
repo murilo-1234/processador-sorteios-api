@@ -1,3 +1,5 @@
+// src/app.js
+
 // ======================= WebCrypto SHIM (antes de qualquer import do Baileys) =======================
 try {
   if (!globalThis.crypto || !globalThis.crypto.subtle) {
@@ -50,6 +52,7 @@ class App {
     try {
       const waAdmin = require('../admin-wa-bundle.js'); // arquivo na raiz do repo
       this.waAdmin = waAdmin;                            // <<< guardamos para usar nas rotas /api
+      this.app.locals.waAdmin = waAdmin;                // <<< deixa acessível para jobs/rotas
       this.app.use('/admin', waAdmin);                   // monta tudo em /admin
     } catch (e) {
       console.warn('⚠️ Admin bundle indisponível:', e?.message || e);
@@ -241,45 +244,86 @@ class App {
       }
     });
 
-// >>> Teste: envia mensagem de teste para TODOS os grupos salvos (prioriza sessão do ADMIN)
-this.app.post('/api/groups/test-post', async (_req, res) => {
-  try {
-    const st = settings.get();
+    // >>> Teste: envia mensagem de teste para TODOS os grupos salvos (prioriza sessão do ADMIN)
+    this.app.post('/api/groups/test-post', async (_req, res) => {
+      try {
+        const st = settings.get();
 
-    const targets = (Array.isArray(st.postGroupJids) && st.postGroupJids.length)
-      ? st.postGroupJids
-      : (st.resultGroupJid ? [st.resultGroupJid] : []);
+        const targets = (Array.isArray(st.postGroupJids) && st.postGroupJids.length)
+          ? st.postGroupJids
+          : (st.resultGroupJid ? [st.resultGroupJid] : []);
 
-    if (!targets.length) {
-      return res.status(400).json({ ok: false, error: 'Nenhum grupo selecionado' });
-    }
-
-    // 1) Preferir a sessão conectada via /admin/whatsapp
-    if (this.waAdmin && typeof this.waAdmin.getStatus === 'function') {
-      const adminSt = await this.waAdmin.getStatus();
-      if (adminSt.connected) {
-        const sock = this.waAdmin.getSock();
-        for (const jid of targets) {
-          await sock.sendMessage(jid, { text: '🔔 Teste de postagem de sorteio (ok)' });
+        if (!targets.length) {
+          return res.status(400).json({ ok: false, error: 'Nenhum grupo selecionado' });
         }
-        return res.json({ ok: true, sentTo: targets.length, via: 'admin' });
+
+        // 1) Preferir a sessão conectada via /admin/whatsapp
+        if (this.waAdmin && typeof this.waAdmin.getStatus === 'function') {
+          const adminSt = await this.waAdmin.getStatus();
+          if (adminSt.connected) {
+            const sock = this.waAdmin.getSock();
+            for (const jid of targets) {
+              await sock.sendMessage(jid, { text: '🔔 Teste de postagem de sorteio (ok)' });
+            }
+            return res.json({ ok: true, sentTo: targets.length, via: 'admin' });
+          }
+        }
+
+        // 2) Fallback: cliente interno
+        const wa = this.initWhatsApp();
+        if (!wa.isConnected) {
+          return res.status(400).json({ ok: false, error: 'WhatsApp não conectado' });
+        }
+        for (const jid of targets) {
+          await wa.sendToGroup(jid, '🔔 Teste de postagem de sorteio (ok)');
+        }
+        res.json({ ok: true, sentTo: targets.length, via: 'client' });
+      } catch (e) {
+        res.status(500).json({ ok: false, error: e?.message || String(e) });
       }
-    }
+    });
 
-    // 2) Fallback: cliente interno
-    const wa = this.initWhatsApp();
-    if (!wa.isConnected) {
-      return res.status(400).json({ ok: false, error: 'WhatsApp não conectado' });
-    }
-    for (const jid of targets) {
-      await wa.sendToGroup(jid, '🔔 Teste de postagem de sorteio (ok)');
-    }
-    res.json({ ok: true, sentTo: targets.length, via: 'client' });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e?.message || String(e) });
-  }
-});
+    // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+    // BOTÃO / ENDPOINT DE TESTE DE VÍDEO (gera via Creatomate e envia ao(s) grupo(s) selecionado(s))
+    this.app.post('/api/posts/test-video', async (_req, res) => {
+      try {
+        const st = settings.get();
+        const targets = (Array.isArray(st.postGroupJids) && st.postGroupJids.length)
+          ? st.postGroupJids
+          : (st.resultGroupJid ? [st.resultGroupJid] : []);
+        if (!targets.length) return res.status(400).json({ ok:false, error:'Nenhum grupo selecionado' });
 
+        const { makeCreatomateVideo } = require('./services/creatomate');
+        const fs = require('fs');
+
+        const videoPath = await makeCreatomateVideo({
+          headline: '🎉 Resultado do Sorteio',
+          premio: 'Produto de Teste',
+          winner: 'Fulano de Tal',
+          productImageUrl: 'https://picsum.photos/1080' // placeholder
+        });
+
+        // prioriza sessão admin
+        let sock = null;
+        if (this.waAdmin && typeof this.waAdmin.getStatus === 'function') {
+          const stAdmin = await this.waAdmin.getStatus();
+          if (stAdmin.connected) sock = this.waAdmin.getSock();
+        }
+        if (!sock) {
+          const wa = this.initWhatsApp();
+          sock = wa?.sock || null;
+        }
+        if (!sock) return res.status(400).json({ ok:false, error:'WhatsApp não conectado' });
+
+        for (const jid of targets) {
+          await sock.sendMessage(jid, { video: fs.createReadStream(videoPath), caption: '🔔 Teste de vídeo (Creatomate)' });
+        }
+        res.json({ ok:true, sentTo: targets.length, path: videoPath });
+      } catch (e) {
+        res.status(500).json({ ok:false, error: e?.message || String(e) });
+      }
+    });
+    // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
     // ========= job manual =========
     this.app.post('/api/jobs/run-once', async (req, res) => {
