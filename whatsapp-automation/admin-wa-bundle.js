@@ -23,8 +23,16 @@ let lastQRDataUrl = null;
 let connecting = false;
 let connected  = false;
 
+// Diretório de credenciais do Baileys usado por este painel
+const AUTH_DIR = path.join(process.cwd(), 'data', 'baileys');
+
 function ensureDir(p) {
   if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
+}
+
+function clearAuthDir() {
+  try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch {}
+  ensureDir(AUTH_DIR);
 }
 
 async function status() {
@@ -36,9 +44,15 @@ async function connect() {
   if (connecting) return status();
 
   connecting = true;
-  ensureDir(path.join(process.cwd(), 'data', 'baileys'));
+  lastQRDataUrl = null;
 
-  const { state, saveCreds } = await useMultiFileAuthState('./data/baileys');
+  // encerra/zera socket anterior se existir
+  try { sock?.end(); } catch {}
+  sock = null;
+
+  ensureDir(AUTH_DIR);
+
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version } = await fetchLatestBaileysVersion();
 
   sock = makeWASocket({
@@ -95,11 +109,27 @@ router.get('/wa/status', async (_req, res) => res.json(await status()));
 router.post('/wa/connect', async (_req, res) => res.json(await connect()));
 router.post('/wa/disconnect', async (_req, res) => res.json(await disconnect()));
 
+// ====== (NOVO) reset da sessão do painel ======
+router.post('/wa/reset', async (_req, res) => {
+  try {
+    try { await sock?.logout(); } catch {}
+    try { sock?.end?.(); } catch {}
+    sock = null;
+    clearAuthDir();
+    connected = false;
+    connecting = false;
+    lastQRDataUrl = null;
+    return res.json({ ok: true, reset: true });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
 // ====== (MANTIDO) redireciona /admin -> /admin/whatsapp
 router.get('/', (_req, res) => res.redirect('/admin/whatsapp'));
 
 // ====== (MANTIDO) PÁGINA COMPLETA /admin/whatsapp (HTML inline)
-// >>> ALTERADO APENAS: 1) CSS anti-overflow; 2) não imprime "qr" no JSON do status
+// >>> CSS anti-overflow + não imprime "qr" no JSON do status + botão "Limpar sessão"
 router.get('/whatsapp', (_req, res) => {
   const html = /* html */ `
 <!doctype html>
@@ -143,6 +173,7 @@ router.get('/whatsapp', (_req, res) => {
         <div class="row" style="margin-bottom:10px">
           <button onclick="doConnect()">📷 Conectar</button>
           <button onclick="doDisconnect()">🔌 Desconectar</button>
+          <button onclick="doReset()">🧹 Limpar sessão</button>
           <a class="link" href="/admin/groups">➡️ Ir para Grupos</a>
         </div>
         <pre id="statusBox" class="muted">{ "ok": true, "connected": false, "connecting": false }</pre>
@@ -203,6 +234,12 @@ async function doConnect(){
 
 async function doDisconnect(){
   await fetch('/admin/wa/disconnect', { method:'POST' });
+  if (poll) { clearInterval(poll); poll = null; }
+  await getStatus();
+}
+
+async function doReset(){
+  await fetch('/admin/wa/reset', { method:'POST' });
   if (poll) { clearInterval(poll); poll = null; }
   await getStatus();
 }
