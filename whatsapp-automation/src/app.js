@@ -241,27 +241,45 @@ class App {
       }
     });
 
-    // >>> Teste: envia mensagem de teste para TODOS os grupos salvos
-    this.app.post('/api/groups/test-post', async (_req, res) => {
-      try {
-        const wa = this.initWhatsApp();
-        const st = settings.get();
-        if (!wa.isConnected) return res.status(400).json({ ok: false, error: 'WhatsApp não conectado' });
+// >>> Teste: envia mensagem de teste para TODOS os grupos salvos (prioriza sessão do ADMIN)
+this.app.post('/api/groups/test-post', async (_req, res) => {
+  try {
+    const st = settings.get();
 
-        const targets = (Array.isArray(st.postGroupJids) && st.postGroupJids.length)
-          ? st.postGroupJids
-          : (st.resultGroupJid ? [st.resultGroupJid] : []);
+    const targets = (Array.isArray(st.postGroupJids) && st.postGroupJids.length)
+      ? st.postGroupJids
+      : (st.resultGroupJid ? [st.resultGroupJid] : []);
 
-        if (!targets.length) return res.status(400).json({ ok: false, error: 'Nenhum grupo selecionado' });
+    if (!targets.length) {
+      return res.status(400).json({ ok: false, error: 'Nenhum grupo selecionado' });
+    }
 
+    // 1) Preferir a sessão conectada via /admin/whatsapp
+    if (this.waAdmin && typeof this.waAdmin.getStatus === 'function') {
+      const adminSt = await this.waAdmin.getStatus();
+      if (adminSt.connected) {
+        const sock = this.waAdmin.getSock();
         for (const jid of targets) {
-          await wa.sendToGroup(jid, '🔔 Teste de postagem de sorteio (ok)');
+          await sock.sendMessage(jid, { text: '🔔 Teste de postagem de sorteio (ok)' });
         }
-        res.json({ ok: true, sentTo: targets.length });
-      } catch (e) {
-        res.status(500).json({ ok: false, error: e?.message || String(e) });
+        return res.json({ ok: true, sentTo: targets.length, via: 'admin' });
       }
-    });
+    }
+
+    // 2) Fallback: cliente interno
+    const wa = this.initWhatsApp();
+    if (!wa.isConnected) {
+      return res.status(400).json({ ok: false, error: 'WhatsApp não conectado' });
+    }
+    for (const jid of targets) {
+      await wa.sendToGroup(jid, '🔔 Teste de postagem de sorteio (ok)');
+    }
+    res.json({ ok: true, sentTo: targets.length, via: 'client' });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
 
     // ========= job manual =========
     this.app.post('/api/jobs/run-once', async (req, res) => {
