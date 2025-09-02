@@ -17,22 +17,31 @@ const {
   DisconnectReason,
 } = require('@whiskeysockets/baileys');
 
+/** =====================  DIAGNÓSTICO (logs)  ===================== **/
+const WA_DEBUG = process.env.WA_DEBUG === '1'; // liga verboso com WA_DEBUG=1
+function ts() { return new Date().toISOString(); }
+function dlog(...args) {
+  // Logs "essenciais" sempre; detalhes a mais só com WA_DEBUG=1
+  console.log('[WA-ADMIN]', ts(), ...args);
+}
+function ddebug(...args) {
+  if (WA_DEBUG) console.log('[WA-ADMIN:DEBUG]', ts(), ...args);
+}
+function mask(str, keep = 32) {
+  if (!str || typeof str !== 'string') return String(str);
+  if (str.length <= keep) return str;
+  return str.slice(0, keep) + '…(' + str.length + ')';
+}
+/** ================================================================ **/
+
 // ====== WHATSAPP SESSION ======
 let sock = null;
 let lastQRDataUrl = null;
 let connecting = false;
 let connected  = false;
 
-// Diretório de credenciais do Baileys usado por este painel
-const AUTH_DIR = path.join(process.cwd(), 'data', 'baileys');
-
 function ensureDir(p) {
   if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
-}
-
-function clearAuthDir() {
-  try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch {}
-  ensureDir(AUTH_DIR);
 }
 
 async function status() {
@@ -40,51 +49,80 @@ async function status() {
 }
 
 async function connect() {
-  if (connected)  return status();
-  if (connecting) return status();
+  if (connected)  { ddebug('connect() ignorado: já conectado'); return status(); }
+  if (connecting) { ddebug('connect() ignorado: já conectando'); return status(); }
 
   connecting = true;
-  lastQRDataUrl = null;
+  const authDir = path.join(process.cwd(), 'data', 'baileys');
+  ensureDir(authDir);
 
-  // encerra/zera socket anterior se existir
-  try { sock?.end(); } catch {}
-  sock = null;
+  dlog('connect(): iniciando socket', { authDir });
 
-  ensureDir(AUTH_DIR);
-
-  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+  const { state, saveCreds } = await useMultiFileAuthState('./data/baileys');
   const { version } = await fetchLatestBaileysVersion();
+  ddebug('versão WA-Web (Baileys):', version);
 
   sock = makeWASocket({
     version,
     auth: state,
-    printQRInTerminal: false,    // o QR vai via dataURL (imagem) para o frontend
+    printQRInTerminal: false, // QR vai via dataURL (imagem) para o frontend
     logger: pino({ level: 'silent' }),
     browser: ['Chrome (Render)', 'Chrome', '123'],
   });
 
-  sock.ev.on('creds.update', saveCreds);
+  sock.ev.on('creds.update', () => {
+    ddebug('creds.update recebido (credenciais salvas)');
+    saveCreds();
+  });
 
   sock.ev.on('connection.update', async (u) => {
     const { connection, lastDisconnect, qr } = u;
 
     if (qr) {
-      // gera imagem base64 do QR para mostrar no modal/painel
-      try { lastQRDataUrl = await qrcode.toDataURL(qr); } catch { lastQRDataUrl = null; }
+      // gera imagem base64 do QR para mostrar no painel
+      try {
+        const prev = qr; // string do QR "puro" (não base64)
+        ddebug('QR recebido (raw):', mask(prev));
+        lastQRDataUrl = await qrcode.toDataURL(prev);
+        dlog('QR gerado (dataURL)', { length: lastQRDataUrl.length });
+      } catch (err) {
+        lastQRDataUrl = null;
+        dlog('falha ao gerar dataURL do QR:', err?.message || String(err));
+      }
     }
 
     if (connection === 'open') {
       connected  = true;
       connecting = false;
       lastQRDataUrl = null;
+      const me = sock?.user || {};
+      dlog('conexão aberta ✅', { me });
     }
 
     if (connection === 'close') {
-      const code = lastDisconnect?.error?.output?.statusCode;
+      const boom = lastDisconnect?.error;
+      const code =
+        boom?.output?.statusCode ||
+        boom?.data?.statusCode ||
+        boom?.status ||
+        boom?.code ||
+        null;
+
+      // Mapeia motivo conhecido quando possível
+      let reason = 'desconhecido';
+      if (code === DisconnectReason.loggedOut) reason = 'loggedOut';
+      // (outros motivos variam por infra / rede; logamos a mensagem/stack)
+
+      dlog('conexão fechada ❌', {
+        code, reason,
+        message: boom?.message || String(boom || ''),
+      });
+
       // se desconectou por "logged out" ou conflito, limpa o estado
       if (code === DisconnectReason.loggedOut) {
-        try { await sock?.logout(); } catch {}
+        try { await sock?.logout(); ddebug('logout() após loggedOut'); } catch {}
       }
+
       connected  = false;
       connecting = false;
       lastQRDataUrl = null;
@@ -95,41 +133,42 @@ async function connect() {
 }
 
 async function disconnect() {
-  try { await sock?.logout(); } catch {}
-  try { sock?.end?.(); } catch {}
+  dlog('disconnect(): solicitado');
+  try { await sock?.logout(); ddebug('logout() ok'); } catch (e) { ddebug('logout() erro:', e?.message || e); }
+  try { sock?.end?.(); ddebug('end() ok'); } catch (e) { ddebug('end() erro:', e?.message || e); }
   sock = null;
   connected  = false;
   connecting = false;
   lastQRDataUrl = null;
+  dlog('disconnect(): concluído');
   return status();
 }
 
 // ====== ROTAS DE ADMIN (API) — MANTIDAS ======
-router.get('/wa/status', async (_req, res) => res.json(await status()));
-router.post('/wa/connect', async (_req, res) => res.json(await connect()));
-router.post('/wa/disconnect', async (_req, res) => res.json(await disconnect()));
+router.get('/wa/status', async (_req, res) => {
+  const st = await status();
+  // Log leve (somente mudança relevante ajuda no diagnóstico)
+  ddebug('GET /admin/wa/status ->', { connected: st.connected, connecting: st.connecting, qr: !!st.qr });
+  res.json(st);
+});
 
-// ====== (NOVO) reset da sessão do painel ======
-router.post('/wa/reset', async (_req, res) => {
-  try {
-    try { await sock?.logout(); } catch {}
-    try { sock?.end?.(); } catch {}
-    sock = null;
-    clearAuthDir();
-    connected = false;
-    connecting = false;
-    lastQRDataUrl = null;
-    return res.json({ ok: true, reset: true });
-  } catch (e) {
-    return res.status(500).json({ ok: false, error: e?.message || String(e) });
-  }
+router.post('/wa/connect', async (_req, res) => {
+  dlog('POST /admin/wa/connect');
+  const st = await connect();
+  res.json(st);
+});
+
+router.post('/wa/disconnect', async (_req, res) => {
+  dlog('POST /admin/wa/disconnect');
+  const st = await disconnect();
+  res.json(st);
 });
 
 // ====== (MANTIDO) redireciona /admin -> /admin/whatsapp
 router.get('/', (_req, res) => res.redirect('/admin/whatsapp'));
 
 // ====== (MANTIDO) PÁGINA COMPLETA /admin/whatsapp (HTML inline)
-// >>> CSS anti-overflow + não imprime "qr" no JSON do status + botão "Limpar sessão"
+// >>> CSS anti-overflow e painel de status SEM incluir o base64 do QR
 router.get('/whatsapp', (_req, res) => {
   const html = /* html */ `
 <!doctype html>
@@ -173,7 +212,6 @@ router.get('/whatsapp', (_req, res) => {
         <div class="row" style="margin-bottom:10px">
           <button onclick="doConnect()">📷 Conectar</button>
           <button onclick="doDisconnect()">🔌 Desconectar</button>
-          <button onclick="doReset()">🧹 Limpar sessão</button>
           <a class="link" href="/admin/groups">➡️ Ir para Grupos</a>
         </div>
         <pre id="statusBox" class="muted">{ "ok": true, "connected": false, "connecting": false }</pre>
@@ -234,12 +272,6 @@ async function doConnect(){
 
 async function doDisconnect(){
   await fetch('/admin/wa/disconnect', { method:'POST' });
-  if (poll) { clearInterval(poll); poll = null; }
-  await getStatus();
-}
-
-async function doReset(){
-  await fetch('/admin/wa/reset', { method:'POST' });
   if (poll) { clearInterval(poll); poll = null; }
   await getStatus();
 }
