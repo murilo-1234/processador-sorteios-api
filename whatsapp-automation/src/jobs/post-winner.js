@@ -116,6 +116,19 @@ function pickMusicSafe() {
   if (typeof pickMusic === 'function') return pickMusic();
   return pickOneCSV(process.env.AUDIO_URLS) || '';
 }
+
+// --- NOVO: preferir o socket do painel admin (/admin) ---
+async function getPreferredSock(app) {
+  try {
+    const waAdmin = app?.locals?.waAdmin || app?.waAdmin;
+    if (waAdmin && typeof waAdmin.getStatus === 'function') {
+      const st = await waAdmin.getStatus();
+      if (st?.connected) return waAdmin.getSock();
+    }
+  } catch (_) {}
+  const waClient = app?.locals?.whatsappClient || app?.whatsappClient;
+  return waClient?.sock || null;
+}
 // -------------------------------------
 
 async function runOnce(app) {
@@ -314,20 +327,25 @@ async function runOnce(app) {
         COUPON: coupon
       });
 
-      // 5.4) enviar
-      for (const rawJid of targetJids) {
-        let jid = safeStr(rawJid).trim();
-        try {
-          if (!jid || !jid.endsWith('@g.us')) throw new Error(`JID inválido: "${jid}"`);
-          const payload = { ...media, caption: safeStr(caption) };
-          await wa.sock.sendMessage(jid, payload);
-          anySentForThisRow = true;
-        } catch (e) {
-          errors.push({
-            id: p.id, stage: 'sendMessage', jid,
-            mediaKeys: Object.keys(media || {}), captionLen: (caption || '').length,
-            usedPath, error: e?.message || String(e)
-          });
+      // 5.4) enviar (prioriza sessão admin; se não, cliente interno)
+      const sock = await getPreferredSock(app);
+      if (!sock) {
+        errors.push({ id: p.id, stage: 'sendMessage', error: 'WhatsApp não conectado (admin/cliente)' });
+      } else {
+        for (const rawJid of targetJids) {
+          let jid = safeStr(rawJid).trim();
+          try {
+            if (!jid || !jid.endsWith('@g.us')) throw new Error(`JID inválido: "${jid}"`);
+            const payload = { ...media, caption: safeStr(caption) };
+            await sock.sendMessage(jid, payload);
+            anySentForThisRow = true;
+          } catch (e) {
+            errors.push({
+              id: p.id, stage: 'sendMessage', jid,
+              mediaKeys: Object.keys(media || {}), captionLen: (caption || '').length,
+              usedPath, error: e?.message || String(e)
+            });
+          }
         }
       }
 
