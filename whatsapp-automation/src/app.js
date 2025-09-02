@@ -26,6 +26,7 @@ class App {
   constructor() {
     this.app = express();
     this.whatsappClient = null;
+    this.waAdmin = null; // <<< manter referência ao admin bundle
 
     const limiter = rateLimit({
       windowMs: 60 * 1000,
@@ -48,6 +49,7 @@ class App {
     // === PAINEL ADMIN (WhatsApp) ===
     try {
       const waAdmin = require('../admin-wa-bundle.js'); // arquivo na raiz do repo
+      this.waAdmin = waAdmin;                            // <<< guardamos para usar nas rotas /api
       this.app.use('/admin', waAdmin);                   // monta tudo em /admin
     } catch (e) {
       console.warn('⚠️ Admin bundle indisponível:', e?.message || e);
@@ -182,11 +184,33 @@ class App {
       res.sendFile(path.join(__dirname, '../public/admin/groups.html'));
     });
 
+    // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+    // SINCRONIZAÇÃO — agora prioriza o socket do ADMIN (mesma sessão que você conectou)
     this.app.get('/api/groups/sync', async (_req, res) => {
       try {
+        // 1) tentar via admin bundle (sessão do /admin/whatsapp)
+        if (this.waAdmin && typeof this.waAdmin.getStatus === 'function') {
+          const st = await this.waAdmin.getStatus();
+          if (st.connected) {
+            const sock = this.waAdmin.getSock();
+            const mp = await sock.groupFetchAllParticipating();
+            const groups = Object.values(mp).map(g => ({
+              jid: g.id,
+              name: g.subject,
+              participants: g.participants?.length ?? g.size ?? 0,
+              announce: !!g.announce
+            }));
+            const saved = settings.set({ groups, lastSyncAt: new Date().toISOString() });
+            return res.json({ ok: true, groups, saved });
+          }
+        }
+
+        // 2) fallback: cliente interno (mantém compatibilidade com o restante do sistema)
         const wa = this.initWhatsApp();
         const okConn = await this.waitForWAConnected(wa, 8000);
-        if (!okConn) return res.status(503).json({ ok: false, error: 'WhatsApp ainda conectando… tente novamente em alguns segundos.' });
+        if (!okConn) {
+          return res.status(503).json({ ok: false, error: 'WhatsApp ainda conectando… tente novamente em alguns segundos.' });
+        }
 
         const groups = await wa.listGroups();
         const saved = settings.set({ groups, lastSyncAt: new Date().toISOString() });
@@ -195,6 +219,7 @@ class App {
         res.status(500).json({ ok: false, error: e?.message || String(e) });
       }
     });
+    // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
     this.app.get('/api/groups', (_req, res) => {
       res.json({ ok: true, settings: settings.get() });
