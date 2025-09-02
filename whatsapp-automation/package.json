@@ -13,7 +13,7 @@
   "author": "Murilo",
   "license": "MIT",
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.8",
+    "@whiskeysockets/baileys": "latest",
     "axios": "^1.7.7",
     "bcryptjs": "^2.4.3",
     "check-disk-space": "^3.4.0",
