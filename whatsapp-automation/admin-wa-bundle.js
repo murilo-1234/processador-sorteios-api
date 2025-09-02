@@ -1,4 +1,3 @@
-// whatsapp-automation/admin-wa-bundle.js
 // Rotas + UI para conectar/desconectar WhatsApp com QR (Baileys),
 // injeta painel flutuante em /admin/groups
 // e serve o painel completo em /admin/whatsapp (lendo arquivo do /public).
@@ -18,11 +17,23 @@ const {
 } = require('@whiskeysockets/baileys');
 
 /* ===================== DIAGNÓSTICO ===================== */
+// ATIVE logs de debug colocando WA_DEBUG=1 no ambiente (ex.: Render)
 const WA_DEBUG = process.env.WA_DEBUG === '1';
 const ts = () => new Date().toISOString();
 const dlog   = (...a) => console.log('[WA-ADMIN]', ts(), ...a);
 const ddebug = (...a) => { if (WA_DEBUG) console.log('[WA-ADMIN:DEBUG]', ts(), ...a); };
 const mask = (s, keep = 32) => (typeof s === 'string' && s.length > keep ? s.slice(0, keep) + `…(${s.length})` : String(s));
+
+// buffer de logs em memória (para /admin/wa/logs)
+const DIAG = {
+  lines: [],
+  push(...args){
+    const line = `[${ts()}] ${args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')}`;
+    this.lines.push(line);
+    if (this.lines.length > 500) this.lines.shift();
+    console.log(line);
+  }
+};
 /* ======================================================= */
 
 // ====== WHATSAPP SESSION ======
@@ -34,7 +45,6 @@ let connected  = false;
 function ensureDir(p) {
   if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
 }
-
 function authDirPath() {
   return path.join(process.cwd(), 'data', 'baileys');
 }
@@ -49,11 +59,21 @@ async function status() {
   };
 }
 
+async function safeEndSocket() {
+  try { sock?.ev?.removeAllListeners?.(); } catch {}
+  try { await sock?.logout?.(); ddebug('safeEndSocket(): logout ok'); } catch (e) { ddebug('safeEndSocket(): logout err:', e?.message || e); }
+  try { sock?.end?.(); ddebug('safeEndSocket(): end ok'); } catch (e) { ddebug('safeEndSocket(): end err:', e?.message || e); }
+  sock = null;
+}
+
 async function connect() {
   if (connected)  { ddebug('connect(): já conectado');  return status(); }
   if (connecting) { ddebug('connect(): já conectando'); return status(); }
 
   connecting = true;
+  lastQRDataUrl = null;                   // evita mostrar QR velho
+  await safeEndSocket();                  // garante que não ficou resíduo
+
   const dir = authDirPath();
   ensureDir(dir);
   dlog('connect(): iniciando socket', { dir });
@@ -65,14 +85,18 @@ async function connect() {
   sock = makeWASocket({
     version,
     auth: state,
-    printQRInTerminal: false,
+    printQRInTerminal: false,             // QR vai para o frontend
     logger: pino({ level: 'silent' }),
-    browser: ['Chrome (Render)', 'Chrome', '123'],
+    browser: ['Desktop', 'Chrome', '120.0'],
+    // ajudar no handshake
+    connectTimeoutMs: 60_000,
+    keepAliveIntervalMs: 15_000,
   });
+  DIAG.push('Socket criado. Versão:', JSON.stringify(version));
 
   sock.ev.on('creds.update', () => {
     ddebug('creds.update → salvando');
-    saveCreds();
+    try { saveCreds(); } catch (e) { ddebug('saveCreds err:', e?.message || e); }
   });
 
   sock.ev.on('connection.update', async (u) => {
@@ -82,42 +106,48 @@ async function connect() {
       try {
         ddebug('QR recebido (raw):', mask(qr));
         lastQRDataUrl = await qrcode.toDataURL(qr);
-        dlog('QR gerado (dataURL)', { length: lastQRDataUrl.length });
+        DIAG.push('QR gerado (dataURL length=', String(lastQRDataUrl.length), ')');
       } catch (err) {
         lastQRDataUrl = null;
-        dlog('falha ao gerar dataURL do QR:', err?.message || String(err));
+        DIAG.push('Falha ao gerar dataURL do QR:', err?.message || String(err));
       }
+    }
+
+    if (connection) DIAG.push('connection.update ->', connection);
+
+    if (lastDisconnect) {
+      const err  = lastDisconnect.error;
+      const code = err?.output?.statusCode ?? err?.data?.statusCode ?? err?.status ?? err?.code ?? null;
+      DIAG.push('lastDisconnect', JSON.stringify({
+        code,
+        message: err?.message,
+        payload: err?.output?.payload,
+      }));
+
+      if (code === DisconnectReason.badSession)       DIAG.push('MOTIVO: badSession (credenciais corrompidas)');
+      if (code === DisconnectReason.connectionReplaced) DIAG.push('MOTIVO: connectionReplaced (outro processo usando a sessão)');
+      if (code === DisconnectReason.loggedOut)        DIAG.push('MOTIVO: loggedOut (sessão removida)');
+      if (code === 401)                               DIAG.push('MOTIVO: 401 not-authorized (pareamento rejeitado)');
     }
 
     if (connection === 'open') {
       connected  = true;
       connecting = false;
       lastQRDataUrl = null;
-      dlog('conexão aberta ✅', { me: sock?.user || {} });
+      DIAG.push('connection OPEN', JSON.stringify(sock?.user || {}));
     }
 
     if (connection === 'close') {
-      const boom  = lastDisconnect?.error;
-      const code =
-        boom?.output?.statusCode ||
-        boom?.data?.statusCode ||
-        boom?.status ||
-        boom?.code || null;
-
-      let reason = 'desconhecido';
-      if (code === DisconnectReason.loggedOut) reason = 'loggedOut';
-
-      dlog('conexão fechada ❌', {
-        code, reason, message: boom?.message || String(boom || ''),
-      });
+      const err  = lastDisconnect?.error;
+      const code = err?.output?.statusCode ?? err?.data?.statusCode ?? err?.status ?? err?.code ?? null;
 
       if (code === DisconnectReason.loggedOut) {
-        try { await sock?.logout(); ddebug('logout() após loggedOut'); } catch {}
+        try { await sock?.logout(); DIAG.push('logout() após loggedOut'); } catch {}
       }
-
       connected  = false;
       connecting = false;
       lastQRDataUrl = null;
+      DIAG.push('connection CLOSED (code=', String(code), ')');
     }
   });
 
@@ -126,9 +156,7 @@ async function connect() {
 
 async function disconnect() {
   dlog('disconnect(): solicitado');
-  try { await sock?.logout(); ddebug('logout() ok'); } catch (e) { ddebug('logout() erro:', e?.message || e); }
-  try { sock?.end?.(); ddebug('end() ok'); } catch (e) { ddebug('end() erro:', e?.message || e); }
-  sock = null;
+  await safeEndSocket();
   connected  = false;
   connecting = false;
   lastQRDataUrl = null;
@@ -147,9 +175,11 @@ function clearAuthFolder() {
 }
 
 // ====== ROTAS DE ADMIN (API) — mantidas e ampliadas ======
+router.get('/wa/health', (_req, res) => res.json({ ok: true, ts: ts() }));
+
 router.get('/wa/status', async (_req, res) => {
   const st = await status();
-  ddebug('GET /admin/wa/status ->', { connected: st.connected, connecting: st.connecting, qr: !!st.qr });
+  ddebug('GET /admin/wa/status ->', { connected: st.connected, connecting: st.connecting, qr: !!st.qr, hasSock: st.hasSock });
   res.json(st);
 });
 
@@ -165,7 +195,7 @@ router.post('/wa/disconnect', async (_req, res) => {
   res.json(st);
 });
 
-// NOVO: limpar sessão (apaga credenciais e zera estado)
+// limpar sessão (apaga credenciais e zera estado)
 router.post('/wa/clear', async (_req, res) => {
   try {
     dlog('POST /admin/wa/clear (limpar sessão)');
@@ -178,7 +208,7 @@ router.post('/wa/clear', async (_req, res) => {
   }
 });
 
-// Alias de compatibilidade: /wa/reset → mesmo efeito de /wa/clear
+// Alias compatível: /wa/reset
 router.post('/wa/reset', async (_req, res) => {
   try {
     dlog('POST /admin/wa/reset (alias clear)');
@@ -191,18 +221,25 @@ router.post('/wa/reset', async (_req, res) => {
   }
 });
 
+// === LOGS de diagnóstico (leitura simples) ===
+router.get('/wa/logs', (_req, res) => {
+  res.type('text/plain').send(DIAG.lines.join('\n'));
+});
+
 // (mantido) redireciona /admin -> /admin/whatsapp
 router.get('/', (_req, res) => res.redirect('/admin/whatsapp'));
 
 // (mantido) PÁGINA COMPLETA /admin/whatsapp
-// Agora servimos o arquivo real do /public, para não duplicar markup.
+// Serve o arquivo real do /public, para não duplicar markup.
 router.get('/whatsapp', (req, res) => {
   const file = path.join(__dirname, 'public', 'admin', 'whatsapp.html');
   if (fs.existsSync(file)) {
     return res.sendFile(file);
   }
-  // Fallback: se o arquivo não existir por algum motivo, retornamos um mínimo
-  res.set('Content-Type', 'text/html; charset=utf-8').send(`<!doctype html><meta charset="utf-8"><title>WhatsApp</title><p>Suba <code>public/admin/whatsapp.html</code>.</p>`);
+  // Fallback se não existir (evita quebrar)
+  res.set('Content-Type', 'text/html; charset=utf-8').send(
+    '<!doctype html><meta charset="utf-8"><title>WhatsApp</title><p>Suba <code>public/admin/whatsapp.html</code>.</p>'
+  );
 });
 
 // UI (JS) que injeta painel flutuante em /admin/groups (mantido)
