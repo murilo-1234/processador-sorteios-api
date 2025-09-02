@@ -1,7 +1,7 @@
-// whatsapp-automation/src/admin-wa-bundle.js
+// whatsapp-automation/admin-wa-bundle.js
 // Rotas + UI (bundle) para conectar/desconectar WhatsApp com QR (Baileys),
 // injetar um painel flutuante na tela "Grupos do WhatsApp"
-// e (NOVO) uma página completa de painel em /admin/whatsapp.
+// e (página) um painel completo em /admin/whatsapp.
 
 const express = require('express');
 const router  = express.Router();
@@ -95,9 +95,11 @@ router.get('/wa/status', async (_req, res) => res.json(await status()));
 router.post('/wa/connect', async (_req, res) => res.json(await connect()));
 router.post('/wa/disconnect', async (_req, res) => res.json(await disconnect()));
 
-// ====== (NOVO) PÁGINA COMPLETA /admin/whatsapp ======
+// ====== (MANTIDO) redireciona /admin -> /admin/whatsapp
 router.get('/', (_req, res) => res.redirect('/admin/whatsapp'));
 
+// ====== (MANTIDO) PÁGINA COMPLETA /admin/whatsapp (HTML inline)
+// >>> ALTERADO APENAS: 1) CSS anti-overflow; 2) não imprime "qr" no JSON do status
 router.get('/whatsapp', (_req, res) => {
   const html = /* html */ `
 <!doctype html>
@@ -115,10 +117,11 @@ router.get('/whatsapp', (_req, res) => {
     .wrap{max-width:900px;margin:0 auto}
     h1{font-size:22px;margin:0 0 16px}
     .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:16px 0}
-    .card{background:var(--panel);border:1px solid var(--b);border-radius:12px;padding:16px}
+    @media (max-width: 920px){ .grid{ grid-template-columns: 1fr; } }
+    .card{background:var(--panel);border:1px solid var(--b);border-radius:12px;padding:16px;min-width:0}
     button{padding:10px 14px;border-radius:10px;border:1px solid var(--b);background:var(--btn);color:var(--fg);cursor:pointer}
     button:hover{background:var(--accent);border-color:var(--accent)}
-    pre{background:#0b1220;border:1px solid var(--b);border-radius:10px;padding:12px;white-space:pre-wrap}
+    pre{background:#0b1220;border:1px solid var(--b);border-radius:10px;padding:12px;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;overflow:auto;max-height:220px}
     a.link{color:#93c5fd;text-decoration:none}
     a.link:hover{text-decoration:underline}
     .muted{color:var(--muted)}
@@ -142,14 +145,14 @@ router.get('/whatsapp', (_req, res) => {
           <button onclick="doDisconnect()">🔌 Desconectar</button>
           <a class="link" href="/admin/groups">➡️ Ir para Grupos</a>
         </div>
-        <pre id="statusBox" class="muted">Carregando…</pre>
+        <pre id="statusBox" class="muted">{ "ok": true, "connected": false, "connecting": false }</pre>
       </div>
 
       <div class="card">
         <h3>QR Code</h3>
-        <div id="qrBox" class="qr"><span class="muted">Gere conexão em “Conectar” para exibir o QR…</span></div>
+        <div id="qrBox" class="qr"><span class="muted">Aguardando geração do QR…</span></div>
         <p class="muted" style="margin-top:10px">
-          iPhone: Ajustes → Dispositivos conectados → Conectar um dispositivo.  
+          iPhone: Ajustes → Dispositivos conectados → Conectar um dispositivo.
           Android: “Conectar um dispositivo” no WhatsApp → escaneie o QR.
         </p>
       </div>
@@ -159,14 +162,20 @@ router.get('/whatsapp', (_req, res) => {
 <script>
 let poll = null;
 
+function renderStatus(obj){
+  // NÃO inclui o base64 do QR no painel de status
+  const view = { ...obj };
+  delete view.qr;
+  document.getElementById('statusBox').textContent = JSON.stringify(view, null, 2);
+}
+
 async function getStatus(){
-  const r = await fetch('/admin/wa/status');
+  const r = await fetch('/admin/wa/status', { cache:'no-store' });
   const s = await r.json().catch(()=>({}));
-  const box = document.getElementById('statusBox');
   const dot = document.getElementById('stateDot');
   const qrB = document.getElementById('qrBox');
 
-  box.textContent = JSON.stringify(s, null, 2);
+  renderStatus(s);
 
   if (s.connected){
     dot.classList.remove('red'); dot.classList.add('green');
@@ -206,7 +215,7 @@ getStatus();
   res.set('Content-Type', 'text/html; charset=utf-8').send(html);
 });
 
-// ====== UI (JS) que injeta painel flutuante em /admin/groups (MANTIDO) ======
+// ====== UI (JS) que injeta painel flutuante em /admin/groups (MANTIDO)
 router.get('/wa/ui.js', (_req, res) => {
   res.type('application/javascript').send(`
 // Painel flutuante p/ conectar WhatsApp na tela /admin/groups
