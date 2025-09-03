@@ -120,7 +120,7 @@ function pickMusicSafe() {
   return pickOneCSV(process.env.AUDIO_URLS) || '';
 }
 
-// --- NOVO: preferir o socket do painel admin (/admin) ---
+// --- preferir o socket do painel admin (/admin) ---
 async function getPreferredSock(app) {
   try {
     const waAdmin = app?.locals?.waAdmin || app?.waAdmin;
@@ -136,11 +136,13 @@ async function getPreferredSock(app) {
 
 /**
  * Executa o job 1x.
- * @param {*} app - express app com locals.whatsappClient/waAdmin
- * @param {*} opts - { dryRun?: boolean }
+ * @param {*} app  express app com locals.whatsappClient/waAdmin
+ * @param {*} opts { dryRun?: boolean }
  */
 async function runOnce(app, opts = {}) {
-  const dryRun = !!opts.dryRun || String(app?.locals?.reqDry || '').trim() === '1';
+  const dryRun =
+    !!opts.dryRun ||
+    String(app?.locals?.reqDry || '').trim() === '1';
   dlog('tick start', { dryRun });
 
   // 0) grupos-alvo
@@ -163,7 +165,7 @@ async function runOnce(app, opts = {}) {
   // 1) Lê a planilha
   const { headers, items, spreadsheetId, tab, sheets } = await getRows();
 
-  // 2) Mapeia cabeçalhos (obrigatórios + opcionais)
+  // 2) Mapeia cabeçalhos
   const H_ID      = findHeader(headers, ['id', 'codigo', 'código']);
   const H_DATA    = findHeader(headers, ['data', 'date']);
   const H_HORA    = findHeader(headers, ['horario', 'hora', 'horário', 'time']);
@@ -172,7 +174,7 @@ async function runOnce(app, opts = {}) {
   const H_WA_POST = findHeader(headers, ['wa_post']);
   const H_WA_AT   = findHeader(headers, ['wa_post_at', 'wa_postado_em']);
 
-  // Opcionais (para permitir headline/bg/música por linha na planilha)
+  // Opcionais (headline/bg/music por linha)
   const H_CUSTOM_HEADLINE = findHeader(headers, ['headline']);
   const H_BG_URL          = findHeader(headers, ['video_bg_url', 'bg_url']);
   const H_MUSIC_URL       = findHeader(headers, ['music_url', 'audio_url']);
@@ -229,7 +231,7 @@ async function runOnce(app, opts = {}) {
       return;
     }
 
-    // opcionais da planilha (se existirem)
+    // opcionais por linha
     const customHeadline = H_CUSTOM_HEADLINE ? coerceStr(row[H_CUSTOM_HEADLINE]) : '';
     const bgUrl          = H_BG_URL          ? coerceStr(row[H_BG_URL])          : '';
     const musicUrl       = H_MUSIC_URL       ? coerceStr(row[H_MUSIC_URL])       : '';
@@ -315,17 +317,32 @@ async function runOnce(app, opts = {}) {
           usedPath = posterPath;
 
           if (wantVideo) {
-            const vid = await makeOverlayVideo({
-              posterPath,
-              duration: Number(process.env.VIDEO_DURATION || 7),
-              res: process.env.VIDEO_RES || '1080x1350',
-              bitrate: process.env.VIDEO_BITRATE || '2000k',
-              bg: videoBgUrl,         // <<<<<< usa o BG (planilha > env)
-              music: musicUrl         // <<<<<< usa música (planilha > env)
-            });
-            usedPath = vid;
-            const buf = fs.readFileSync(vid);
-            media = { video: buf, mimetype: 'video/mp4' };
+            if (dryRun) {
+              // Em dry-run não renderiza vídeo para economizar CPU/memória
+              const buf = fs.readFileSync(posterPath);
+              media = { image: buf, mimetype: 'image/png' };
+              dlog('dry-run: pulando FFmpeg, usando poster como imagem');
+            } else {
+              try {
+                const vid = await makeOverlayVideo({
+                  posterPath,
+                  duration: Number(process.env.VIDEO_DURATION || 7),
+                  res: process.env.VIDEO_RES || '1080x1350',
+                  bitrate: process.env.VIDEO_BITRATE || '2000k',
+                  bg: videoBgUrl,
+                  music: musicUrl
+                });
+                usedPath = vid;
+                const buf = fs.readFileSync(vid);
+                media = { video: buf, mimetype: 'video/mp4' };
+              } catch (fferr) {
+                // Fallback: registra erro e envia somente o poster
+                errors.push({ id: p.id, stage: 'prepareMedia(video)', error: fferr?.message || String(fferr) });
+                const buf = fs.readFileSync(posterPath);
+                media = { image: buf, mimetype: 'image/png' };
+                dlog('FFmpeg falhou, fallback para imagem (poster)', fferr?.message || fferr);
+              }
+            }
           } else {
             const buf = fs.readFileSync(posterPath);
             media = { image: buf, mimetype: 'image/png' };
@@ -333,6 +350,7 @@ async function runOnce(app, opts = {}) {
         }
         dlog('midia pronta', { usedPath, keys: Object.keys(media || {}) });
       } catch (e) {
+        // Se falhou totalmente, registra e segue para próxima linha
         errors.push({ id: p.id, stage: 'prepareMedia', error: e?.message || String(e) });
         continue;
       }
@@ -386,7 +404,7 @@ async function runOnce(app, opts = {}) {
     }
   }
 
-  dlog('tick end', { processed: pending.length, sent, errorsCount: errors.length, skippedCount: (pending.length === 0 ? 0 : undefined) });
+  dlog('tick end', { processed: pending.length, sent, errorsCount: errors.length, skippedCount: skipped.length });
   return { ok: true, processed: pending.length, sent, errors, skipped, dryRun };
 }
 
