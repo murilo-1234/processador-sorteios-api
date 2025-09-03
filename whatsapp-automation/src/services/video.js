@@ -1,86 +1,118 @@
 // src/services/video.js
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegPath = require('ffmpeg-static');
-const ffprobePath = require('ffprobe-static').path;
+
+ffmpeg.setFfmpegPath(ffmpegPath);
 
 const MEDIA_DIR = process.env.MEDIA_DIR || '/data/media';
 fs.mkdirSync(MEDIA_DIR, { recursive: true });
 
-if (ffmpegPath) ffmpeg.setFfmpegPath(ffmpegPath);
-if (ffprobePath) ffmpeg.setFfprobePath(ffprobePath);
-
-// util: escolhe 1 item aleatório de uma CSV env
 function pickOneCSV(listStr) {
   if (!listStr) return null;
   const arr = String(listStr)
     .split(',')
     .map(s => s.trim())
     .filter(Boolean);
-  return arr.length ? arr[Math.floor(Math.random() * arr.length)] : null;
+  if (!arr.length) return null;
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function ensureLocalBgPath() {
+  // 1) tenta lista de env
+  const fromEnv = pickOneCSV(process.env.VIDEO_BG_URLS);
+  if (fromEnv) return { type: 'remote', value: fromEnv };
+
+  // 2) tenta arquivo local opcional
+  const local = path.join(__dirname, '../../public/assets/confetti.mp4');
+  if (fs.existsSync(local)) return { type: 'local', value: local };
+
+  throw new Error('Nenhum vídeo de fundo disponível. Preencha VIDEO_BG_URLS ou suba public/assets/confetti.mp4');
+}
+
+function downloadToTmp(url) {
+  return new Promise((resolve, reject) => {
+    const tmp = path.join(MEDIA_DIR, `bg_${Date.now()}_${Math.random().toString(36).slice(2)}.mp4`);
+    const file = fs.createWriteStream(tmp);
+    https.get(url, (res) => {
+      if (res.statusCode && res.statusCode >= 400) {
+        return reject(new Error(`Falha ao baixar BG ${res.statusCode}`));
+      }
+      res.pipe(file);
+      file.on('finish', () => file.close(() => resolve(tmp)));
+    }).on('error', (e) => {
+      try { fs.unlinkSync(tmp); } catch {}
+      reject(e);
+    });
+  });
 }
 
 /**
- * Gera um MP4 sobrepondo o poster PNG em um vídeo de fundo (URL ou arquivo).
- * Pode opcionalmente adicionar uma trilha de música (URL ou arquivo).
- *
- * @param {object} params
- * @param {string} params.posterPath  Caminho do PNG do poster (obrigatório)
- * @param {number} [params.duration=7]
- * @param {string} [params.res='1080x1350']
- * @param {string} [params.bitrate='2000k']
- * @param {string} [params.bg]        URL/caminho do vídeo de fundo (opcional; se não vier, usa VIDEO_BG_URLS)
- * @param {string} [params.music]     URL/caminho da música (opcional; se não vier, nada de áudio)
- * @returns {Promise<string>} caminho do MP4 gerado
+ * Gera um MP4 curto com poster sobre vídeo de fundo.
+ * @param {object} cfg
+ * @param {string} cfg.posterPath  - caminho do PNG gerado (obrigatório)
+ * @param {number} [cfg.duration]  - segundos (padrão 7)
+ * @param {string} [cfg.res]       - ex: '720x1280' (padrão env VIDEO_RES ou '1080x1350')
+ * @param {string} [cfg.bitrate]   - ex: '1000k' (padrão env VIDEO_BITRATE ou '2000k')
+ * @returns {Promise<string>} caminho do mp4
  */
-async function makeOverlayVideo({
-  posterPath,
-  duration = 7,
-  res = '1080x1350',
-  bitrate = '2000k',
-  bg,
-  music,
-}) {
+async function makeOverlayVideo({ posterPath, duration, res, bitrate }) {
   if (!posterPath || !fs.existsSync(posterPath)) {
-    throw new Error(`Poster inexistente: ${posterPath}`);
+    throw new Error('posterPath inválido');
   }
 
-  // Escolhe bg se não veio por parâmetro
-  const bgInput = bg || pickOneCSV(process.env.VIDEO_BG_URLS);
-  if (!bgInput) throw new Error('Nenhum vídeo de fundo informado (param "bg" ou env VIDEO_BG_URLS).');
+  const DURATION = Number(duration || process.env.VIDEO_DURATION || 7);
+  const RES = (res || process.env.VIDEO_RES || '1080x1350').replace('×', 'x');
+  const BITRATE = (bitrate || process.env.VIDEO_BITRATE || '2000k');
 
   const outPath = path.join(MEDIA_DIR, `winner_${Date.now()}.mp4`);
 
+  // Escolhe/baixa BG
+  const bgSel = ensureLocalBgPath();
+  let bgPath = bgSel.value;
+  let cleanup = null;
+
+  if (bgSel.type === 'remote') {
+    bgPath = await downloadToTmp(bgSel.value);
+    cleanup = () => { try { fs.unlinkSync(bgPath); } catch {} };
+  }
+
+  // Filtro: scale + trim no BG, scale do poster, overlay central, yuv420p
+  const filter = [
+    `[0:v]scale=${RES}:force_original_aspect_ratio=cover,setsar=1,fps=25,trim=0:${DURATION},setpts=PTS-STARTPTS[v0];` +
+    `[1:v]scale=${RES}:force_original_aspect_ratio=contain,setsar=1[ov];` +
+    `[v0][ov]overlay=(W-w)/2:(H-h)/2:shortest=1,format=yuv420p`
+  ];
+
+  // Execução “econômica”
   return new Promise((resolve, reject) => {
-    const cmd = ffmpeg()
-      .input(bgInput)      // 0:v
-      .input(posterPath);  // 1:v
-
-    if (music) {
-      cmd.input(music);   // 2:a (opcional; pode ser URL)
-    }
-
-    // Produz [vout] como vídeo final
-    const vf =
-      `[0:v]scale=${res},setsar=1,trim=0:${duration},setpts=PTS-STARTPTS[v0];` +
-      `[1:v]scale=${res},setsar=1[ov];` +
-      `[v0][ov]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2:shortest=1,format=yuv420p[vout]`;
-
-    cmd
-      .complexFilter([vf])
-      .videoBitrate(bitrate)
+    ffmpeg()
+      .input(bgPath)
+      .input(posterPath)
+      .complexFilter(filter)
+      .videoCodec('libx264')
+      .videoBitrate(BITRATE)
       .outputOptions([
-        '-map', '[vout]',
-        ...(music ? ['-map', '2:a?','-c:a','aac'] : ['-an']),
-        '-c:v', 'libx264',
+        '-preset', 'veryfast',
         '-movflags', '+faststart',
-        '-shortest',
+        '-pix_fmt', 'yuv420p',
+        '-r', '25',
+        '-threads', '1',
+        '-shortest'
       ])
-      .duration(duration)
-      .save(outPath)
-      .on('end', () => resolve(outPath))
-      .on('error', reject);
+      .noAudio()
+      .duration(DURATION)
+      .on('end', () => {
+        if (cleanup) cleanup();
+        resolve(outPath);
+      })
+      .on('error', (err) => {
+        if (cleanup) cleanup();
+        reject(err);
+      })
+      .save(outPath);
   });
 }
 
