@@ -140,7 +140,7 @@ async function getPreferredSock(app) {
  * @param {*} opts - { dryRun?: boolean }
  */
 async function runOnce(app, opts = {}) {
-  const dryRun = !!opts.dryRun;
+  const dryRun = !!opts.dryRun || String(app?.locals?.reqDry || '').trim() === '1';
   dlog('tick start', { dryRun });
 
   // 0) grupos-alvo
@@ -302,7 +302,7 @@ async function runOnce(app, opts = {}) {
           const buf = fs.readFileSync(usedPath);
           media = { video: buf, mimetype: 'video/mp4' };
         } else {
-          // ======= Poster + Overlay (modo antigo) =======
+          // ======= Poster + Vídeo Overlay (FFmpeg) =======
           const dateTimeStr = format(p.spDate, "dd/MM/yyyy 'às' HH:mm");
           const posterPath = await generatePoster({
             productImageUrl: p.imgUrl,
@@ -319,7 +319,9 @@ async function runOnce(app, opts = {}) {
               posterPath,
               duration: Number(process.env.VIDEO_DURATION || 7),
               res: process.env.VIDEO_RES || '1080x1350',
-              bitrate: process.env.VIDEO_BITRATE || '2000k'
+              bitrate: process.env.VIDEO_BITRATE || '2000k',
+              bg: videoBgUrl,         // <<<<<< usa o BG (planilha > env)
+              music: musicUrl         // <<<<<< usa música (planilha > env)
             });
             usedPath = vid;
             const buf = fs.readFileSync(vid);
