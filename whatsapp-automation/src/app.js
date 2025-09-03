@@ -53,7 +53,7 @@ class App {
       const waAdmin = require('../admin-wa-bundle.js'); // arquivo na raiz do repo
       this.waAdmin = waAdmin;                            // <<< guardamos para usar nas rotas /api
       this.app.locals.waAdmin = waAdmin;                // <<< deixa acessível para jobs/rotas
-      this.app.use('/admin', waAdmin);                   // monta tudo em /admin
+      this.app.use('/admin', waAdmin);                  // monta tudo em /admin
     } catch (e) {
       console.warn('⚠️ Admin bundle indisponível:', e?.message || e);
     }
@@ -328,11 +328,37 @@ class App {
     // ========= job manual =========
     this.app.post('/api/jobs/run-once', async (req, res) => {
       try {
-        const out = await runOnce(this.app);
+        const dry = ['1','true','yes'].includes(String(req.query.dry || '').toLowerCase());
+        const out = await runOnce(this.app, { dryRun: dry });
         res.json(out);
       } catch (e) {
         res.status(500).json({ ok: false, error: e?.message || String(e) });
       }
+    });
+
+    // ========= diagnóstico admin vs client =========
+    this.app.get('/debug/wa', async (_req, res) => {
+      const wa = this.initWhatsApp();
+      let admin = { available: false };
+      try {
+        if (this.waAdmin && typeof this.waAdmin.getStatus === 'function') {
+          const st = await this.waAdmin.getStatus();
+          admin = { available: true, connected: !!st.connected, connecting: !!st.connecting, hasSock: !!this.waAdmin.getSock?.() };
+        }
+      } catch (e) {
+        admin = { available: true, error: e?.message || String(e) };
+      }
+
+      res.json({
+        admin,
+        client: {
+          initialized: !!wa.sock,
+          connected: !!wa.isConnected,
+          user: wa.user || null
+        },
+        selectedGroups: settings.get()?.postGroupJids || (settings.get()?.resultGroupJid ? [settings.get().resultGroupJid] : []),
+        ts: new Date().toISOString()
+      });
     });
   }
 
