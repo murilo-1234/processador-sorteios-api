@@ -52,12 +52,14 @@ const TZ = process.env.TZ || 'America/Sao_Paulo';
 const DELAY_MIN = Number(process.env.POST_DELAY_MINUTES ?? 10);
 const DEBUG_JOB = String(process.env.DEBUG_JOB || '').trim() === '1';
 
-// === NOVO: flags para evitar preview e/ou enviar URL separada ===
-const DISABLE_LINK_PREVIEW = String(process.env.DISABLE_LINK_PREVIEW || '1') === '1';
-const SEND_RESULT_URL_SEPARATE = String(process.env.SEND_RESULT_URL_SEPARATE || '1') === '1';
+// === Flags para evitar preview e/ou enviar URL separada ===
+const DISABLE_LINK_PREVIEW = String(process.env.DISABLE_LINK_PREVIEW || '1') === '1'; // remove URLs do caption
+const SEND_RESULT_URL_SEPARATE = String(process.env.SEND_RESULT_URL_SEPARATE || '1') === '1'; // manda o link em msg separada
+const BAILEYS_LINK_PREVIEW_OFF = String(process.env.BAILEYS_LINK_PREVIEW_OFF || '1') === '1'; // { linkPreview:false } nas opções
 
 // ---------- utils ----------
 const dlog = (...a) => { if (DEBUG_JOB) console.log('[JOB]', ...a); };
+const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
 function chooseTemplate() {
   const templates = require('../services/texts');
@@ -370,42 +372,45 @@ async function runOnce(app, opts = {}) {
       }
 
       // 5.3) legenda
-      let caption = mergeText(chooseTemplate(), {
+      const resultUrlStr = safeStr(resultUrl);
+      const captionFull = mergeText(chooseTemplate(), {
         WINNER: winner || 'Ganhador(a)',
-        RESULT_URL: info.url,
+        RESULT_URL: resultUrlStr,
         COUPON: coupon
       });
 
       // Evita preview: remove URLs do caption (inclusive a do resultado)
-      if (DISABLE_LINK_PREVIEW) {
-        caption = stripUrls(caption, [info.url]);
-      }
+      const mustStrip = DISABLE_LINK_PREVIEW || SEND_RESULT_URL_SEPARATE;
+      const captionOut = mustStrip ? stripUrls(captionFull, [resultUrlStr]) : captionFull;
 
       // 5.4) enviar (prioriza sessão admin; se não, cliente interno)
       const sock = await getPreferredSock(app);
       if (!sock) {
         errors.push({ id: p.id, stage: 'sendMessage', error: 'WhatsApp não conectado (admin/cliente)' });
       } else if (dryRun) {
-        dlog('dry-run => NÃO enviou', { to: targetJids, id: p.id });
+        dlog('dry-run => NÃO enviou', { to: targetJids, id: p.id, caption: captionOut, link: resultUrlStr });
       } else {
         for (const rawJid of targetJids) {
           let jid = safeStr(rawJid).trim();
           try {
             if (!jid || !jid.endsWith('@g.us')) throw new Error(`JID inválido: "${jid}"`);
-            const payload = { ...media, caption: safeStr(caption) };
-            await sock.sendMessage(jid, payload);
+            const payload = { ...media, caption: safeStr(captionOut) };
+            const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
+
+            await sock.sendMessage(jid, payload, opts); // imagem/vídeo SEM preview
 
             // (Opcional) manda o link do resultado em uma segunda mensagem
-            if (SEND_RESULT_URL_SEPARATE && info.url) {
-              await sock.sendMessage(jid, { text: info.url });
+            if (SEND_RESULT_URL_SEPARATE && resultUrlStr) {
+              await delay(500);
+              await sock.sendMessage(jid, { text: resultUrlStr }, opts);
             }
 
             anySentForThisRow = true;
-            dlog('enviado', { jid, id: p.id });
+            dlog('enviado', { jid, id: p.id, withLink: !!(SEND_RESULT_URL_SEPARATE && resultUrlStr) });
           } catch (e) {
             errors.push({
               id: p.id, stage: 'sendMessage', jid,
-              mediaKeys: Object.keys(media || {}), captionLen: (caption || '').length,
+              mediaKeys: Object.keys(media || {}), captionLen: (captionOut || '').length,
               usedPath, error: e?.message || String(e)
             });
           }
