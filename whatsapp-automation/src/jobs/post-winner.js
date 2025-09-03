@@ -50,8 +50,11 @@ try {
 
 const TZ = process.env.TZ || 'America/Sao_Paulo';
 const DELAY_MIN = Number(process.env.POST_DELAY_MINUTES ?? 10);
+const DEBUG_JOB = String(process.env.DEBUG_JOB || '').trim() === '1';
 
-// ---------- utilitários ----------
+// ---------- utils ----------
+const dlog = (...a) => { if (DEBUG_JOB) console.log('[JOB]', ...a); };
+
 function chooseTemplate() {
   const templates = require('../services/texts');
   if (Array.isArray(templates) && templates.length) {
@@ -131,8 +134,14 @@ async function getPreferredSock(app) {
 }
 // -------------------------------------
 
-async function runOnce(app) {
-  const wa = app.locals?.whatsappClient || app.whatsappClient;
+/**
+ * Executa o job 1x.
+ * @param {*} app - express app com locals.whatsappClient/waAdmin
+ * @param {*} opts - { dryRun?: boolean }
+ */
+async function runOnce(app, opts = {}) {
+  const dryRun = !!opts.dryRun;
+  dlog('tick start', { dryRun });
 
   // 0) grupos-alvo
   const st = settings.get();
@@ -141,6 +150,7 @@ async function runOnce(app) {
     : (st.resultGroupJid ? [String(st.resultGroupJid).trim()] : []);
 
   if (!targetJids.length) {
+    dlog('skip: nenhum grupo selecionado');
     return {
       ok: false,
       processed: 0,
@@ -148,6 +158,7 @@ async function runOnce(app) {
       errors: [{ stage: 'precheck', error: 'Nenhum grupo selecionado em /admin/groups' }]
     };
   }
+  dlog('targets', targetJids);
 
   // 1) Lê a planilha
   const { headers, items, spreadsheetId, tab, sheets } = await getRows();
@@ -232,11 +243,13 @@ async function runOnce(app) {
   });
 
   if (!pending.length) {
+    dlog('sem linhas prontas');
     return { ok: true, processed: 0, sent: 0, note: 'sem linhas prontas', skipped };
   }
 
   // 4) Cupom (uma vez por execução)
   const coupon = await fetchFirstCoupon();
+  dlog('coupon', coupon);
 
   // 5) Processa e posta
   let sent = 0;
@@ -255,6 +268,7 @@ async function runOnce(app) {
         continue;
       }
       const { url: resultUrl, winner, participants } = info;
+      dlog('linha', p.id, { winner, participantsCount: Array.isArray(participants) ? participants.length : 0 });
 
       // 5.2) gerar mídia (poster ou vídeo)
       let usedPath;
@@ -315,6 +329,7 @@ async function runOnce(app) {
             media = { image: buf, mimetype: 'image/png' };
           }
         }
+        dlog('midia pronta', { usedPath, keys: Object.keys(media || {}) });
       } catch (e) {
         errors.push({ id: p.id, stage: 'prepareMedia', error: e?.message || String(e) });
         continue;
@@ -331,6 +346,8 @@ async function runOnce(app) {
       const sock = await getPreferredSock(app);
       if (!sock) {
         errors.push({ id: p.id, stage: 'sendMessage', error: 'WhatsApp não conectado (admin/cliente)' });
+      } else if (dryRun) {
+        dlog('dry-run => NÃO enviou', { to: targetJids, id: p.id });
       } else {
         for (const rawJid of targetJids) {
           let jid = safeStr(rawJid).trim();
@@ -339,6 +356,7 @@ async function runOnce(app) {
             const payload = { ...media, caption: safeStr(caption) };
             await sock.sendMessage(jid, payload);
             anySentForThisRow = true;
+            dlog('enviado', { jid, id: p.id });
           } catch (e) {
             errors.push({
               id: p.id, stage: 'sendMessage', jid,
@@ -351,7 +369,7 @@ async function runOnce(app) {
 
       // 5.5) marcar planilha
       try {
-        if (anySentForThisRow) {
+        if (!dryRun && anySentForThisRow) {
           const postAt = new Date().toISOString();
           await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_POST || 'WA_POST', 'Postado');
           await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_AT   || 'WA_POST_AT', postAt);
@@ -366,7 +384,8 @@ async function runOnce(app) {
     }
   }
 
-  return { ok: true, processed: pending.length, sent, errors, skipped };
+  dlog('tick end', { processed: pending.length, sent, errorsCount: errors.length, skippedCount: (pending.length === 0 ? 0 : undefined) });
+  return { ok: true, processed: pending.length, sent, errors, skipped, dryRun };
 }
 
 module.exports = { runOnce };
