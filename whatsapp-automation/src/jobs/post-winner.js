@@ -136,6 +136,18 @@ function stripUrls(text, alsoRemove = []) {
   return out.replace(/\s{2,}/g, ' ').trim();
 }
 
+// Separa nome e "meta" (data/hora + canal) do campo winner
+function splitWinnerMeta(winnerStr = '') {
+  // Tenta pegar um datetime "2025-08-26 13:00:41", se existir
+  const m = winnerStr.match(/^(.*?)(\s20\d{2}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2})?(.*)$/);
+  if (!m) return { name: winnerStr.trim(), meta: '' };
+  const name = (m[1] || '').trim();
+  const dt   = (m[2] || '').trim();
+  const rest = (m[3] || '').trim(); // "Facebook: xxxx" ou "WhatsApp: ..."
+  const meta = [dt, rest].filter(Boolean).join(' • ');
+  return { name: name || winnerStr.trim(), meta };
+}
+
 // --- preferir o socket do painel admin (/admin) ---
 async function getPreferredSock(app) {
   try {
@@ -302,6 +314,9 @@ async function runOnce(app, opts = {}) {
         const videoBgUrl = p.bgUrl    || pickBgSafe();
         const musicUrl   = p.musicUrl || pickMusicSafe();
 
+        // Quebra nome/meta do vencedor
+        const { name: winnerName, meta: winnerMeta } = splitWinnerMeta(winner || '');
+
         if (wantVideo && mode === 'creatomate' && typeof makeCreatomateVideo === 'function') {
           // ======= Creatomate =======
           const templateId = process.env.CREATOMATE_TEMPLATE_ID;
@@ -310,7 +325,7 @@ async function runOnce(app, opts = {}) {
             templateId,
             headline,
             premio,
-            winner: winner || 'Ganhador(a)',
+            winner: winnerName || 'Ganhador(a)',
             participants,
             productImageUrl: p.imgUrl,
             videoBgUrl,
@@ -326,7 +341,8 @@ async function runOnce(app, opts = {}) {
             productImageUrl: p.imgUrl,
             productName: p.productName,
             dateTimeStr,
-            winner: winner || 'Ganhador(a)',
+            winner: winnerName || 'Ganhador(a)',
+            winnerMeta, // <- NOVO
             participants
           });
 
