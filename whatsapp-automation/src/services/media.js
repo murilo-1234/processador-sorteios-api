@@ -61,13 +61,13 @@ function splitDateTime(str = '') {
 }
 
 /* =========================================================
- * Paleta (customizável por ENV)
+ * Paleta (customizável por ENV) — AGORA BRANCO POR PADRÃO
  * ======================================================= */
 const PALETTE = {
-  bg1:       color('POSTER_BG_1',       '#6a7bd6'),
-  bg2:       color('POSTER_BG_2',       '#7c5ed9'),
-  card:      color('POSTER_CARD',       '#f8fafc'),
-  cardLine:  color('POSTER_CARD_LINE',  '#eef2f7'),
+  bg1:       color('POSTER_BG_1',       '#ffffff'),
+  bg2:       color('POSTER_BG_2',       '#ffffff'),
+  card:      color('POSTER_CARD',       '#ffffff'),
+  cardLine:  color('POSTER_CARD_LINE',  '#e5e7eb'),
   title:     color('POSTER_TITLE',      '#111827'),
   meta:      color('POSTER_META',       '#374151'),
   banner:    color('POSTER_BANNER',     '#ffd200'),
@@ -85,9 +85,9 @@ const SHAPE = (process.env.POSTER_SHAPE || 'portrait').toLowerCase(); // 'portra
 /* =========================================================
  * SVG layout — Portrait 1080x1350
  * ======================================================= */
-function svgPortrait({ W, H, productB64, productName, dateStr, timeStr, winner, pCount }) {
+function svgPortrait({ W, H, productB64, productName, dateStr, timeStr, winner, winnerMeta, pCount }) {
   const CARD_W = 980;
-  const CARD_H = 1120;
+  const CARD_H = 1140;
   const CARD_X = (W - CARD_W) / 2;
   const CARD_Y = 90;
   const SAFE_BOTTOM = 80;
@@ -95,6 +95,15 @@ function svgPortrait({ W, H, productB64, productName, dateStr, timeStr, winner, 
   const titleSize  = fitFont(44, productName);
   const winnerSize = fitFont(56, winner, [[20, -6],[28, -10],[36,-16],[44,-20]]);
   const productBoxW = 300, productBoxH = 300;
+
+  // Y positions (com linha extra para meta)
+  const yImageTop   = CARD_Y + 140;
+  const yBanner     = CARD_Y + 480;
+  const yWinner     = CARD_Y + 620;
+  const yWinnerMeta = yWinner + 30;
+  const yCongrats   = yWinnerMeta + 30;
+  const yDoneAt     = yCongrats + 30;
+  const yStatsTop   = yDoneAt + 30;
 
   return `
 <svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">
@@ -108,7 +117,7 @@ function svgPortrait({ W, H, productB64, productName, dateStr, timeStr, winner, 
       <stop offset="1" stop-color="${PALETTE.statTo}"/>
     </linearGradient>
     <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="8" stdDeviation="20" flood-color="#000" flood-opacity="0.15"/>
+      <feDropShadow dx="0" dy="8" stdDeviation="20" flood-color="#000" flood-opacity="0.08"/>
     </filter>
   </defs>
 
@@ -134,34 +143,42 @@ function svgPortrait({ W, H, productB64, productName, dateStr, timeStr, winner, 
 
   <!-- Imagem do produto -->
   <image href="data:image/png;base64,${productB64}"
-         x="${CARD_X + (CARD_W - productBoxW)/2}" y="${CARD_Y + 140}"
+         x="${CARD_X + (CARD_W - productBoxW)/2}" y="${yImageTop}"
          width="${productBoxW}" height="${productBoxH}" preserveAspectRatio="xMidYMid meet"/>
 
   <!-- Banner -->
-  <rect x="${CARD_X + 30}" y="${CARD_Y + 480}" width="${CARD_W - 60}" height="80" rx="16"
+  <rect x="${CARD_X + 30}" y="${yBanner}" width="${CARD_W - 60}" height="80" rx="16"
         fill="${PALETTE.banner}"/>
-  <text x="${CARD_X + CARD_W/2}" y="${CARD_Y + 535}" text-anchor="middle"
+  <text x="${CARD_X + CARD_W/2}" y="${yBanner + 55}" text-anchor="middle"
         font-size="34" font-weight="900" fill="${PALETTE.bannerTx}"
         font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Arial">
     ${safe(BANNER_TEXT)}
   </text>
 
   <!-- Vencedor -->
-  <text x="${CARD_X + CARD_W/2}" y="${CARD_Y + 620}" text-anchor="middle"
+  <text x="${CARD_X + CARD_W/2}" y="${yWinner}" text-anchor="middle"
         font-size="${winnerSize}" font-weight="800" fill="${PALETTE.winner}"
         font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Arial">
     ${safe(winner)}
   </text>
 
+  ${winnerMeta ? `
+  <!-- Meta do vencedor (horário/canal) -->
+  <text x="${CARD_X + CARD_W/2}" y="${yWinnerMeta}" text-anchor="middle"
+        font-size="22" fill="${PALETTE.meta}"
+        font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Arial">
+    ${safe(winnerMeta)}
+  </text>` : ''}
+
   <!-- Mensagem -->
-  <text x="${CARD_X + CARD_W/2}" y="${CARD_Y + 660}" text-anchor="middle"
+  <text x="${CARD_X + CARD_W/2}" y="${yCongrats}" text-anchor="middle"
         font-size="24" fill="${PALETTE.sub}"
         font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Arial">
     Parabéns! Você ganhou ${safe(productName)}!
   </text>
 
   <!-- Realizado em -->
-  <text x="${CARD_X + CARD_W/2}" y="${CARD_Y + 690}" text-anchor="middle"
+  <text x="${CARD_X + CARD_W/2}" y="${yDoneAt}" text-anchor="middle"
         font-size="20" fill="${PALETTE.meta}"
         font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Arial">
     🕒 Sorteio realizado em: ${safe(dateStr)}, ${safe(timeStr)}
@@ -170,31 +187,27 @@ function svgPortrait({ W, H, productB64, productName, dateStr, timeStr, winner, 
   <!-- Estatísticas -->
   <g>
     <!-- Participantes -->
-    <rect x="${CARD_X + 40}" y="${CARD_Y + 740}" width="280" height="150" rx="20" fill="url(#stat)"/>
-    <text x="${CARD_X + 180}" y="${CARD_Y + 805}" text-anchor="middle"
+    <rect x="${CARD_X + 40}" y="${yStatsTop}" width="280" height="150" rx="20" fill="url(#stat)"/>
+    <text x="${CARD_X + 180}" y="${yStatsTop + 65}" text-anchor="middle"
           font-size="44" font-weight="900" fill="${PALETTE.statTx}"
           font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Arial">${pCount}</text>
-    <text x="${CARD_X + 180}" y="${CARD_Y + 845}" text-anchor="middle"
+    <text x="${CARD_X + 180}" y="${yStatsTop + 105}" text-anchor="middle"
           font-size="20" fill="${PALETTE.statTx}"
           font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Arial">Participantes</text>
 
     <!-- Ganhador -->
-    <rect x="${CARD_X + 350}" y="${CARD_Y + 740}" width="280" height="150" rx="20" fill="url(#stat)"/>
-    <text x="${CARD_X + 490}" y="${CARD_Y + 805}" text-anchor="middle"
-          font-size="44" font-weight="900" fill="${PALETTE.statTx}"
-          font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Arial">1</text>
-    <text x="${CARD_X + 490}" y="${CARD_Y + 845}" text-anchor="middle"
-          font-size="20" fill="${PALETTE.statTx}"
-          font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Arial">Ganhador</text>
+    <rect x="${CARD_X + 350}" y="${yStatsTop}" width="280" height="150" rx="20" fill="url(#stat)"/>
+    <text x="${CARD_X + 490}" y="${yStatsTop + 65}" text-anchor="middle"
+          font-size="44" font-weight="900" fill="${PALETTE.statTx}">1</text>
+    <text x="${CARD_X + 490}" y="${yStatsTop + 105}" text-anchor="middle"
+          font-size="20" fill="${PALETTE.statTx}">Ganhador</text>
 
     <!-- Transparência -->
-    <rect x="${CARD_X + 660}" y="${CARD_Y + 740}" width="280" height="150" rx="20" fill="url(#stat)"/>
-    <text x="${CARD_X + 800}" y="${CARD_Y + 805}" text-anchor="middle"
-          font-size="44" font-weight="900" fill="${PALETTE.statTx}"
-          font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Arial">100%</text>
-    <text x="${CARD_X + 800}" y="${CARD_Y + 845}" text-anchor="middle"
-          font-size="20" fill="${PALETTE.statTx}"
-          font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Arial">Transparência</text>
+    <rect x="${CARD_X + 660}" y="${yStatsTop}" width="280" height="150" rx="20" fill="url(#stat)"/>
+    <text x="${CARD_X + 800}" y="${yStatsTop + 65}" text-anchor="middle"
+          font-size="44" font-weight="900" fill="${PALETTE.statTx}">100%</text>
+    <text x="${CARD_X + 800}" y="${yStatsTop + 105}" text-anchor="middle"
+          font-size="20" fill="${PALETTE.statTx}">Transparência</text>
   </g>
 
   <rect x="0" y="${H - SAFE_BOTTOM}" width="${W}" height="${SAFE_BOTTOM}" fill="transparent"/>
@@ -202,9 +215,9 @@ function svgPortrait({ W, H, productB64, productName, dateStr, timeStr, winner, 
 }
 
 /* =========================================================
- * SVG layout — Square 1080x1080 (opcional via POSTER_SHAPE=square)
+ * SVG layout — Square 1080x1080 (POSTER_SHAPE=square)
  * ======================================================= */
-function svgSquare({ W, H, productB64, productName, dateStr, timeStr, winner, pCount }) {
+function svgSquare({ W, H, productB64, productName, dateStr, timeStr, winner, winnerMeta, pCount }) {
   const PAD = 48;
   const panelX = PAD, panelY = PAD, panelW = W - PAD * 2, panelH = H - PAD * 2;
 
@@ -236,7 +249,7 @@ function svgSquare({ W, H, productB64, productName, dateStr, timeStr, winner, pC
   </defs>
 
   <rect width="${W}" height="${H}" fill="url(#bg)"/>
-  <rect x="${panelX}" y="${panelY}" width="${panelW}" height="${panelH}" rx="36" fill="#ffffff"/>
+  <rect x="${panelX}" y="${panelY}" width="${panelW}" height="${panelH}" rx="36" fill="${PALETTE.card}" stroke="${PALETTE.cardLine}"/>
 
   <text x="${W/2}" y="${panelY + 50}" text-anchor="middle"
         font-family="Inter, Segoe UI, Arial" font-size="${titleSize}" font-weight="800" fill="${PALETTE.title}">
@@ -265,10 +278,11 @@ function svgSquare({ W, H, productB64, productName, dateStr, timeStr, winner, pC
         font-family="Inter, Segoe UI, Arial" font-size="${winnerSize}" font-weight="800" fill="${PALETTE.winner}">
     ${safe(winner)}
   </text>
-  <text x="${W/2}" y="${bannerY + 168}" text-anchor="middle"
-        font-family="Inter, Segoe UI, Arial" font-size="26" fill="${PALETTE.sub}" opacity="0.95">
-    Parabéns! Você ganhou ${safe(productName)}!
-  </text>
+  ${winnerMeta ? `
+  <text x="${W/2}" y="${bannerY + 150}" text-anchor="middle"
+        font-family="Inter, Segoe UI, Arial" font-size="24" fill="${PALETTE.meta}">
+    ${safe(winnerMeta)}
+  </text>` : ''}
 
   <text x="${W/2}" y="${statsY - 24}" text-anchor="middle"
         font-family="Inter, Segoe UI, Arial" font-size="22" fill="${PALETTE.meta}">
@@ -306,10 +320,11 @@ async function generatePoster({
   productName,
   dateTimeStr, // "dd/MM/yyyy às HH:mm[:ss]"
   winner,
+  winnerMeta,   // <- NOVO
   participants
 }) {
   const isSquare = SHAPE === 'square';
-  const W = isSquare ? 1080 : 1080;
+  const W = 1080;
   const H = isSquare ? 1080 : 1350;
 
   // produto
@@ -328,12 +343,12 @@ async function generatePoster({
     .toBuffer();
   const productB64 = normalized.toString('base64');
 
-  const { date, time, full } = splitDateTime(dateTimeStr || '');
+  const { date, time } = splitDateTime(dateTimeStr || '');
   const pCount = participantsCount(participants);
 
   const svg = isSquare
-    ? svgSquare({ W, H, productB64, productName: productName || 'Sorteio', dateStr: date || '', timeStr: time || '', winner: winner || 'Ganhador(a)', pCount })
-    : svgPortrait({ W, H, productB64, productName: productName || 'Sorteio', dateStr: date || '', timeStr: time || '', winner: winner || 'Ganhador(a)', pCount });
+    ? svgSquare({ W, H, productB64, productName: productName || 'Sorteio', dateStr: date || '', timeStr: time || '', winner: winner || 'Ganhador(a)', winnerMeta: winnerMeta || '', pCount })
+    : svgPortrait({ W, H, productB64, productName: productName || 'Sorteio', dateStr: date || '', timeStr: time || '', winner: winner || 'Ganhador(a)', winnerMeta: winnerMeta || '', pCount });
 
   const outPath = path.join(MEDIA_DIR, `poster_${Date.now()}.png`);
   await sharp(Buffer.from(svg)).png().toFile(outPath);
