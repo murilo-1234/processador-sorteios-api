@@ -52,6 +52,10 @@ const TZ = process.env.TZ || 'America/Sao_Paulo';
 const DELAY_MIN = Number(process.env.POST_DELAY_MINUTES ?? 10);
 const DEBUG_JOB = String(process.env.DEBUG_JOB || '').trim() === '1';
 
+// === NOVO: flags para evitar preview e/ou enviar URL separada ===
+const DISABLE_LINK_PREVIEW = String(process.env.DISABLE_LINK_PREVIEW || '1') === '1';
+const SEND_RESULT_URL_SEPARATE = String(process.env.SEND_RESULT_URL_SEPARATE || '1') === '1';
+
 // ---------- utils ----------
 const dlog = (...a) => { if (DEBUG_JOB) console.log('[JOB]', ...a); };
 
@@ -118,6 +122,16 @@ function pickBgSafe() {
 function pickMusicSafe() {
   if (typeof pickMusic === 'function') return pickMusic();
   return pickOneCSV(process.env.AUDIO_URLS) || '';
+}
+
+// Remove URLs do texto para evitar que o WhatsApp gere o preview no card
+function stripUrls(text, alsoRemove = []) {
+  let out = safeStr(text);
+  for (const u of alsoRemove) {
+    if (u) out = out.replaceAll(u, '');
+  }
+  out = out.replace(/https?:\/\/\S+/g, '');
+  return out.replace(/\s{2,}/g, ' ').trim();
 }
 
 // --- preferir o socket do painel admin (/admin) ---
@@ -356,11 +370,16 @@ async function runOnce(app, opts = {}) {
       }
 
       // 5.3) legenda
-      const caption = mergeText(chooseTemplate(), {
+      let caption = mergeText(chooseTemplate(), {
         WINNER: winner || 'Ganhador(a)',
-        RESULT_URL: resultUrl,
+        RESULT_URL: info.url,
         COUPON: coupon
       });
+
+      // Evita preview: remove URLs do caption (inclusive a do resultado)
+      if (DISABLE_LINK_PREVIEW) {
+        caption = stripUrls(caption, [info.url]);
+      }
 
       // 5.4) enviar (prioriza sessão admin; se não, cliente interno)
       const sock = await getPreferredSock(app);
@@ -375,6 +394,12 @@ async function runOnce(app, opts = {}) {
             if (!jid || !jid.endsWith('@g.us')) throw new Error(`JID inválido: "${jid}"`);
             const payload = { ...media, caption: safeStr(caption) };
             await sock.sendMessage(jid, payload);
+
+            // (Opcional) manda o link do resultado em uma segunda mensagem
+            if (SEND_RESULT_URL_SEPARATE && info.url) {
+              await sock.sendMessage(jid, { text: info.url });
+            }
+
             anySentForThisRow = true;
             dlog('enviado', { jid, id: p.id });
           } catch (e) {
