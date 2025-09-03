@@ -52,16 +52,16 @@ function participantsCount(p) {
   return Number.isFinite(n) ? n : 0;
 }
 
-/** Quebra "dd/MM/yyyy às HH:mm[:ss]" -> { date, time, full } */
+/** Quebra "dd/MM/yyyy às HH:mm[:ss]" -> { date, time } */
 function splitDateTime(str = '') {
   const sep = str.includes(' às ') ? ' às ' : (str.includes(' as ') ? ' as ' : null);
-  if (!sep) return { date: str, time: '', full: str };
+  if (!sep) return { date: str, time: '' };
   const [date, time] = str.split(sep);
-  return { date, time, full: str };
+  return { date, time };
 }
 
 /* =========================================================
- * Paleta (customizável por ENV) — AGORA BRANCO POR PADRÃO
+ * Paleta (customizável por ENV) — BRANCO POR PADRÃO
  * ======================================================= */
 const PALETTE = {
   bg1:       color('POSTER_BG_1',       '#ffffff'),
@@ -79,31 +79,37 @@ const PALETTE = {
   statTx:    color('POSTER_STAT_TX',    '#ffffff'),
 };
 
-const BANNER_TEXT = process.env.POSTER_BANNER_TEXT || '🎉  GANHADOR DO SORTEIO!  🎉';
 const SHAPE = (process.env.POSTER_SHAPE || 'portrait').toLowerCase(); // 'portrait' | 'square'
+const BANNER_TITLE = (process.env.POSTER_BANNER_TEXT || 'GANHADOR DO SORTEIO!').replace(/🎉|✨|🎊|👑/g, ''); // sem emoji
 
 /* =========================================================
- * SVG layout — Portrait 1080x1350
+ * SVG — Retrato 1080x1350 (vencedor + meta DENTRO do banner)
  * ======================================================= */
-function svgPortrait({ W, H, productB64, productName, dateStr, timeStr, winner, winnerMeta, pCount }) {
+function svgPortrait({
+  W, H,
+  productB64,
+  productName,
+  dateStr,
+  timeStr,
+  winner,
+  metaDateTime,   // ex: "03/09/25 16:54:41"
+  metaChannel,    // ex: "WhatsApp: (48) **1707"
+  pCount
+}) {
   const CARD_W = 980;
   const CARD_H = 1140;
   const CARD_X = (W - CARD_W) / 2;
   const CARD_Y = 90;
   const SAFE_BOTTOM = 80;
 
-  const titleSize  = fitFont(44, productName);
-  const winnerSize = fitFont(56, winner, [[20, -6],[28, -10],[36,-16],[44,-20]]);
+  const titleSize   = fitFont(44, productName);
+  const winnerSize  = fitFont(52, winner, [[20,-4],[28,-8],[36,-12],[44,-16]]);
   const productBoxW = 300, productBoxH = 300;
 
-  // Y positions (com linha extra para meta)
   const yImageTop   = CARD_Y + 140;
   const yBanner     = CARD_Y + 480;
-  const yWinner     = CARD_Y + 620;
-  const yWinnerMeta = yWinner + 30;
-  const yCongrats   = yWinnerMeta + 30;
-  const yDoneAt     = yCongrats + 30;
-  const yStatsTop   = yDoneAt + 30;
+  const bannerH     = 180; // alto para caber 4 linhas
+  const yStatsTop   = CARD_Y + 760;
 
   return `
 <svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">
@@ -128,17 +134,15 @@ function svgPortrait({ W, H, productB64, productName, dateStr, timeStr, winner, 
           fill="${PALETTE.card}" stroke="${PALETTE.cardLine}"/>
   </g>
 
-  <!-- Título -->
+  <!-- Título e data/hora (sem emoji) -->
   <text x="${CARD_X + 40}" y="${CARD_Y + 70}" font-size="${titleSize}" font-weight="800"
         fill="${PALETTE.title}" font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Arial">
     ${safe(productName)}
   </text>
-
-  <!-- Data/Hora -->
   <g font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Arial"
      fill="${PALETTE.meta}" font-size="22" font-weight="600">
-    <text x="${CARD_X + 40}"  y="${CARD_Y + 110}">📅 ${safe(dateStr)}</text>
-    <text x="${CARD_X + 200}" y="${CARD_Y + 110}">🕒 ${safe(timeStr)}</text>
+    <text x="${CARD_X + 40}"  y="${CARD_Y + 110}">${safe(dateStr)}</text>
+    <text x="${CARD_X + 200}" y="${CARD_Y + 110}">${safe(timeStr)}</text>
   </g>
 
   <!-- Imagem do produto -->
@@ -146,68 +150,41 @@ function svgPortrait({ W, H, productB64, productName, dateStr, timeStr, winner, 
          x="${CARD_X + (CARD_W - productBoxW)/2}" y="${yImageTop}"
          width="${productBoxW}" height="${productBoxH}" preserveAspectRatio="xMidYMid meet"/>
 
-  <!-- Banner -->
-  <rect x="${CARD_X + 30}" y="${yBanner}" width="${CARD_W - 60}" height="80" rx="16"
+  <!-- Banner com 4 linhas -->
+  <rect x="${CARD_X + 30}" y="${yBanner}" width="${CARD_W - 60}" height="${bannerH}" rx="16"
         fill="${PALETTE.banner}"/>
-  <text x="${CARD_X + CARD_W/2}" y="${yBanner + 55}" text-anchor="middle"
-        font-size="34" font-weight="900" fill="${PALETTE.bannerTx}"
-        font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Arial">
-    ${safe(BANNER_TEXT)}
-  </text>
+  <g font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Arial" fill="${PALETTE.bannerTx}">
+    <text x="${CARD_X + CARD_W/2}" y="${yBanner + 34}" text-anchor="middle" font-size="24" font-weight="700">
+      ${safe(BANNER_TITLE)}
+    </text>
+    <text x="${CARD_X + CARD_W/2}" y="${yBanner + 78}" text-anchor="middle" font-size="${winnerSize}" font-weight="800">
+      ${safe(winner)}
+    </text>
+    ${metaDateTime ? `<text x="${CARD_X + CARD_W/2}" y="${yBanner + 112}" text-anchor="middle" font-size="22">${safe(metaDateTime)}</text>` : ''}
+    ${metaChannel  ? `<text x="${CARD_X + CARD_W/2}" y="${yBanner + 142}" text-anchor="middle" font-size="22">${safe(metaChannel)}</text>` : ''}
+  </g>
 
-  <!-- Vencedor -->
-  <text x="${CARD_X + CARD_W/2}" y="${yWinner}" text-anchor="middle"
-        font-size="${winnerSize}" font-weight="800" fill="${PALETTE.winner}"
-        font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Arial">
-    ${safe(winner)}
-  </text>
-
-  ${winnerMeta ? `
-  <!-- Meta do vencedor (horário/canal) -->
-  <text x="${CARD_X + CARD_W/2}" y="${yWinnerMeta}" text-anchor="middle"
-        font-size="22" fill="${PALETTE.meta}"
-        font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Arial">
-    ${safe(winnerMeta)}
-  </text>` : ''}
-
-  <!-- Mensagem -->
-  <text x="${CARD_X + CARD_W/2}" y="${yCongrats}" text-anchor="middle"
-        font-size="24" fill="${PALETTE.sub}"
-        font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Arial">
-    Parabéns! Você ganhou ${safe(productName)}!
-  </text>
-
-  <!-- Realizado em -->
-  <text x="${CARD_X + CARD_W/2}" y="${yDoneAt}" text-anchor="middle"
+  <!-- “Sorteio realizado em …” (sem emoji) -->
+  <text x="${CARD_X + CARD_W/2}" y="${CARD_Y + 710}" text-anchor="middle"
         font-size="20" fill="${PALETTE.meta}"
         font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Arial">
-    🕒 Sorteio realizado em: ${safe(dateStr)}, ${safe(timeStr)}
+    Sorteio realizado em: ${safe(dateStr)}, ${safe(timeStr)}
   </text>
 
   <!-- Estatísticas -->
   <g>
-    <!-- Participantes -->
-    <rect x="${CARD_X + 40}" y="${yStatsTop}" width="280" height="150" rx="20" fill="url(#stat)"/>
-    <text x="${CARD_X + 180}" y="${yStatsTop + 65}" text-anchor="middle"
-          font-size="44" font-weight="900" fill="${PALETTE.statTx}"
-          font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Arial">${pCount}</text>
-    <text x="${CARD_X + 180}" y="${yStatsTop + 105}" text-anchor="middle"
-          font-size="20" fill="${PALETTE.statTx}"
-          font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Arial">Participantes</text>
-
-    <!-- Ganhador -->
+    <rect x="${CARD_X + 40}"  y="${yStatsTop}" width="280" height="150" rx="20" fill="url(#stat)"/>
     <rect x="${CARD_X + 350}" y="${yStatsTop}" width="280" height="150" rx="20" fill="url(#stat)"/>
-    <text x="${CARD_X + 490}" y="${yStatsTop + 65}" text-anchor="middle"
-          font-size="44" font-weight="900" fill="${PALETTE.statTx}">1</text>
-    <text x="${CARD_X + 490}" y="${yStatsTop + 105}" text-anchor="middle"
-          font-size="20" fill="${PALETTE.statTx}">Ganhador</text>
-
-    <!-- Transparência -->
     <rect x="${CARD_X + 660}" y="${yStatsTop}" width="280" height="150" rx="20" fill="url(#stat)"/>
-    <text x="${CARD_X + 800}" y="${yStatsTop + 65}" text-anchor="middle"
-          font-size="44" font-weight="900" fill="${PALETTE.statTx}">100%</text>
-    <text x="${CARD_X + 800}" y="${yStatsTop + 105}" text-anchor="middle"
-          font-size="20" fill="${PALETTE.statTx}">Transparência</text>
+
+    <text x="${CARD_X + 180}" y="${yStatsTop + 65}" text-anchor="middle" font-size="44" font-weight="900" fill="${PALETTE.statTx}">${pCount}</text>
+    <text x="${CARD_X + 180}" y="${yStatsTop + 105}" text-anchor="middle" font-size="20" fill="${PALETTE.statTx}">Participantes</text>
+
+    <text x="${CARD_X + 490}" y="${yStatsTop + 65}" text-anchor="middle" font-size="44" font-weight="900" fill="${PALETTE.statTx}">1</text>
+    <text x="${CARD_X + 490}" y="${yStatsTop + 105}" text-anchor="middle" font-size="20" fill="${PALETTE.statTx}">Ganhador</text>
+
+    <text x="${CARD_X + 800}" y="${yStatsTop + 65}" text-anchor="middle" font-size="44" font-weight="900" fill="${PALETTE.statTx}">100%</text>
+    <text x="${CARD_X + 800}" y="${yStatsTop + 105}" text-anchor="middle" font-size="20" fill="${PALETTE.statTx}">Transparência</text>
   </g>
 
   <rect x="0" y="${H - SAFE_BOTTOM}" width="${W}" height="${SAFE_BOTTOM}" fill="transparent"/>
@@ -215,14 +192,24 @@ function svgPortrait({ W, H, productB64, productName, dateStr, timeStr, winner, 
 }
 
 /* =========================================================
- * SVG layout — Square 1080x1080 (POSTER_SHAPE=square)
+ * SVG — Quadrado 1080x1080
  * ======================================================= */
-function svgSquare({ W, H, productB64, productName, dateStr, timeStr, winner, winnerMeta, pCount }) {
+function svgSquare({
+  W, H,
+  productB64,
+  productName,
+  dateStr,
+  timeStr,
+  winner,
+  metaDateTime,
+  metaChannel,
+  pCount
+}) {
   const PAD = 48;
   const panelX = PAD, panelY = PAD, panelW = W - PAD * 2, panelH = H - PAD * 2;
 
   const titleSize  = fitFont(54, productName, [[22, -6],[28,-10],[36,-16]]);
-  const winnerSize = fitFont(72, winner, [[20, -8],[28,-14],[36,-18],[48,-22]]);
+  const winnerSize = fitFont(66, winner, [[20,-6],[28,-10],[36,-14],[48,-18]]);
 
   const imgCardW = 360, imgCardH = 360;
   const imgCardX = Math.round(W / 2 - imgCardW / 2);
@@ -258,7 +245,7 @@ function svgSquare({ W, H, productB64, productName, dateStr, timeStr, winner, wi
 
   <text x="${W/2}" y="${panelY + 98}" text-anchor="middle"
         font-family="Inter, Segoe UI, Arial" font-size="28" fill="${PALETTE.meta}">
-    📅 ${safe(dateStr)}   ⏰ ${safe(timeStr)}
+    ${safe(dateStr)}   ${safe(timeStr)}
   </text>
 
   <rect x="${imgCardX}" y="${imgCardY}" width="${imgCardW}" height="${imgCardH}" rx="24"
@@ -268,25 +255,25 @@ function svgSquare({ W, H, productB64, productName, dateStr, timeStr, winner, wi
          width="${imgCardW - 40}" height="${imgCardH - 40}"
          preserveAspectRatio="xMidYMid meet"/>
 
-  <rect x="${panelX + 16}" y="${bannerY}" width="${panelW - 32}" height="210" rx="24"
+  <rect x="${panelX + 16}" y="${bannerY}" width="${panelW - 32}" height="230" rx="24"
         fill="${PALETTE.banner}" stroke="#f59e0b" stroke-width="2"/>
-  <text x="${W/2}" y="${bannerY + 58}" text-anchor="middle"
-        font-family="Inter, Segoe UI, Arial" font-size="42" font-weight="800" fill="${PALETTE.bannerTx}">
-    ${safe(BANNER_TEXT)}
+
+  <text x="${W/2}" y="${bannerY + 38}" text-anchor="middle"
+        font-family="Inter, Segoe UI, Arial" font-size="28" font-weight="800" fill="${PALETTE.bannerTx}">
+    ${safe(BANNER_TITLE)}
   </text>
-  <text x="${W/2}" y="${bannerY + 120}" text-anchor="middle"
+  <text x="${W/2}" y="${bannerY + 92}" text-anchor="middle"
         font-family="Inter, Segoe UI, Arial" font-size="${winnerSize}" font-weight="800" fill="${PALETTE.winner}">
     ${safe(winner)}
   </text>
-  ${winnerMeta ? `
-  <text x="${W/2}" y="${bannerY + 150}" text-anchor="middle"
-        font-family="Inter, Segoe UI, Arial" font-size="24" fill="${PALETTE.meta}">
-    ${safe(winnerMeta)}
-  </text>` : ''}
+  ${metaDateTime ? `<text x="${W/2}" y="${bannerY + 128}" text-anchor="middle"
+        font-family="Inter, Segoe UI, Arial" font-size="24" fill="${PALETTE.bannerTx}">${safe(metaDateTime)}</text>` : ''}
+  ${metaChannel ? `<text x="${W/2}" y="${bannerY + 160}" text-anchor="middle"
+        font-family="Inter, Segoe UI, Arial" font-size="24" fill="${PALETTE.bannerTx}">${safe(metaChannel)}</text>` : ''}
 
   <text x="${W/2}" y="${statsY - 24}" text-anchor="middle"
         font-family="Inter, Segoe UI, Arial" font-size="22" fill="${PALETTE.meta}">
-    🕒 Sorteio realizado em: ${safe(dateStr)}, ${safe(timeStr)}
+    Sorteio realizado em: ${safe(dateStr)}, ${safe(timeStr)}
   </text>
 
   <g>
@@ -294,20 +281,14 @@ function svgSquare({ W, H, productB64, productName, dateStr, timeStr, winner, wi
     <rect x="${c2X}" y="${statsY}" width="${cardW}" height="120" rx="22" fill="url(#stat)"/>
     <rect x="${c3X}" y="${statsY}" width="${cardW}" height="120" rx="22" fill="url(#stat)"/>
 
-    <text x="${c1X + cardW/2}" y="${statsY + 54}" text-anchor="middle"
-          font-family="Inter, Segoe UI, Arial" font-size="46" font-weight="900" fill="${PALETTE.statTx}">${pCount}</text>
-    <text x="${c1X + cardW/2}" y="${statsY + 92}" text-anchor="middle"
-          font-family="Inter, Segoe UI, Arial" font-size="22" fill="${PALETTE.statTx}">Participantes</text>
+    <text x="${c1X + cardW/2}" y="${statsY + 54}" text-anchor="middle" font-family="Inter, Segoe UI, Arial" font-size="46" font-weight="900" fill="${PALETTE.statTx}">${pCount}</text>
+    <text x="${c1X + cardW/2}" y="${statsY + 92}" text-anchor="middle" font-family="Inter, Segoe UI, Arial" font-size="22" fill="${PALETTE.statTx}">Participantes</text>
 
-    <text x="${c2X + cardW/2}" y="${statsY + 54}" text-anchor="middle"
-          font-family="Inter, Segoe UI, Arial" font-size="46" font-weight="900" fill="${PALETTE.statTx}">1</text>
-    <text x="${c2X + cardW/2}" y="${statsY + 92}" text-anchor="middle"
-          font-family="Inter, Segoe UI, Arial" font-size="22" fill="${PALETTE.statTx}">Ganhador</text>
+    <text x="${c2X + cardW/2}" y="${statsY + 54}" text-anchor="middle" font-family="Inter, Segoe UI, Arial" font-size="46" font-weight="900" fill="${PALETTE.statTx}">1</text>
+    <text x="${c2X + cardW/2}" y="${statsY + 92}" text-anchor="middle" font-family="Inter, Segoe UI, Arial" font-size="22" fill="${PALETTE.statTx}">Ganhador</text>
 
-    <text x="${c3X + cardW/2}" y="${statsY + 54}" text-anchor="middle"
-          font-family="Inter, Segoe UI, Arial" font-size="46" font-weight="900" fill="${PALETTE.statTx}">100%</text>
-    <text x="${c3X + cardW/2}" y="${statsY + 92}" text-anchor="middle"
-          font-family="Inter, Segoe UI, Arial" font-size="22" fill="${PALETTE.statTx}">Transparência</text>
+    <text x="${c3X + cardW/2}" y="${statsY + 54}" text-anchor="middle" font-family="Inter, Segoe UI, Arial" font-size="46" font-weight="900" fill="${PALETTE.statTx}">100%</text>
+    <text x="${c3X + cardW/2}" y="${statsY + 92}" text-anchor="middle" font-family="Inter, Segoe UI, Arial" font-size="22" fill="${PALETTE.statTx}">Transparência</text>
   </g>
 </svg>`;
 }
@@ -320,7 +301,11 @@ async function generatePoster({
   productName,
   dateTimeStr, // "dd/MM/yyyy às HH:mm[:ss]"
   winner,
-  winnerMeta,   // <- NOVO
+  // NOVOS (opcionais)
+  winnerMetaDateTime,
+  winnerMetaChannel,
+  // retrocompat: se vier winnerMeta (string), tentamos dividir em data/hora + canal
+  winnerMeta,
   participants
 }) {
   const isSquare = SHAPE === 'square';
@@ -346,9 +331,36 @@ async function generatePoster({
   const { date, time } = splitDateTime(dateTimeStr || '');
   const pCount = participantsCount(participants);
 
+  // retrocompat do winnerMeta (único)
+  let metaDT = winnerMetaDateTime || '';
+  let metaCH = winnerMetaChannel  || '';
+  if ((!metaDT || !metaCH) && winnerMeta) {
+    const m = String(winnerMeta).match(/(20\d{2}-\d{2}-\d{2})\s(\d{2}:\d{2}:\d{2})/);
+    if (m) {
+      const [yyyy, mm, dd] = m[1].split('-');
+      metaDT = `${dd}/${mm}/${String(yyyy).slice(-2)} ${m[2]}`;
+    }
+    const c = String(winnerMeta).match(/(WhatsApp:[^•]+|Facebook:[^•]+)/i);
+    if (c) metaCH = c[1].trim();
+  }
+
   const svg = isSquare
-    ? svgSquare({ W, H, productB64, productName: productName || 'Sorteio', dateStr: date || '', timeStr: time || '', winner: winner || 'Ganhador(a)', winnerMeta: winnerMeta || '', pCount })
-    : svgPortrait({ W, H, productB64, productName: productName || 'Sorteio', dateStr: date || '', timeStr: time || '', winner: winner || 'Ganhador(a)', winnerMeta: winnerMeta || '', pCount });
+    ? svgSquare({
+        W, H, productB64,
+        productName: productName || 'Sorteio',
+        dateStr: date || '', timeStr: time || '',
+        winner: winner || 'Ganhador(a)',
+        metaDateTime: metaDT, metaChannel: metaCH,
+        pCount
+      })
+    : svgPortrait({
+        W, H, productB64,
+        productName: productName || 'Sorteio',
+        dateStr: date || '', timeStr: time || '',
+        winner: winner || 'Ganhador(a)',
+        metaDateTime: metaDT, metaChannel: metaCH,
+        pCount
+      });
 
   const outPath = path.join(MEDIA_DIR, `poster_${Date.now()}.png`);
   await sharp(Buffer.from(svg)).png().toFile(outPath);
