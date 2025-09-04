@@ -14,7 +14,6 @@ try {
 } catch (_) { /* ignora */ }
 
 if (typeof zonedTimeToUtcSafe !== 'function') {
-  // Fallback simples baseado em offset configurável
   const FALLBACK_OFFSET_MIN = Number(process.env.TZ_OFFSET_MINUTES || -180); // SP = -180
   zonedTimeToUtcSafe = (date /*, tz */) => {
     const d = date instanceof Date ? date : new Date(date);
@@ -32,19 +31,11 @@ const { makeOverlayVideo } = require('../services/video');
 
 // ====== OPCIONAIS (se existirem) ======
 let makeCreatomateVideo = null;
-try {
-  ({ makeCreatomateVideo } = require('../services/creatomate')); // serviço novo
-} catch { /* pode não existir em deploy antigo */ }
-
+try { ({ makeCreatomateVideo } = require('../services/creatomate')); } catch {}
 let pickHeadline = null;
-try {
-  ({ pickHeadline } = require('../services/headlines')); // retorna string
-} catch {}
-
+try { ({ pickHeadline } = require('../services/headlines')); } catch {}
 let pickBg = null, pickMusic = null;
-try {
-  ({ pickBg, pickMusic } = require('../services/media-pool')); // retornam URLs
-} catch {}
+try { ({ pickBg, pickMusic } = require('../services/media-pool')); } catch {}
 
 // ==========================================================
 
@@ -52,11 +43,10 @@ const TZ = process.env.TZ || 'America/Sao_Paulo';
 const DELAY_MIN = Number(process.env.POST_DELAY_MINUTES ?? 10);
 const DEBUG_JOB = String(process.env.DEBUG_JOB || '').trim() === '1';
 
-// === Flags de link ===
-// Link sempre dentro da legenda; nunca enviar separado; sem preview.
-const DISABLE_LINK_PREVIEW = false;                     // não usamos mais para remover texto
-const SEND_RESULT_URL_SEPARATE = false;                 // nunca mandar separado
-const BAILEYS_LINK_PREVIEW_OFF = true;                  // sempre sem preview
+// === Flags ===
+const DISABLE_LINK_PREVIEW = String(process.env.DISABLE_LINK_PREVIEW || '1') === '1';
+const SEND_RESULT_URL_SEPARATE = String(process.env.SEND_RESULT_URL_SEPARATE || '1') === '1';
+const BAILEYS_LINK_PREVIEW_OFF = String(process.env.BAILEYS_LINK_PREVIEW_OFF || '1') === '1';
 
 // ---------- utils ----------
 const dlog = (...a) => { if (DEBUG_JOB) console.log('[JOB]', ...a); };
@@ -68,7 +58,6 @@ function chooseTemplate() {
   if (!Array.isArray(templates) || !templates.length) {
     return '🎉 Resultado: {{WINNER_BLOCK}}\n🔗 Detalhes: {{RESULT_URL}}\n💸 Cupom: {{COUPON}}';
   }
-  // evita repetir o último
   if (templates.length === 1) return templates[0];
   let idx;
   do { idx = Math.floor(Math.random() * templates.length); } while (idx === _lastTplIndex);
@@ -79,18 +68,51 @@ function safeStr(v) {
   try { return v == null ? '' : String(v); } catch { return ''; }
 }
 
-// substitui {{WINNER_BLOCK}} quando existir; senão, injeta o bloco em {{WINNER}}
+// Constrói o bloco do vencedor (3 linhas)
+function buildWinnerBlock(name, metaDateTime, metaChannel, withLabel = true) {
+  const line1 = withLabel ? `Ganhador(a): ${name || 'Ganhador(a)'}` : `${name || 'Ganhador(a)'}`;
+  const line2 = metaDateTime ? `${metaDateTime}` : '';
+  const line3 = metaChannel ? `${metaChannel}` : '';
+  return [line1, line2, line3].filter(Boolean).join('\n');
+}
+
+// Substituição com tratamento:
 function mergeText(tpl, vars) {
   let s = safeStr(tpl);
-  const block = safeStr(vars.WINNER_BLOCK || '');
-  if (s.includes('{{WINNER_BLOCK}}')) s = s.replaceAll('{{WINNER_BLOCK}}', block);
-  else if (block) s = s.replaceAll('{{WINNER}}', block);
+
+  const name = safeStr(vars.WINNER);
+  const dt   = safeStr(vars.WINNER_DT);
+  const ch   = safeStr(vars.WINNER_CH);
+
+  const blockFull    = buildWinnerBlock(name, dt, ch, true);
+  const blockNoLabel = buildWinnerBlock(name, dt, ch, false);
+
+  // 1) Se o template tiver {{WINNER_BLOCK}}, usa o bloco completo
+  if (s.includes('{{WINNER_BLOCK}}')) {
+    s = s.replaceAll('{{WINNER_BLOCK}}', blockFull);
+  }
+
+  // 2) Se houver "Ganhador(a): {{WINNER}}", substitui TODO o trecho por "Ganhador(a): Nome\n(meta...)"
+  const reLabelName = /(Ganhador(?:\(a\))?:\s*){{WINNER}}/gi;
+  if (reLabelName.test(s)) {
+    s = s.replace(reLabelName, (_m, label) => {
+      const firstLine = `${label}${name}`;
+      const rest = [dt, ch].filter(Boolean).join('\n');
+      return rest ? `${firstLine}\n${rest}` : firstLine;
+    });
+  } else if (s.includes('{{WINNER}}')) {
+    // 3) Caso contrário, {{WINNER}} vira o bloco completo
+    s = s.replaceAll('{{WINNER}}', blockFull);
+  }
+
+  // Demais variáveis
   s = s
-    .replaceAll('{{WINNER}}', safeStr(vars.WINNER))
     .replaceAll('{{RESULT_URL}}', safeStr(vars.RESULT_URL))
     .replaceAll('{{COUPON}}', safeStr(vars.COUPON));
+
   return s;
 }
+
 function findHeader(headers, candidates) {
   const lower = headers.map((h) => (h || '').trim().toLowerCase());
   for (const cand of candidates) {
@@ -118,14 +140,10 @@ function toUtcFromSheet(spDate) {
 }
 function pickOneCSV(listStr) {
   if (!listStr) return null;
-  const arr = String(listStr)
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean);
+  const arr = String(listStr).split(',').map(s => s.trim()).filter(Boolean);
   if (!arr.length) return null;
   return arr[Math.floor(Math.random() * arr.length)];
 }
-// Fallbacks se os serviços opcionais não existirem
 function pickHeadlineSafe() {
   if (typeof pickHeadline === 'function') return pickHeadline();
   return pickOneCSV(process.env.HEADLINES) || 'VEJA AQUI A GANHADORA!';
@@ -139,7 +157,7 @@ function pickMusicSafe() {
   return pickOneCSV(process.env.AUDIO_URLS) || '';
 }
 
-// Remove APENAS URLs específicas (não usamos mais pra RESULT_URL)
+// Remove APENAS a URL do resultado, mantendo links fixos dos templates
 function stripSpecificUrls(text, urls = []) {
   let out = safeStr(text);
   for (const u of urls) {
@@ -148,7 +166,7 @@ function stripSpecificUrls(text, urls = []) {
     if (u.endsWith('/')) out = out.replaceAll(u.slice(0, -1), '');
     else out = out.replaceAll(u + '/', '');
   }
-  return out.replace(/\s{2,}/g, ' ').trim();
+  return out;
 }
 
 // extrai nome + data/hora + canal do campo winner
@@ -167,7 +185,7 @@ function parseWinnerDetailed(winnerStr = '') {
   }
 
   let metaChannel = '';
-  const ch = raw.match(/(WhatsApp:[^•]+|Facebook:[^•]+)/i);
+  const ch = raw.match(/(WhatsApp:[^•]+|Facebook:[^•]+|Instagram:[^•]+)/i);
   if (ch) metaChannel = `Acesso via: ${ch[1].trim()}`;
 
   return { name, metaDateTime, metaChannel };
@@ -325,7 +343,21 @@ async function runOnce(app, opts = {}) {
       const { url: resultUrl, winner, participants } = info;
       dlog('linha', p.id, { winner, participantsCount: Array.isArray(participants) ? participants.length : 0 });
 
-      const { name: winnerName, metaDateTime, metaChannel } = parseWinnerDetailed(winner || '');
+      // ===== Trava: só segue se já existe ganhador "válido" =====
+      const parsed = parseWinnerDetailed(winner || '');
+      const winnerName = parsed.name?.trim() || '';
+      const metaDateTime = parsed.metaDateTime;
+      const metaChannel  = parsed.metaChannel;
+
+      const looksPending =
+        !winnerName ||
+        /será anunciado|anunciado em/i.test(String(winner || '')) ||
+        winnerName.length < 2;
+
+      if (looksPending) {
+        skipped.push({ id: p.id, reason: 'no_winner_yet' });
+        continue;
+      }
 
       // 5.2) gerar mídia (poster ou vídeo)
       let usedPath;
@@ -342,7 +374,6 @@ async function runOnce(app, opts = {}) {
         const musicUrl   = p.musicUrl || pickMusicSafe();
 
         if (wantVideo && mode === 'creatomate' && typeof makeCreatomateVideo === 'function') {
-          // ======= Creatomate =======
           const templateId = process.env.CREATOMATE_TEMPLATE_ID;
 
           usedPath = await makeCreatomateVideo({
@@ -359,7 +390,6 @@ async function runOnce(app, opts = {}) {
           const buf = fs.readFileSync(usedPath);
           media = { video: buf, mimetype: 'video/mp4' };
         } else {
-          // ======= Poster + Vídeo Overlay (FFmpeg) =======
           const dateTimeStr = format(p.spDate, "dd/MM/yyyy 'às' HH:mm");
           const posterPath = await generatePoster({
             productImageUrl: p.imgUrl,
@@ -410,24 +440,24 @@ async function runOnce(app, opts = {}) {
         continue;
       }
 
-      // 5.3) legenda — WINNER_BLOCK em 3 linhas
+      // 5.3) legenda (sem quebrar espaçamento do template)
       const resultUrlStr = safeStr(resultUrl);
-      const winnerBlock =
-        `Ganhador(a): ${winnerName || 'Ganhador(a)'}\n` +
-        (metaDateTime ? `${metaDateTime}\n` : '') +
-        (metaChannel  ? `${metaChannel}` : '');
-
       const captionFull = mergeText(chooseTemplate(), {
         WINNER: winnerName || 'Ganhador(a)',
-        WINNER_BLOCK: winnerBlock.trim(),
+        WINNER_DT: metaDateTime,
+        WINNER_CH: metaChannel,
         RESULT_URL: resultUrlStr,
         COUPON: coupon
       });
 
-      // Mantém o link no texto e preserva quebras/linhas do template
-      const captionOut = captionFull;
+      // evita preview só do link de resultado
+      const captionOut = (DISABLE_LINK_PREVIEW)
+        ? stripSpecificUrls(captionFull, [resultUrlStr])
+        : captionFull;
 
-      // 5.4) enviar (prioriza sessão admin; se não, cliente interno)
+      const linkAlreadyInside = resultUrlStr && captionOut.includes(resultUrlStr);
+
+      // 5.4) enviar
       const sock = await getPreferredSock(app);
       if (!sock) {
         errors.push({ id: p.id, stage: 'sendMessage', error: 'WhatsApp não conectado (admin/cliente)' });
@@ -439,11 +469,15 @@ async function runOnce(app, opts = {}) {
           try {
             if (!jid || !jid.endsWith('@g.us')) throw new Error(`JID inválido: "${jid}"`);
             const payload = { ...media, caption: safeStr(captionOut) };
-            const opts = { linkPreview: false }; // sempre sem preview
+            const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
 
-            await sock.sendMessage(jid, payload, opts); // imagem/vídeo + legenda
+            await sock.sendMessage(jid, payload, opts);
 
-            // Nunca mandar o link separado
+            if (SEND_RESULT_URL_SEPARATE && resultUrlStr && !linkAlreadyInside) {
+              await delay(500);
+              await sock.sendMessage(jid, { text: resultUrlStr }, opts);
+            }
+
             anySentForThisRow = true;
             dlog('enviado', { jid, id: p.id });
           } catch (e) {
