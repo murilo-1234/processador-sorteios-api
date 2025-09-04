@@ -52,17 +52,43 @@ const TZ = process.env.TZ || 'America/Sao_Paulo';
 const DELAY_MIN = Number(process.env.POST_DELAY_MINUTES ?? 10);
 const DEBUG_JOB = String(process.env.DEBUG_JOB || '').trim() === '1';
 
-// === Regras de envio do link: MESMA mensagem, sem preview
-const DISABLE_LINK_PREVIEW = false;
-const SEND_RESULT_URL_SEPARATE = false;
-const BAILEYS_LINK_PREVIEW_OFF = true;
+// === Flags para evitar preview e/ou enviar URL separada ===
+const DISABLE_LINK_PREVIEW = String(process.env.DISABLE_LINK_PREVIEW || '1') === '1'; // remove preview do resultado
+const SEND_RESULT_URL_SEPARATE = String(process.env.SEND_RESULT_URL_SEPARATE || '1') === '1'; // manda o link em msg separada (se não estiver na legenda)
+const BAILEYS_LINK_PREVIEW_OFF = String(process.env.BAILEYS_LINK_PREVIEW_OFF || '1') === '1'; // { linkPreview:false } nas opções
 
 // ---------- utils ----------
 const dlog = (...a) => { if (DEBUG_JOB) console.log('[JOB]', ...a); };
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
+let _lastTplIndex = -1;
+function chooseTemplate() {
+  const templates = require('../services/texts');
+  if (!Array.isArray(templates) || !templates.length) {
+    return '🎉 Resultado: {{WINNER_BLOCK}}\n🔗 Detalhes: {{RESULT_URL}}\n💸 Cupom: {{COUPON}}';
+  }
+  // evita repetir o último
+  if (templates.length === 1) return templates[0];
+  let idx;
+  do { idx = Math.floor(Math.random() * templates.length); } while (idx === _lastTplIndex);
+  _lastTplIndex = idx;
+  return templates[idx];
+}
 function safeStr(v) {
   try { return v == null ? '' : String(v); } catch { return ''; }
+}
+
+// substitui {{WINNER_BLOCK}} quando existir; senão, injeta o bloco em {{WINNER}}
+function mergeText(tpl, vars) {
+  let s = safeStr(tpl);
+  const block = safeStr(vars.WINNER_BLOCK || '');
+  if (s.includes('{{WINNER_BLOCK}}')) s = s.replaceAll('{{WINNER_BLOCK}}', block);
+  else if (block) s = s.replaceAll('{{WINNER}}', block);
+  s = s
+    .replaceAll('{{WINNER}}', safeStr(vars.WINNER))
+    .replaceAll('{{RESULT_URL}}', safeStr(vars.RESULT_URL))
+    .replaceAll('{{COUPON}}', safeStr(vars.COUPON));
+  return s;
 }
 function findHeader(headers, candidates) {
   const lower = headers.map((h) => (h || '').trim().toLowerCase());
@@ -98,6 +124,7 @@ function pickOneCSV(listStr) {
   if (!arr.length) return null;
   return arr[Math.floor(Math.random() * arr.length)];
 }
+// Fallbacks se os serviços opcionais não existirem
 function pickHeadlineSafe() {
   if (typeof pickHeadline === 'function') return pickHeadline();
   return pickOneCSV(process.env.HEADLINES) || 'VEJA AQUI A GANHADORA!';
@@ -111,53 +138,40 @@ function pickMusicSafe() {
   return pickOneCSV(process.env.AUDIO_URLS) || '';
 }
 
-// Remove URLs do texto (quando necessário)
-function stripUrls(text, alsoRemove = []) {
+// Remove APENAS URLs específicas (para manter os links fixos do texts.js)
+function stripSpecificUrls(text, urls = []) {
   let out = safeStr(text);
-  for (const u of alsoRemove) {
-    if (u) out = out.replaceAll(u, '');
+  for (const u of urls) {
+    if (!u) continue;
+    // remove literal e variações com / no fim
+    out = out.replaceAll(u, '');
+    if (u.endsWith('/')) out = out.replaceAll(u.slice(0, -1), '');
+    else out = out.replaceAll(u + '/', '');
   }
-  out = out.replace(/https?:\/\/\S+/g, '');
+  // normaliza espaços
   return out.replace(/\s{2,}/g, ' ').trim();
 }
 
-// Normaliza nome do vencedor (remove inicial solta, ex. "M Murilo ...")
-function normalizeName(name = '') {
-  const parts = name.trim().split(/\s+/);
-  if (parts.length >= 2 && parts[0].length === 1) parts.shift();
-  return parts.join(' ');
-}
+// extrai nome + data/hora + canal do campo winner
+function parseWinnerDetailed(winnerStr = '') {
+  const raw = String(winnerStr || '').trim();
 
-// Converte "YYYY-MM-DD" -> "DD/MM/YY"
-function toDDMMYY(dateStr = '') {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return '';
-  const [y, m, d] = dateStr.split('-');
-  return `${d}/${m}/${y.slice(-2)}`;
-}
+  // nome = tudo antes do primeiro " 20YY-"
+  const dtMatch = raw.match(/\s(20\d{2}-\d{2}-\d{2})\s(\d{2}:\d{2}:\d{2})/);
+  let name = raw;
+  if (dtMatch) name = raw.slice(0, dtMatch.index).trim();
 
-// Separa nome, data/hora e canal do campo winner
-function parseWinnerMeta(winnerStr = '') {
-  // pega "2025-09-03 16:54:41"
-  const m = winnerStr.match(/(20\d{2}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/);
-  let shortDateTime = '';
-  if (m) shortDateTime = `${toDDMMYY(m[1])} ${m[2]}`;
+  let metaDateTime = '';
+  if (dtMatch) {
+    const [yyyy, mm, dd] = dtMatch[1].split('-');
+    metaDateTime = `Entrou na lista: ${dd}/${mm}/${String(yyyy).slice(-2)} ${dtMatch[2]}`;
+  }
 
-  // canal
-  let channel = '';
-  const wa = winnerStr.match(/WhatsApp:[^,]+/i);
-  const fb = winnerStr.match(/Facebook:[^,]+/i);
-  if (wa) channel = wa[0].trim();
-  else if (fb) channel = fb[0].trim();
+  let metaChannel = '';
+  const ch = raw.match(/(WhatsApp:[^•]+|Facebook:[^•]+)/i);
+  if (ch) metaChannel = `Acesso via: ${ch[1].trim()}`;
 
-  // nome = winnerStr sem a data/hora e sem o canal
-  let name = winnerStr
-    .replace(/(20\d{2}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/, '')
-    .replace(/(WhatsApp:[^,]+|Facebook:[^,]+)/i, '')
-    .trim();
-
-  name = normalizeName(name);
-
-  return { name: name || winnerStr.trim(), shortDateTime, channel };
+  return { name, metaDateTime, metaChannel };
 }
 
 // --- preferir o socket do painel admin (/admin) ---
@@ -171,29 +185,6 @@ async function getPreferredSock(app) {
   } catch (_) {}
   const waClient = app?.locals?.whatsappClient || app?.whatsappClient;
   return waClient?.sock || null;
-}
-
-// Monta legenda espaçada, com link junto
-function buildCaption({ winnerName, shortDateTime, channel, resultUrl }) {
-  return [
-    '🎈 Temos vencedora... olha que sucesso:',
-    winnerName,
-    `${shortDateTime} ${channel}`.trim(),
-    '',
-    'Link resultado 👇',
-    resultUrl,
-    '',
-    '📞 Me chame aqui para combinar a entrega do prêmio: (48) 99178-4533',
-    '⏰ Prazo hoje — depois faremos novo sorteio.',
-    '',
-    '🚨 O MELHOR do MUNDO em LIQUIDAÇÃO. Use meu cupom PEGAN 👇',
-    '💳 Procure por Murilo Cerqueira - cupons só valem aqui.',
-    'Meu link: https://www.natura.com.br/consultoria/clubemac',
-    '🛍️ 🎟️ Cupom extra: PEGAN',
-    '🚚 Frete grátis acima de R$99',
-    '🎯 Mais cupons:',
-    'https://clubemac.com.br/cupons/'
-  ].join('\n');
 }
 // -------------------------------------
 
@@ -335,6 +326,8 @@ async function runOnce(app, opts = {}) {
       const { url: resultUrl, winner, participants } = info;
       dlog('linha', p.id, { winner, participantsCount: Array.isArray(participants) ? participants.length : 0 });
 
+      const { name: winnerName, metaDateTime, metaChannel } = parseWinnerDetailed(winner || '');
+
       // 5.2) gerar mídia (poster ou vídeo)
       let usedPath;
       let media;
@@ -349,11 +342,8 @@ async function runOnce(app, opts = {}) {
         const videoBgUrl = p.bgUrl    || pickBgSafe();
         const musicUrl   = p.musicUrl || pickMusicSafe();
 
-        // Parse do vencedor
-        const { name: winnerNameRaw, shortDateTime, channel } = parseWinnerMeta(winner || '');
-        const winnerName = normalizeName(winnerNameRaw);
-
         if (wantVideo && mode === 'creatomate' && typeof makeCreatomateVideo === 'function') {
+          // ======= Creatomate =======
           const templateId = process.env.CREATOMATE_TEMPLATE_ID;
 
           usedPath = await makeCreatomateVideo({
@@ -370,15 +360,16 @@ async function runOnce(app, opts = {}) {
           const buf = fs.readFileSync(usedPath);
           media = { video: buf, mimetype: 'video/mp4' };
         } else {
-          // Poster (imagem) — agora com nome + meta DENTRO do banner
+          // ======= Poster + Vídeo Overlay (FFmpeg) =======
           const dateTimeStr = format(p.spDate, "dd/MM/yyyy 'às' HH:mm");
           const posterPath = await generatePoster({
             productImageUrl: p.imgUrl,
             productName: p.productName,
             dateTimeStr,
             winner: winnerName || 'Ganhador(a)',
-            winnerMetaDateTime: shortDateTime || '',
-            winnerMetaChannel:  channel || '',
+            winnerMetaDateTime: metaDateTime,
+            winnerMetaChannel:  metaChannel,
+            winnerMeta: winner, // retrocompat
             participants
           });
 
@@ -406,6 +397,7 @@ async function runOnce(app, opts = {}) {
                 errors.push({ id: p.id, stage: 'prepareMedia(video)', error: fferr?.message || String(fferr) });
                 const buf = fs.readFileSync(posterPath);
                 media = { image: buf, mimetype: 'image/png' };
+                dlog('FFmpeg falhou, fallback para imagem (poster)', fferr?.message || fferr);
               }
             }
           } else {
@@ -419,36 +411,55 @@ async function runOnce(app, opts = {}) {
         continue;
       }
 
-      // 5.3) legenda — UMA mensagem, link junto
-      const parsed = parseWinnerMeta(info.winner || '');
-      const caption = buildCaption({
-        winnerName: normalizeName(parsed.name || 'Ganhador(a)'),
-        shortDateTime: parsed.shortDateTime,
-        channel: parsed.channel,
-        resultUrl: info.url
+      // 5.3) legenda — WINNER_BLOCK em 3 linhas
+      const resultUrlStr = safeStr(resultUrl);
+      const winnerBlock =
+        `Ganhador(a): ${winnerName || 'Ganhador(a)'}\n` +
+        (metaDateTime ? `${metaDateTime}\n` : '') +
+        (metaChannel  ? `${metaChannel}` : '');
+
+      const captionFull = mergeText(chooseTemplate(), {
+        WINNER: winnerName || 'Ganhador(a)',
+        WINNER_BLOCK: winnerBlock.trim(),
+        RESULT_URL: resultUrlStr,
+        COUPON: coupon
       });
+
+      // Evita preview do LINK DE RESULTADO, mas mantém os links fixos do texts.js
+      const captionOut = (DISABLE_LINK_PREVIEW)
+        ? stripSpecificUrls(captionFull, [resultUrlStr])
+        : captionFull;
+
+      const linkAlreadyInside = resultUrlStr && captionOut.includes(resultUrlStr);
 
       // 5.4) enviar (prioriza sessão admin; se não, cliente interno)
       const sock = await getPreferredSock(app);
       if (!sock) {
         errors.push({ id: p.id, stage: 'sendMessage', error: 'WhatsApp não conectado (admin/cliente)' });
       } else if (dryRun) {
-        dlog('dry-run => NÃO enviou', { to: targetJids, id: p.id, caption });
+        dlog('dry-run => NÃO enviou', { to: targetJids, id: p.id, caption: captionOut, link: resultUrlStr });
       } else {
         for (const rawJid of targetJids) {
           let jid = safeStr(rawJid).trim();
           try {
             if (!jid || !jid.endsWith('@g.us')) throw new Error(`JID inválido: "${jid}"`);
-            const payload = { ...media, caption: safeStr(caption) };
+            const payload = { ...media, caption: safeStr(captionOut) };
             const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
 
-            await sock.sendMessage(jid, payload, opts); // UMA mensagem, sem preview
+            await sock.sendMessage(jid, payload, opts); // imagem/vídeo
+
+            // (Opcional) manda o link do resultado em uma segunda mensagem, somente se NÃO estiver na legenda
+            if (SEND_RESULT_URL_SEPARATE && resultUrlStr && !linkAlreadyInside) {
+              await delay(500);
+              await sock.sendMessage(jid, { text: resultUrlStr }, opts);
+            }
+
             anySentForThisRow = true;
-            dlog('enviado', { jid, id: p.id });
+            dlog('enviado', { jid, id: p.id, withLink: !!(SEND_RESULT_URL_SEPARATE && resultUrlStr && !linkAlreadyInside) });
           } catch (e) {
             errors.push({
               id: p.id, stage: 'sendMessage', jid,
-              mediaKeys: Object.keys(media || {}), captionLen: (caption || '').length,
+              mediaKeys: Object.keys(media || {}), captionLen: (captionOut || '').length,
               usedPath, error: e?.message || String(e)
             });
           }
