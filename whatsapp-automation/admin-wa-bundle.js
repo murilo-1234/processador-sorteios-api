@@ -1,3 +1,4 @@
+// admin-wa-bundle.js
 // Rotas + UI para conectar/desconectar WhatsApp com QR (Baileys),
 // injeta painel flutuante em /admin/groups
 // e serve o painel completo em /admin/whatsapp (lendo arquivo do /public).
@@ -15,6 +16,9 @@ const {
   fetchLatestBaileysVersion,
   DisconnectReason,
 } = require('@whiskeysockets/baileys');
+
+// SSE (opcional) — se existir, usamos para notificar a UI sem F5
+const sse = (() => { try { return require('./src/services/wa-sse'); } catch(_) { return null; } })();
 
 /* ===================== DIAGNÓSTICO ===================== */
 // Ative logs extras com WA_DEBUG=1 no ambiente (Render)
@@ -42,6 +46,7 @@ let lastQRDataUrl = null;
 let connecting = false;
 let connected  = false;
 let retryTimer = null;
+let lastMsisdn = null; // número formatado
 
 function ensureDir(p) {
   if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
@@ -51,6 +56,16 @@ function authDirPath() {
   return path.resolve(p);
 }
 
+// formata 55DD9xxxxxxx@s.whatsapp.net -> "DD 9xxxx-xxxx"
+function formatBrNumberFromJid(jid) {
+  try {
+    const raw = String(jid || '').replace('@s.whatsapp.net', '').replace(/^55/, '');
+    const m = /(\d{2})(\d{4,5})(\d{4})/.exec(raw);
+    if (m) return `${m[1]} ${m[2]}-${m[3]}`;
+  } catch (_) {}
+  return null;
+}
+
 async function status() {
   return {
     ok: true,
@@ -58,6 +73,8 @@ async function status() {
     connecting,
     qr: lastQRDataUrl || null,
     hasSock: !!sock,
+    msisdn: lastMsisdn || null,
+    user: sock?.user || null
   };
 }
 
@@ -73,9 +90,10 @@ async function connect() {
   if (connecting) { ddebug('connect(): já conectando'); return status(); }
 
   connecting = true;
-  lastQRDataUrl = null;                   // evita QR velho
+  lastQRDataUrl = null;
+  lastMsisdn = null;
   if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
-  await safeEndSocket();                  // evita resíduo
+  await safeEndSocket();
 
   const dir = authDirPath();
   ensureDir(dir);
@@ -88,10 +106,9 @@ async function connect() {
   sock = makeWASocket({
     version,
     auth: state,
-    printQRInTerminal: false,             // QR vai para o frontend
+    printQRInTerminal: false,
     logger: pino({ level: 'silent' }),
     browser: ['Desktop', 'Chrome', '120.0'],
-    // ajudar no handshake
     connectTimeoutMs: 60_000,
     keepAliveIntervalMs: 15_000,
   });
@@ -111,6 +128,8 @@ async function connect() {
         ddebug('QR recebido (raw):', mask(qr));
         lastQRDataUrl = await qrcode.toDataURL(qr);
         DIAG.push('QR gerado (dataURL length=', String(lastQRDataUrl.length), ')');
+        // empurra "connecting" + QR via SSE (opcional)
+        sse?.broadcast?.('default', { type: 'status', payload: await status() });
       } catch (err) {
         lastQRDataUrl = null;
         DIAG.push('Falha ao gerar dataURL do QR:', err?.message || String(err));
@@ -139,7 +158,9 @@ async function connect() {
       connected  = true;
       connecting = false;
       lastQRDataUrl = null;
-      DIAG.push('connection OPEN', JSON.stringify(sock?.user || {}));
+      lastMsisdn = formatBrNumberFromJid(sock?.user?.id);
+      DIAG.push('connection OPEN', JSON.stringify(sock?.user || {}), 'msisdn=', lastMsisdn);
+      sse?.broadcast?.('default', { type: 'status', payload: await status() });
     }
 
     if (connection === 'close') {
@@ -148,15 +169,16 @@ async function connect() {
 
       // 515: o WA pede restart do WebSocket → reconectar sozinho
       if (code === 515 /* restartRequired */) {
-        connected = false; connecting = false; lastQRDataUrl = null;
+        connected = false; connecting = false; lastQRDataUrl = null; lastMsisdn = null;
         DIAG.push('restartRequired: tentando reconectar em 2s');
+        sse?.broadcast?.('default', { type: 'status', payload: await status() });
         if (retryTimer) clearTimeout(retryTimer);
         retryTimer = setTimeout(() => {
           if (!connecting && !connected) {
             connect().catch(e => DIAG.push('auto-reconnect error:', e?.message || String(e)));
           }
         }, 2000);
-        return; // não seguir limpando mais nada
+        return;
       }
 
       if (code === DisconnectReason.loggedOut) {
@@ -166,7 +188,9 @@ async function connect() {
       connected  = false;
       connecting = false;
       lastQRDataUrl = null;
+      lastMsisdn = null;
       DIAG.push('connection CLOSED (code=', String(code), ')');
+      sse?.broadcast?.('default', { type: 'status', payload: await status() });
     }
   });
 
@@ -179,7 +203,9 @@ async function disconnect() {
   connected  = false;
   connecting = false;
   lastQRDataUrl = null;
+  lastMsisdn = null;
   dlog('disconnect(): concluído');
+  sse?.broadcast?.('default', { type: 'status', payload: await status() });
   return status();
 }
 
@@ -198,7 +224,7 @@ router.get('/wa/health', (_req, res) => res.json({ ok: true, ts: ts() }));
 
 router.get('/wa/status', async (_req, res) => {
   const st = await status();
-  ddebug('GET /admin/wa/status ->', { connected: st.connected, connecting: st.connecting, qr: !!st.qr, hasSock: st.hasSock });
+  ddebug('GET /admin/wa/status ->', { connected: st.connected, connecting: st.connecting, qr: !!st.qr, hasSock: st.hasSock, msisdn: st.msisdn });
   res.json(st);
 });
 
@@ -243,22 +269,6 @@ router.post('/wa/reset', async (_req, res) => {
 // === LOGS de diagnóstico (leitura simples) ===
 router.get('/wa/logs', (_req, res) => {
   res.type('text/plain').send(DIAG.lines.join('\n'));
-});
-
-// === PAREAMENTO POR CÓDIGO (opcional; não quebra nada existente) ===
-router.post('/wa/pair-code', async (req, res) => {
-  try {
-    const phone = (req.body?.phone || process.env.WHATSAPP_PHONE_NUMBER || '').replace(/\D/g,'');
-    if (!sock) await connect();
-    if (!sock?.requestPairingCode) return res.status(400).json({ ok:false, error:'Baileys sem suporte a pairing code nesta versão' });
-    if (!phone) return res.status(400).json({ ok:false, error:'Informe phone no body ou defina WHATSAPP_PHONE_NUMBER' });
-    const code = await sock.requestPairingCode(phone);
-    DIAG.push('Pairing code gerado para', phone, 'code=', code);
-    return res.json({ ok:true, phone, code });
-  } catch (e) {
-    DIAG.push('Erro pair-code:', e?.message || String(e));
-    return res.status(500).json({ ok:false, error: e?.message || String(e) });
-  }
 });
 
 // (mantido) redireciona /admin -> /admin/whatsapp
@@ -388,3 +398,4 @@ router.get('/wa/ui.js', (_req, res) => {
 module.exports = router;
 module.exports.getStatus = status;
 module.exports.getSock   = () => sock;
+module.exports.disconnect = disconnect; // <— export para /api/whatsapp/disconnect (opcional)
