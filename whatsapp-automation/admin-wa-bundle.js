@@ -82,10 +82,18 @@ async function status() {
   };
 }
 
-async function safeEndSocket() {
+// --- helpers de encerramento de socket ---
+// fecha o socket preservando a sessão (NÃO faz logout)
+async function stopSocket() {
   try { sock?.ev?.removeAllListeners?.(); } catch {}
-  try { await sock?.logout?.(); ddebug('safeEndSocket(): logout ok'); } catch (e) { ddebug('safeEndSocket(): logout err:', e?.message || e); }
-  try { sock?.end?.(); ddebug('safeEndSocket(): end ok'); } catch (e) { ddebug('safeEndSocket(): end err:', e?.message || e); }
+  try { sock?.end?.(); ddebug('stopSocket(): end ok'); } catch (e) { ddebug('stopSocket(): end err:', e?.message || e); }
+  sock = null;
+}
+// fecha o socket e faz logout (usa em desconectar/limpar)
+async function logoutAndStop() {
+  try { sock?.ev?.removeAllListeners?.(); } catch {}
+  try { await sock?.logout?.(); ddebug('logoutAndStop(): logout ok'); } catch (e) { ddebug('logoutAndStop(): logout err:', e?.message || e); }
+  try { sock?.end?.(); ddebug('logoutAndStop(): end ok'); } catch (e) { ddebug('logoutAndStop(): end err:', e?.message || e); }
   sock = null;
 }
 
@@ -97,7 +105,8 @@ async function connect() {
   lastQRDataUrl = null;
   lastMsisdn = null;
   if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
-  await safeEndSocket();
+  // >>> preserva sessão no restart
+  await stopSocket();
 
   const dir = authDirPath();
   ensureDir(dir);
@@ -203,7 +212,7 @@ async function connect() {
 
 async function disconnect() {
   dlog('disconnect(): solicitado');
-  await safeEndSocket();
+  await logoutAndStop(); // encerra + logout
   connected  = false;
   connecting = false;
   lastQRDataUrl = null;
