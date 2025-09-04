@@ -57,7 +57,7 @@
 
     <div class="card">
       <h1>Grupos do WhatsApp</h1>
-      <div class="muted">Sincronize os grupos e escolha <b>um ou mais</b> para postar os resultados dos sorteios.</div>
+      <div class="muted">Sincronize os grupos e escolha <b>um ou mais</b> (ou nenhum) para postar os resultados dos sorteios.</div>
 
       <div class="row">
         <button id="btnSync">🔄 Sincronizar grupos</button>
@@ -126,7 +126,7 @@
     function applyFilters() {
       const term = q.value.trim().toLowerCase();
       visible = groups.filter(g => {
-        if (fAdmins.checked && !g.announce) return false; // “somente admin” (announce=true)
+        if (fAdmins.checked && !g.announce) return false; // “somente admin”
         if (fSelected.checked && !selected.has(g.jid)) return false;
         if (term) {
           const hay = (g.name || '') + ' ' + (g.jid || '');
@@ -156,6 +156,7 @@
           const jid = ev.target.dataset.jid;
           if (ev.target.checked) selected.add(jid);
           else selected.delete(jid);
+          if (fSelected.checked) render(); // some da lista quando desmarca no filtro "selecionados"
         });
       });
     }
@@ -196,15 +197,16 @@
       }
     };
 
+    // >>> Pode salvar vazio (limpa a seleção)
     btnSave.onclick = async () => {
       try {
-        if (!selected.size) return alert('Selecione pelo menos um grupo.');
         status.textContent = 'Salvando...';
-        await getJSON('/api/groups/select', {
+        const payload = { postGroupJids: Array.from(selected) };
+        const resp = await getJSON('/api/groups/select', {
           method: 'POST',
-          body: JSON.stringify({ postGroupJids: Array.from(selected) })
+          body: JSON.stringify(payload)
         });
-        status.textContent = 'Salvo ✅';
+        status.textContent = resp?.cleared ? 'Seleção vazia salva ✅' : 'Salvo ✅';
         setTimeout(() => (status.textContent = ''), 2500);
       } catch (e) {
         status.textContent = 'Erro ao salvar ❌';
