@@ -340,7 +340,7 @@ async function generatePoster({
       const [yyyy, mm, dd] = m[1].split('-');
       metaDT = `Entrou na lista: ${dd}/${mm}/${String(yyyy).slice(-2)} ${m[2]}`;
     }
-    const c = String(winnerMeta).match(/(WhatsApp:[^•]+|Facebook:[^•]+)/i);
+    const c = String(winnerMeta).match(/(WhatsApp:[^•]+|Facebook:[^•]+|Instagram:[^•]+)/i);
     if (c) metaCH = `Acesso via: ${c[1].trim()}`;
   }
 
