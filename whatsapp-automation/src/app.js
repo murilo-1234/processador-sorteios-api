@@ -12,6 +12,7 @@ try {
 // ===================================================================================================
 
 const path = require('path');
+const fs = require('fs/promises');
 const express = require('express');
 const morgan = require('morgan');
 const QRCode = require('qrcode');
@@ -22,13 +23,16 @@ const WhatsAppClient = require('./services/whatsapp-client');
 const settings = require('./services/settings');
 const { runOnce } = require('./jobs/post-winner');
 
+// SSE hub (novo, não-intrusivo)
+const { addClient: sseAddClient, broadcast: sseBroadcast } = require('./services/wa-sse');
+
 const PORT = process.env.PORT || 3000;
 
 class App {
   constructor() {
     this.app = express();
     this.whatsappClient = null;
-    this.waAdmin = null; // <<< manter referência ao admin bundle
+    this.waAdmin = null; // <<< referência ao admin bundle
 
     const limiter = rateLimit({
       windowMs: 60 * 1000,
@@ -52,8 +56,8 @@ class App {
     try {
       const waAdmin = require('../admin-wa-bundle.js'); // arquivo na raiz do repo
       this.waAdmin = waAdmin;                            // <<< guardamos para usar nas rotas /api
-      this.app.locals.waAdmin = waAdmin;                // <<< deixa acessível para jobs/rotas
-      this.app.use('/admin', waAdmin);                  // monta tudo em /admin
+      this.app.locals.waAdmin = waAdmin;                // <<< acessível para jobs/rotas
+      this.app.use('/admin', waAdmin);                  // monta em /admin (rotas existentes mantidas)
     } catch (e) {
       console.warn('⚠️ Admin bundle indisponível:', e?.message || e);
     }
@@ -82,26 +86,83 @@ class App {
     return wa.isConnected && !!wa.sock;
   }
 
+  // pega status consolidado (prioriza admin), sem quebrar campos existentes
+  async consolidatedStatus() {
+    // 1) tentar admin
+    try {
+      if (this.waAdmin && typeof this.waAdmin.getStatus === 'function') {
+        const st = await this.waAdmin.getStatus();
+        if (st && typeof st === 'object') {
+          return {
+            ok: true,
+            connected: !!st.connected,
+            connecting: !!st.connecting,
+            hasSock: !!st.hasSock,
+            msisdn: st.msisdn || null,
+
+            // compat com clientes antigos:
+            isConnected: !!st.connected,
+            qrCodeGenerated: !!st.qr,
+            currentRetry: 0,
+            maxRetries: 3,
+            circuitBreakerState: 'CLOSED',
+            failureCount: 0,
+            queueLength: 0,
+            user: st.user || null
+          };
+        }
+      }
+    } catch (_) {}
+
+    // 2) fallback: cliente interno (mantém compatibilidade total)
+    const wa = this.initWhatsApp();
+    const user = wa.user || null;
+    // tenta formatar msisdn de fallback a partir de wa.user.id
+    const msisdn = (function (u) {
+      try {
+        const raw = String(u?.id || '').replace('@s.whatsapp.net', '').replace(/^55/, '');
+        const m = /(\d{2})(\d{4,5})(\d{4})/.exec(raw);
+        if (m) return `${m[1]} ${m[2]}-${m[3]}`;
+      } catch (_) {}
+      return null;
+    })(user);
+
+    return {
+      ok: true,
+      connected: !!wa.isConnected,
+      connecting: false,
+      hasSock: !!wa.sock,
+      msisdn,
+
+      // compat
+      isConnected: !!wa.isConnected,
+      qrCodeGenerated: wa.qrCodeGenerated,
+      currentRetry: wa.currentRetry || 0,
+      maxRetries: wa.maxRetries || 3,
+      circuitBreakerState: wa.circuitBreaker || 'CLOSED',
+      failureCount: wa.failureCount || 0,
+      queueLength: 0,
+      user
+    };
+  }
+
   routes() {
     // Health
     this.app.get('/health', (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
 
-    // Status
-    this.app.get('/api/whatsapp/status', (req, res) => {
-      const wa = this.initWhatsApp();
-      res.json({
-        isConnected: wa.isConnected,
-        qrCodeGenerated: wa.qrCodeGenerated,
-        currentRetry: wa.currentRetry || 0,
-        maxRetries: wa.maxRetries || 3,
-        circuitBreakerState: wa.circuitBreaker || 'CLOSED',
-        failureCount: wa.failureCount || 0,
-        queueLength: 0,
-        user: wa.user || null
-      });
+    // =========================
+    //   STATUS (compat + msisdn)
+    // =========================
+    this.app.get('/api/whatsapp/status', async (_req, res) => {
+      try {
+        const st = await this.consolidatedStatus();
+        return res.json(st);
+      } catch (e) {
+        return res.status(500).json({ ok: false, error: e?.message || String(e) });
+      }
     });
 
-    // Status detalhado
+    // Status detalhado (mantido)
     this.app.get('/api/whatsapp/session-status', (req, res) => {
       const wa = this.initWhatsApp();
       res.json({
@@ -119,7 +180,50 @@ class App {
       });
     });
 
-    // Reset
+    // ======================================================
+    //   SSE (novo): atualiza UI sem F5 após parear/desparear
+    // ======================================================
+    this.app.get('/api/whatsapp/stream', async (req, res) => {
+      const inst = (req.query.inst || 'default').toString();
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.flushHeaders();
+
+      sseAddClient(inst, res);
+
+      // empurra estado inicial
+      try {
+        const s = await this.consolidatedStatus();
+        res.write(`event: status\ndata: ${JSON.stringify(s)}\n\n`);
+      } catch (_) {}
+    });
+
+    // =====================================================================
+    //   DISCONNECT (opcional): proxy para desconectar e limpar a sessão
+    //   -> NÃO substitui /admin/wa/reset (apenas complemento)
+    // =====================================================================
+    this.app.post('/api/whatsapp/disconnect', async (_req, res) => {
+      try {
+        // tenta usar admin (se exportar disconnect)
+        if (this.waAdmin?.disconnect) {
+          await this.waAdmin.disconnect();
+        }
+        // limpeza do diretório de sessão (seguro mesmo se já foi limpo)
+        const dir = process.env.WA_SESSION_PATH || path.join(process.cwd(), 'data/baileys');
+        await fs.rm(dir, { recursive: true, force: true });
+
+        // avisa front via SSE
+        sseBroadcast('default', { type: 'status', payload: { ok: true, connected: false, connecting: false, hasSock: false } });
+        return res.json({ ok: true });
+      } catch (e) {
+        return res.status(500).json({ ok: false, error: e?.message || String(e) });
+      }
+    });
+
+    // =========================
+    //   RESET (mantido)
+    // =========================
     this.app.get('/api/reset-whatsapp', async (req, res) => {
       const wa = this.initWhatsApp();
       try {
@@ -140,7 +244,7 @@ class App {
       }
     });
 
-    // Força QR
+    // Força QR (mantido)
     this.app.get('/api/force-qr', async (req, res) => {
       const wa = this.initWhatsApp();
       try {
@@ -155,7 +259,7 @@ class App {
       }
     });
 
-    // QR SVG
+    // QR SVG (mantido)
     this.app.get('/qr', async (req, res) => {
       const wa = this.initWhatsApp();
       try {
@@ -172,7 +276,7 @@ class App {
       }
     });
 
-    // Pairing code
+    // Pairing code (mantido)
     this.app.get('/code', (req, res) => {
       const wa = this.initWhatsApp();
       const code = wa.getPairingCode();
@@ -187,11 +291,10 @@ class App {
       res.sendFile(path.join(__dirname, '../public/admin/groups.html'));
     });
 
-    // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-    // SINCRONIZAÇÃO — agora prioriza o socket do ADMIN (mesma sessão que você conectou)
+    // SINCRONIZAÇÃO — prioriza o socket do ADMIN (mantido)
     this.app.get('/api/groups/sync', async (_req, res) => {
       try {
-        // 1) tentar via admin bundle (sessão do /admin/whatsapp)
+        // 1) admin bundle
         if (this.waAdmin && typeof this.waAdmin.getStatus === 'function') {
           const st = await this.waAdmin.getStatus();
           if (st.connected) {
@@ -208,7 +311,7 @@ class App {
           }
         }
 
-        // 2) fallback: cliente interno (mantém compatibilidade com o restante do sistema)
+        // 2) fallback
         const wa = this.initWhatsApp();
         const okConn = await this.waitForWAConnected(wa, 8000);
         if (!okConn) {
@@ -222,13 +325,11 @@ class App {
         res.status(500).json({ ok: false, error: e?.message || String(e) });
       }
     });
-    // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
     this.app.get('/api/groups', (_req, res) => {
       res.json({ ok: true, settings: settings.get() });
     });
 
-    // >>> Atualizado: aceita vários grupos (postGroupJids) ou um (resultGroupJid)
     this.app.post('/api/groups/select', (req, res) => {
       try {
         const { resultGroupJid, postGroupJids } = req.body || {};
@@ -244,15 +345,12 @@ class App {
       }
     });
 
-    // >>> Teste: envia mensagem de teste para TODOS os grupos salvos (prioriza sessão do ADMIN)
     this.app.post('/api/groups/test-post', async (_req, res) => {
       try {
         const st = settings.get();
-
         const targets = (Array.isArray(st.postGroupJids) && st.postGroupJids.length)
           ? st.postGroupJids
           : (st.resultGroupJid ? [st.resultGroupJid] : []);
-
         if (!targets.length) {
           return res.status(400).json({ ok: false, error: 'Nenhum grupo selecionado' });
         }
@@ -283,8 +381,7 @@ class App {
       }
     });
 
-    // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-    // BOTÃO / ENDPOINT DE TESTE DE VÍDEO (gera via Creatomate e envia ao(s) grupo(s) selecionado(s))
+    // ====== VÍDEO TESTE VIA CREATOMATE (mantido) ======
     this.app.post('/api/posts/test-video', async (_req, res) => {
       try {
         const st = settings.get();
@@ -300,10 +397,9 @@ class App {
           headline: '🎉 Resultado do Sorteio',
           premio: 'Produto de Teste',
           winner: 'Fulano de Tal',
-          productImageUrl: 'https://picsum.photos/1080' // placeholder
+          productImageUrl: 'https://picsum.photos/1080'
         });
 
-        // prioriza sessão admin
         let sock = null;
         if (this.waAdmin && typeof this.waAdmin.getStatus === 'function') {
           const stAdmin = await this.waAdmin.getStatus();
@@ -323,7 +419,6 @@ class App {
         res.status(500).json({ ok:false, error: e?.message || String(e) });
       }
     });
-    // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
     // ========= job manual =========
     this.app.post('/api/jobs/run-once', async (req, res) => {
