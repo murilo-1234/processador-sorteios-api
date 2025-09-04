@@ -44,8 +44,8 @@ const DELAY_MIN = Number(process.env.POST_DELAY_MINUTES ?? 10);
 const DEBUG_JOB = String(process.env.DEBUG_JOB || '').trim() === '1';
 
 // === Flags ===
-const DISABLE_LINK_PREVIEW = String(process.env.DISABLE_LINK_PREVIEW || '1') === '1';
-const SEND_RESULT_URL_SEPARATE = String(process.env.SEND_RESULT_URL_SEPARATE || '1') === '1';
+const DISABLE_LINK_PREVIEW = String(process.env.DISABLE_LINK_PREVIEW || '1') === '1'; // mantido por compat
+const SEND_RESULT_URL_SEPARATE = false; // NUNCA enviar link em mensagem separada
 const BAILEYS_LINK_PREVIEW_OFF = String(process.env.BAILEYS_LINK_PREVIEW_OFF || '1') === '1';
 
 // ---------- utils ----------
@@ -169,14 +169,22 @@ function stripSpecificUrls(text, urls = []) {
   return out;
 }
 
+// Remove letra de avatar no começo do nome (ex.: "V Vanessa")
+function stripLeadingAvatarLetter(name = '') {
+  const m = String(name).match(/^([A-ZÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ])\s+(.+)$/i);
+  if (m && m[2] && m[2].length >= 2) return m[2].trim();
+  return String(name).trim();
+}
+
 // extrai nome + data/hora + canal do campo winner
 function parseWinnerDetailed(winnerStr = '') {
-  const raw = String(winnerStr || '').trim();
+  const raw = String(winnerStr || '').replace(/\s+/g, ' ').trim();
 
   // nome = tudo antes do primeiro " 20YY-"
   const dtMatch = raw.match(/\s(20\d{2}-\d{2}-\d{2})\s(\d{2}:\d{2}:\d{2})/);
   let name = raw;
   if (dtMatch) name = raw.slice(0, dtMatch.index).trim();
+  name = stripLeadingAvatarLetter(name);
 
   let metaDateTime = '';
   if (dtMatch) {
@@ -189,6 +197,16 @@ function parseWinnerDetailed(winnerStr = '') {
   if (ch) metaChannel = `Acesso via: ${ch[1].trim()}`;
 
   return { name, metaDateTime, metaChannel };
+}
+
+function winnerLooksReady(info) {
+  const raw = String(info?.winner || '');
+  if (!raw) return false;
+  if (/ser[áa]\s+anunciado/i.test(raw)) return false; // "será anunciado"
+  const { name, metaDateTime } = parseWinnerDetailed(raw);
+  if (!name || name.length < 3) return false;
+  if (!metaDateTime) return false; // sem data de entrada -> ainda não consolidou
+  return true;
 }
 
 // --- preferir o socket do painel admin (/admin) ---
@@ -204,6 +222,15 @@ async function getPreferredSock(app) {
   return waClient?.sock || null;
 }
 // -------------------------------------
+
+function ensureLinkInsideCaption(caption, resultUrl) {
+  const cap = String(caption || '');
+  const url = String(resultUrl || '').trim();
+  if (!url) return cap;
+  if (cap.includes(url)) return cap;
+  const join = cap.trim().length ? `${cap.trim()}\n\n` : '';
+  return `${join}Link resultado👇\n${url}`;
+}
 
 /**
  * Executa o job 1x.
@@ -344,20 +371,11 @@ async function runOnce(app, opts = {}) {
       dlog('linha', p.id, { winner, participantsCount: Array.isArray(participants) ? participants.length : 0 });
 
       // ===== Trava: só segue se já existe ganhador "válido" =====
-      const parsed = parseWinnerDetailed(winner || '');
-      const winnerName = parsed.name?.trim() || '';
-      const metaDateTime = parsed.metaDateTime;
-      const metaChannel  = parsed.metaChannel;
-
-      const looksPending =
-        !winnerName ||
-        /será anunciado|anunciado em/i.test(String(winner || '')) ||
-        winnerName.length < 2;
-
-      if (looksPending) {
-        skipped.push({ id: p.id, reason: 'no_winner_yet' });
+      if (!winnerLooksReady(info)) {
+        skipped.push({ id: p.id, reason: 'winner_not_ready' });
         continue;
       }
+      const { name: winnerName, metaDateTime, metaChannel } = parseWinnerDetailed(winner || '');
 
       // 5.2) gerar mídia (poster ou vídeo)
       let usedPath;
@@ -442,7 +460,7 @@ async function runOnce(app, opts = {}) {
 
       // 5.3) legenda (sem quebrar espaçamento do template)
       const resultUrlStr = safeStr(resultUrl);
-      const captionFull = mergeText(chooseTemplate(), {
+      let captionFull = mergeText(chooseTemplate(), {
         WINNER: winnerName || 'Ganhador(a)',
         WINNER_DT: metaDateTime,
         WINNER_CH: metaChannel,
@@ -450,12 +468,11 @@ async function runOnce(app, opts = {}) {
         COUPON: coupon
       });
 
-      // evita preview só do link de resultado
-      const captionOut = (DISABLE_LINK_PREVIEW)
-        ? stripSpecificUrls(captionFull, [resultUrlStr])
-        : captionFull;
+      // Link deve ficar na mesma mensagem SEMPRE
+      captionFull = ensureLinkInsideCaption(captionFull, resultUrlStr);
 
-      const linkAlreadyInside = resultUrlStr && captionOut.includes(resultUrlStr);
+      // Não retiramos o link; apenas evitamos preview via opção do Baileys
+      const captionOut = captionFull;
 
       // 5.4) enviar
       const sock = await getPreferredSock(app);
@@ -473,11 +490,7 @@ async function runOnce(app, opts = {}) {
 
             await sock.sendMessage(jid, payload, opts);
 
-            if (SEND_RESULT_URL_SEPARATE && resultUrlStr && !linkAlreadyInside) {
-              await delay(500);
-              await sock.sendMessage(jid, { text: resultUrlStr }, opts);
-            }
-
+            // Nunca enviar link separado
             anySentForThisRow = true;
             dlog('enviado', { jid, id: p.id });
           } catch (e) {
