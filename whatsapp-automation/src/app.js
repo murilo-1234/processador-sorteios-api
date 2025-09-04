@@ -28,11 +28,21 @@ const { addClient: sseAddClient, broadcast: sseBroadcast } = require('./services
 
 const PORT = process.env.PORT || 3000;
 
+// util: interpreta booleanos em env
+function envOn(v, def = false) {
+  const s = String(v ?? '').trim().toLowerCase();
+  if (!s) return def;
+  return s === '1' || s === 'true' || s === 'yes' || s === 'on';
+}
+
 class App {
   constructor() {
     this.app = express();
     this.whatsappClient = null;
     this.waAdmin = null; // <<< referência ao admin bundle
+    this.isFallbackEnabled =
+      envOn(process.env.WA_CLIENT_AUTOSTART, false) || // recomendado
+      envOn(process.env.WA_FALLBACK_ENABLED, false);   // alias opcional
 
     const limiter = rateLimit({
       windowMs: 60 * 1000,
@@ -66,24 +76,33 @@ class App {
     this.routes();
   }
 
+  // cria o cliente interno APENAS se fallback estiver habilitado
   initWhatsApp() {
+    if (!this.isFallbackEnabled) return null;
     if (!this.whatsappClient) {
       this.whatsappClient = new WhatsAppClient();
       this.app.locals.whatsappClient = this.whatsappClient;
       this.whatsappClient.initialize().catch((e) => {
-        console.error('❌ Falha inicial ao iniciar WhatsApp:', e?.message || e);
+        console.error('❌ Falha inicial ao iniciar WhatsApp (fallback):', e?.message || e);
       });
     }
     return this.whatsappClient;
   }
 
+  // obtém o cliente interno sem criar (a não ser que create=true e fallback esteja habilitado)
+  getClient({ create = false } = {}) {
+    if (this.whatsappClient) return this.whatsappClient;
+    if (create) return this.initWhatsApp();
+    return null;
+  }
+
   async waitForWAConnected(wa, timeoutMs = 8000) {
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     const start = Date.now();
-    while ((!wa.isConnected || !wa.sock) && Date.now() - start < timeoutMs) {
+    while ((!wa?.isConnected || !wa?.sock) && Date.now() - start < timeoutMs) {
       await wait(250);
     }
-    return wa.isConnected && !!wa.sock;
+    return !!(wa?.isConnected && wa?.sock);
   }
 
   // pega status consolidado (prioriza admin), sem quebrar campos existentes
@@ -114,35 +133,56 @@ class App {
       }
     } catch (_) {}
 
-    // 2) fallback: cliente interno (mantém compatibilidade total)
-    const wa = this.initWhatsApp();
-    const user = wa.user || null;
-    // tenta formatar msisdn de fallback a partir de wa.user.id
-    const msisdn = (function (u) {
-      try {
-        const raw = String(u?.id || '').replace('@s.whatsapp.net', '').replace(/^55/, '');
-        const m = /(\d{2})(\d{4,5})(\d{4})/.exec(raw);
-        if (m) return `${m[1]} ${m[2]}-${m[3]}`;
-      } catch (_) {}
-      return null;
-    })(user);
+    // 2) fallback (somente se estiver habilitado E já existir/for permitido criar)
+    if (this.isFallbackEnabled) {
+      const wa = this.getClient({ create: false }); // não criar só por status
+      if (wa) {
+        const user = wa.user || null;
+        const msisdn = (function (u) {
+          try {
+            const raw = String(u?.id || '')
+              .replace('@s.whatsapp.net', '')
+              .replace(/^55/, '');
+            const m = /(\d{2})(\d{4,5})(\d{4})/.exec(raw);
+            if (m) return `${m[1]} ${m[2]}-${m[3]}`;
+          } catch (_) {}
+          return null;
+        })(user);
 
+        return {
+          ok: true,
+          connected: !!wa.isConnected,
+          connecting: false,
+          hasSock: !!wa.sock,
+          msisdn,
+          isConnected: !!wa.isConnected,
+          qrCodeGenerated: wa.qrCodeGenerated,
+          currentRetry: wa.currentRetry || 0,
+          maxRetries: wa.maxRetries || 3,
+          circuitBreakerState: wa.circuitBreaker || 'CLOSED',
+          failureCount: wa.failureCount || 0,
+          queueLength: 0,
+          user
+        };
+      }
+    }
+
+    // sem admin e sem fallback ativo -> status "desligado"
     return {
       ok: true,
-      connected: !!wa.isConnected,
+      connected: false,
       connecting: false,
-      hasSock: !!wa.sock,
-      msisdn,
-
-      // compat
-      isConnected: !!wa.isConnected,
-      qrCodeGenerated: wa.qrCodeGenerated,
-      currentRetry: wa.currentRetry || 0,
-      maxRetries: wa.maxRetries || 3,
-      circuitBreakerState: wa.circuitBreaker || 'CLOSED',
-      failureCount: wa.failureCount || 0,
+      hasSock: false,
+      msisdn: null,
+      isConnected: false,
+      qrCodeGenerated: false,
+      currentRetry: 0,
+      maxRetries: 3,
+      circuitBreakerState: 'CLOSED',
+      failureCount: 0,
       queueLength: 0,
-      user
+      user: null,
+      fallbackDisabled: !this.isFallbackEnabled
     };
   }
 
@@ -162,20 +202,21 @@ class App {
       }
     });
 
-    // Status detalhado (mantido)
+    // Status detalhado (mantido) — não cria fallback se desabilitado
     this.app.get('/api/whatsapp/session-status', (req, res) => {
-      const wa = this.initWhatsApp();
+      const wa = this.getClient({ create: false });
       res.json({
-        initialized: !!wa.sock,
-        connected: wa.isConnected,
-        qrAvailable: !!wa.getQRCode(),
-        pairingAvailable: !!wa.getPairingCode(),
+        initialized: !!wa?.sock,
+        connected: !!wa?.isConnected,
+        qrAvailable: !!wa?.getQRCode?.(),
+        pairingAvailable: !!wa?.getPairingCode?.(),
         qrCode: null,
         pairingCode: null,
-        retryCount: wa.currentRetry || 0,
-        maxRetries: wa.maxRetries || 3,
-        circuitBreaker: wa.circuitBreaker || 'CLOSED',
-        user: wa.user || null,
+        retryCount: wa?.currentRetry || 0,
+        maxRetries: wa?.maxRetries || 3,
+        circuitBreaker: wa?.circuitBreaker || 'CLOSED',
+        user: wa?.user || null,
+        fallbackDisabled: !this.isFallbackEnabled && !wa,
         timestamp: new Date().toISOString()
       });
     });
@@ -229,9 +270,10 @@ class App {
     });
 
     // =========================
-    //   RESET (mantido)
+    //   RESET (mantido) — depende de fallback
     // =========================
     this.app.get('/api/reset-whatsapp', async (req, res) => {
+      if (!this.isFallbackEnabled) return res.status(503).json({ success: false, error: 'Fallback desabilitado (WA_CLIENT_AUTOSTART=0).' });
       const wa = this.initWhatsApp();
       try {
         await wa.clearSession();
@@ -251,8 +293,9 @@ class App {
       }
     });
 
-    // Força QR (mantido)
+    // Força QR (mantido) — depende de fallback
     this.app.get('/api/force-qr', async (req, res) => {
+      if (!this.isFallbackEnabled) return res.status(503).json({ success: false, error: 'Fallback desabilitado (WA_CLIENT_AUTOSTART=0).' });
       const wa = this.initWhatsApp();
       try {
         const ok = await wa.forceQRGeneration();
@@ -266,8 +309,9 @@ class App {
       }
     });
 
-    // QR SVG (mantido)
+    // QR SVG (mantido) — depende de fallback
     this.app.get('/qr', async (req, res) => {
+      if (!this.isFallbackEnabled) return res.status(503).json({ error: 'Fallback desabilitado (WA_CLIENT_AUTOSTART=0).' });
       const wa = this.initWhatsApp();
       try {
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -283,8 +327,9 @@ class App {
       }
     });
 
-    // Pairing code (mantido)
+    // Pairing code (mantido) — depende de fallback
     this.app.get('/code', (req, res) => {
+      if (!this.isFallbackEnabled) return res.status(503).json({ error: 'Fallback desabilitado (WA_CLIENT_AUTOSTART=0).' });
       const wa = this.initWhatsApp();
       const code = wa.getPairingCode();
       if (!code) return res.status(404).json({ error: 'Pairing code não disponível' });
@@ -318,16 +363,19 @@ class App {
           }
         }
 
-        // 2) fallback
-        const wa = this.initWhatsApp();
-        const okConn = await this.waitForWAConnected(wa, 8000);
-        if (!okConn) {
-          return res.status(503).json({ ok: false, error: 'WhatsApp ainda conectando… tente novamente em alguns segundos.' });
+        // 2) fallback (opcional)
+        if (this.isFallbackEnabled) {
+          const wa = this.initWhatsApp();
+          const okConn = await this.waitForWAConnected(wa, 8000);
+          if (!okConn) {
+            return res.status(503).json({ ok: false, error: 'WhatsApp ainda conectando… tente novamente em alguns segundos.' });
+          }
+          const groups = await wa.listGroups();
+          const saved = settings.set({ groups, lastSyncAt: new Date().toISOString() });
+          return res.json({ ok: true, groups, saved });
         }
 
-        const groups = await wa.listGroups();
-        const saved = settings.set({ groups, lastSyncAt: new Date().toISOString() });
-        res.json({ ok: true, groups, saved });
+        return res.status(503).json({ ok: false, error: 'Sem sessão disponível (admin desconectado e fallback desabilitado).' });
       } catch (e) {
         res.status(500).json({ ok: false, error: e?.message || String(e) });
       }
@@ -337,7 +385,7 @@ class App {
       res.json({ ok: true, settings: settings.get() });
     });
 
-    // >>> Atualizado: aceita lista vazia (limpa seleção)
+    // aceita lista vazia (limpa seleção)
     this.app.post('/api/groups/select', (req, res) => {
       try {
         const { resultGroupJid, postGroupJids } = req.body || {};
@@ -374,10 +422,13 @@ class App {
           }
         }
 
-        // 2) Fallback: cliente interno
+        // 2) Fallback: cliente interno (apenas se habilitado)
+        if (!this.isFallbackEnabled) {
+          return res.status(503).json({ ok: false, error: 'Sem sessão disponível (admin desconectado e fallback desabilitado).' });
+        }
         const wa = this.initWhatsApp();
         if (!wa.isConnected) {
-          return res.status(400).json({ ok: false, error: 'WhatsApp não conectado' });
+          return res.status(400).json({ ok: false, error: 'WhatsApp (fallback) não conectado' });
         }
         for (const jid of targets) {
           await wa.sendToGroup(jid, '🔔 Teste de postagem de sorteio (ok)');
@@ -413,6 +464,9 @@ class App {
           if (stAdmin.connected) sock = this.waAdmin.getSock();
         }
         if (!sock) {
+          if (!this.isFallbackEnabled) {
+            return res.status(503).json({ ok:false, error:'Sem sessão disponível (admin desconectado e fallback desabilitado).' });
+          }
           const wa = this.initWhatsApp();
           sock = wa?.sock || null;
         }
@@ -431,6 +485,26 @@ class App {
     this.app.post('/api/jobs/run-once', async (req, res) => {
       try {
         const dry = ['1','true','yes'].includes(String(req.query.dry || '').toLowerCase());
+
+        // roda só se existir sessão (admin OU fallback habilitado & conectado)
+        let canRun = false;
+
+        try {
+          if (this.waAdmin && typeof this.waAdmin.getStatus === 'function') {
+            const st = await this.waAdmin.getStatus();
+            canRun = !!st.connected;
+          }
+        } catch (_) {}
+
+        if (!canRun && this.isFallbackEnabled) {
+          const wa = this.getClient({ create: false });
+          canRun = !!(wa?.isConnected);
+        }
+
+        if (!canRun) {
+          return res.status(503).json({ ok:false, error:'Sem sessão conectada para executar o job.' });
+        }
+
         const out = await runOnce(this.app, { dryRun: dry });
         res.json(out);
       } catch (e) {
@@ -440,7 +514,6 @@ class App {
 
     // ========= diagnóstico admin vs client =========
     this.app.get('/debug/wa', async (_req, res) => {
-      const wa = this.initWhatsApp();
       let admin = { available: false };
       try {
         if (this.waAdmin && typeof this.waAdmin.getStatus === 'function') {
@@ -451,12 +524,15 @@ class App {
         admin = { available: true, error: e?.message || String(e) };
       }
 
+      const wa = this.getClient({ create: false });
+
       res.json({
         admin,
         client: {
-          initialized: !!wa.sock,
-          connected: !!wa.isConnected,
-          user: wa.user || null
+          enabled: this.isFallbackEnabled,
+          initialized: !!wa?.sock,
+          connected: !!wa?.isConnected,
+          user: wa?.user || null
         },
         selectedGroups: settings.get()?.postGroupJids || (settings.get()?.resultGroupJid ? [settings.get().resultGroupJid] : []),
         ts: new Date().toISOString()
@@ -465,15 +541,38 @@ class App {
   }
 
   listen() {
-    this.initWhatsApp();
+    // <<< IMPORTANTE: não inicia o cliente interno por padrão
+    if (this.isFallbackEnabled) {
+      this.initWhatsApp();
+    }
 
+    // Cron: roda só se houver sessão conectada
     cron.schedule('*/1 * * * *', async () => {
-      try { await runOnce(this.app); }
-      catch (e) { console.error('cron runOnce error:', e?.message || e); }
+      try {
+        let canRun = false;
+
+        try {
+          if (this.waAdmin && typeof this.waAdmin.getStatus === 'function') {
+            const st = await this.waAdmin.getStatus();
+            canRun = !!st.connected;
+          }
+        } catch (_) {}
+
+        if (!canRun && this.isFallbackEnabled) {
+          const wa = this.getClient({ create: false });
+          canRun = !!(wa?.isConnected);
+        }
+
+        if (canRun) {
+          await runOnce(this.app);
+        }
+      } catch (e) {
+        console.error('cron runOnce error:', e?.message || e);
+      }
     });
 
     this.app.listen(PORT, () => {
-      console.log(`🚀 Server listening on :${PORT}`);
+      console.log(`🚀 Server listening on :${PORT}  |  Fallback enabled: ${this.isFallbackEnabled ? 'yes' : 'no'}`);
     });
   }
 }
