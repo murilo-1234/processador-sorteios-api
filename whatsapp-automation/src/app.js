@@ -12,7 +12,7 @@ try {
 // ===================================================================================================
 
 const path = require('path');
-const fs = require('fs/promises');
+const fsp = require('fs/promises');
 const express = require('express');
 const morgan = require('morgan');
 const QRCode = require('qrcode');
@@ -23,7 +23,7 @@ const WhatsAppClient = require('./services/whatsapp-client');
 const settings = require('./services/settings');
 const { runOnce } = require('./jobs/post-winner');
 
-// SSE hub (novo, não-intrusivo)
+// SSE hub
 const { addClient: sseAddClient, broadcast: sseBroadcast } = require('./services/wa-sse');
 
 const PORT = process.env.PORT || 3000;
@@ -35,11 +35,14 @@ function envOn(v, def = false) {
   return s === '1' || s === 'true' || s === 'yes' || s === 'on';
 }
 
+// Diretório de sessão DESTE serviço (não tocamos em WA_SESSION_PATH para não afetar outros)
+const SESSION_DIR = process.env.WHATSAPP_SESSION_PATH || '/data/whatsapp-session';
+
 class App {
   constructor() {
     this.app = express();
     this.whatsappClient = null;
-    this.waAdmin = null; // <<< referência ao admin bundle
+    this.waAdmin = null; // referência ao admin bundle
     this.isFallbackEnabled =
       envOn(process.env.WA_CLIENT_AUTOSTART, false) || // recomendado
       envOn(process.env.WA_FALLBACK_ENABLED, false);   // alias opcional
@@ -65,8 +68,8 @@ class App {
     // === PAINEL ADMIN (WhatsApp) ===
     try {
       const waAdmin = require('../admin-wa-bundle.js'); // arquivo na raiz do repo
-      this.waAdmin = waAdmin;                            // <<< guardamos para usar nas rotas /api
-      this.app.locals.waAdmin = waAdmin;                // <<< acessível para jobs/rotas
+      this.waAdmin = waAdmin;                            // guardamos para usar nas rotas /api
+      this.app.locals.waAdmin = waAdmin;                // acessível para jobs/rotas
       this.app.use('/admin', waAdmin);                  // monta em /admin (rotas existentes mantidas)
     } catch (e) {
       console.warn('⚠️ Admin bundle indisponível:', e?.message || e);
@@ -80,7 +83,8 @@ class App {
   initWhatsApp() {
     if (!this.isFallbackEnabled) return null;
     if (!this.whatsappClient) {
-      this.whatsappClient = new WhatsAppClient();
+      // forçamos o caminho de sessão DESTE serviço
+      this.whatsappClient = new WhatsAppClient({ sessionPath: SESSION_DIR });
       this.app.locals.whatsappClient = this.whatsappClient;
       this.whatsappClient.initialize().catch((e) => {
         console.error('❌ Falha inicial ao iniciar WhatsApp (fallback):', e?.message || e);
@@ -203,7 +207,7 @@ class App {
     });
 
     // Status detalhado (mantido) — não cria fallback se desabilitado
-    this.app.get('/api/whatsapp/session-status', (req, res) => {
+    this.app.get('/api/whatsapp/session-status', (_req, res) => {
       const wa = this.getClient({ create: false });
       res.json({
         initialized: !!wa?.sock,
@@ -222,7 +226,7 @@ class App {
     });
 
     // ======================================================
-    //   SSE (novo): atualiza UI sem F5 após parear/desparear
+    //   SSE: atualiza UI sem F5 após parear/desparear
     // ======================================================
     this.app.get('/api/whatsapp/stream', async (req, res) => {
       const inst = (req.query.inst || 'default').toString();
@@ -233,7 +237,7 @@ class App {
 
       sseAddClient(inst, res);
 
-      // empurra estado inicial
+      // estado inicial
       try {
         const s = await this.consolidatedStatus();
         res.write(`event: status\ndata: ${JSON.stringify(s)}\n\n`);
@@ -241,27 +245,15 @@ class App {
     });
 
     // =====================================================================
-    //   DISCONNECT (opcional): proxy para desconectar e limpar a sessão
-    //   -> NÃO substitui /admin/wa/reset (apenas complemento)
+    //   DISCONNECT: usa admin se tiver, e apaga APENAS o diretório DESTe serviço
     // =====================================================================
     this.app.post('/api/whatsapp/disconnect', async (_req, res) => {
       try {
-        // tenta usar admin (se exportar disconnect)
         if (this.waAdmin?.disconnect) {
-          await this.waAdmin.disconnect();
+          try { await this.waAdmin.disconnect(); } catch {}
         }
-        // limpeza do diretório de sessão — cobre os dois nomes + fallbacks
-        const dirCandidates = [
-          process.env.WA_SESSION_PATH,
-          process.env.WHATSAPP_SESSION_PATH,
-          path.join(process.cwd(), 'data', 'baileys'),
-          path.join(process.cwd(), 'data', 'whatsapp-session'),
-        ].filter(Boolean);
-        for (const d of dirCandidates) {
-          try { await fs.rm(d, { recursive: true, force: true }); } catch {}
-        }
+        try { await fsp.rm(SESSION_DIR, { recursive: true, force: true }); } catch {}
 
-        // avisa front via SSE
         sseBroadcast('default', { type: 'status', payload: { ok: true, connected: false, connecting: false, hasSock: false } });
         return res.json({ ok: true });
       } catch (e) {
@@ -270,9 +262,9 @@ class App {
     });
 
     // =========================
-    //   RESET (mantido) — depende de fallback
+    //   RESET — depende de fallback
     // =========================
-    this.app.get('/api/reset-whatsapp', async (req, res) => {
+    this.app.get('/api/reset-whatsapp', async (_req, res) => {
       if (!this.isFallbackEnabled) return res.status(503).json({ success: false, error: 'Fallback desabilitado (WA_CLIENT_AUTOSTART=0).' });
       const wa = this.initWhatsApp();
       try {
@@ -293,8 +285,8 @@ class App {
       }
     });
 
-    // Força QR (mantido) — depende de fallback
-    this.app.get('/api/force-qr', async (req, res) => {
+    // Força QR — depende de fallback
+    this.app.get('/api/force-qr', async (_req, res) => {
       if (!this.isFallbackEnabled) return res.status(503).json({ success: false, error: 'Fallback desabilitado (WA_CLIENT_AUTOSTART=0).' });
       const wa = this.initWhatsApp();
       try {
@@ -309,8 +301,8 @@ class App {
       }
     });
 
-    // QR SVG (mantido) — depende de fallback
-    this.app.get('/qr', async (req, res) => {
+    // QR SVG — depende de fallback
+    this.app.get('/qr', async (_req, res) => {
       if (!this.isFallbackEnabled) return res.status(503).json({ error: 'Fallback desabilitado (WA_CLIENT_AUTOSTART=0).' });
       const wa = this.initWhatsApp();
       try {
@@ -327,8 +319,8 @@ class App {
       }
     });
 
-    // Pairing code (mantido) — depende de fallback
-    this.app.get('/code', (req, res) => {
+    // Pairing code — depende de fallback
+    this.app.get('/code', (_req, res) => {
       if (!this.isFallbackEnabled) return res.status(503).json({ error: 'Fallback desabilitado (WA_CLIENT_AUTOSTART=0).' });
       const wa = this.initWhatsApp();
       const code = wa.getPairingCode();
@@ -343,7 +335,7 @@ class App {
       res.sendFile(path.join(__dirname, '../public/admin/groups.html'));
     });
 
-    // SINCRONIZAÇÃO — prioriza o socket do ADMIN (mantido)
+    // SINCRONIZAÇÃO — prioriza o socket do ADMIN
     this.app.get('/api/groups/sync', async (_req, res) => {
       try {
         // 1) admin bundle
@@ -449,7 +441,7 @@ class App {
         if (!targets.length) return res.status(400).json({ ok:false, error:'Nenhum grupo selecionado' });
 
         const { makeCreatomateVideo } = require('./services/creatomate');
-        const fs = require('fs');
+        const fsNode = require('fs');
 
         const videoPath = await makeCreatomateVideo({
           headline: '🎉 Resultado do Sorteio',
@@ -473,7 +465,7 @@ class App {
         if (!sock) return res.status(400).json({ ok:false, error:'WhatsApp não conectado' });
 
         for (const jid of targets) {
-          await sock.sendMessage(jid, { video: fs.createReadStream(videoPath), caption: '🔔 Teste de vídeo (Creatomate)' });
+          await sock.sendMessage(jid, { video: fsNode.createReadStream(videoPath), caption: '🔔 Teste de vídeo (Creatomate)' });
         }
         res.json({ ok:true, sentTo: targets.length, path: videoPath });
       } catch (e) {
@@ -534,6 +526,7 @@ class App {
           connected: !!wa?.isConnected,
           user: wa?.user || null
         },
+        sessionDir: SESSION_DIR,
         selectedGroups: settings.get()?.postGroupJids || (settings.get()?.resultGroupJid ? [settings.get().resultGroupJid] : []),
         ts: new Date().toISOString()
       });
@@ -541,7 +534,7 @@ class App {
   }
 
   listen() {
-    // <<< IMPORTANTE: não inicia o cliente interno por padrão
+    // NÃO inicia o cliente interno por padrão se fallback estiver desabilitado
     if (this.isFallbackEnabled) {
       this.initWhatsApp();
     }
@@ -572,7 +565,7 @@ class App {
     });
 
     this.app.listen(PORT, () => {
-      console.log(`🚀 Server listening on :${PORT}  |  Fallback enabled: ${this.isFallbackEnabled ? 'yes' : 'no'}`);
+      console.log(`🚀 Server listening on :${PORT} | Fallback: ${this.isFallbackEnabled ? 'ON' : 'OFF'} | sessionDir=${SESSION_DIR}`);
     });
   }
 }
