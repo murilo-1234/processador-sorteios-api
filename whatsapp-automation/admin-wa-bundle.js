@@ -52,7 +52,11 @@ function ensureDir(p) {
   if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
 }
 function authDirPath() {
-  const p = process.env.WA_SESSION_PATH || path.join(process.cwd(), 'data', 'baileys');
+  // Compat: usa WA_SESSION_PATH -> WHATSAPP_SESSION_PATH -> fallback
+  const p =
+    process.env.WA_SESSION_PATH ||
+    process.env.WHATSAPP_SESSION_PATH ||
+    path.join(process.cwd(), 'data', 'whatsapp-session');
   return path.resolve(p);
 }
 
