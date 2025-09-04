@@ -80,7 +80,7 @@ const PALETTE = {
 };
 
 const SHAPE = (process.env.POSTER_SHAPE || 'portrait').toLowerCase(); // 'portrait' | 'square'
-const BANNER_TITLE = (process.env.POSTER_BANNER_TEXT || 'GANHADOR DO SORTEIO!').replace(/🎉|✨|🎊|👑/g, ''); // sem emoji
+const BANNER_TITLE = (process.env.POSTER_BANNER_TEXT || 'Ganhador(a) do Sorteio').replace(/🎉|✨|🎊|👑/g, ''); // sem emoji
 
 /* =========================================================
  * SVG — Retrato 1080x1350 (vencedor + meta DENTRO do banner)
@@ -92,8 +92,8 @@ function svgPortrait({
   dateStr,
   timeStr,
   winner,
-  metaDateTime,   // ex: "03/09/25 16:54:41"
-  metaChannel,    // ex: "WhatsApp: (48) **1707"
+  metaDateTime,   // ex: "Entrou na lista: 03/09/25 17:09:15"
+  metaChannel,    // ex: "Acesso via: WhatsApp: (48) **1707"
   pCount
 }) {
   const CARD_W = 980;
@@ -338,10 +338,10 @@ async function generatePoster({
     const m = String(winnerMeta).match(/(20\d{2}-\d{2}-\d{2})\s(\d{2}:\d{2}:\d{2})/);
     if (m) {
       const [yyyy, mm, dd] = m[1].split('-');
-      metaDT = `${dd}/${mm}/${String(yyyy).slice(-2)} ${m[2]}`;
+      metaDT = `Entrou na lista: ${dd}/${mm}/${String(yyyy).slice(-2)} ${m[2]}`;
     }
     const c = String(winnerMeta).match(/(WhatsApp:[^•]+|Facebook:[^•]+)/i);
-    if (c) metaCH = c[1].trim();
+    if (c) metaCH = `Acesso via: ${c[1].trim()}`;
   }
 
   const svg = isSquare
