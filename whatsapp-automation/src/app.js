@@ -337,16 +337,16 @@ class App {
       res.json({ ok: true, settings: settings.get() });
     });
 
+    // >>> Atualizado: aceita lista vazia (limpa seleção)
     this.app.post('/api/groups/select', (req, res) => {
       try {
         const { resultGroupJid, postGroupJids } = req.body || {};
         let list = Array.isArray(postGroupJids) ? postGroupJids : [];
         if (!list.length && resultGroupJid) list = [String(resultGroupJid)];
         list = Array.from(new Set(list.map(s => String(s).trim()).filter(Boolean)));
-        if (!list.length) return res.status(400).json({ ok: false, error: 'Informe pelo menos um JID de grupo' });
 
         const out = settings.setPostGroups(list);
-        res.json({ ok: true, settings: out });
+        res.json({ ok: true, settings: out, cleared: list.length === 0 });
       } catch (e) {
         res.status(500).json({ ok: false, error: e?.message || String(e) });
       }
