@@ -5,9 +5,21 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Grupos WhatsApp • Seleção</title>
   <style>
+    :root{ --b:#1f2937; --primary:#2563eb; }
+
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:#0f172a; color:#e2e8f0; margin:0; }
-    .wrap { max-width: 960px; margin: 40px auto; padding: 0 16px; }
-    .card { background:#111827; border:1px solid #1f2937; border-radius:14px; padding:18px; box-shadow:0 10px 30px rgba(0,0,0,.35); }
+    .wrap { max-width: 960px; margin: 28px auto; padding: 0 16px; }
+
+    /* ====== ABAS ====== */
+    .tabs{display:flex; gap:8px; margin:0 0 18px 0; flex-wrap:wrap}
+    .tab{
+      display:inline-block; padding:.55rem .9rem; border-radius:10px;
+      border:1px solid var(--b); background:#101827; color:#dbe2f0; text-decoration:none
+    }
+    .tab.active{ background:var(--primary); border-color:transparent; color:#fff }
+    .tab:hover{ filter:brightness(1.05) }
+
+    .card { background:#111827; border:1px solid var(--b); border-radius:14px; padding:18px; box-shadow:0 10px 30px rgba(0,0,0,.35); }
     h1 { margin:0 0 8px; font-weight:700; color:#f8fafc; }
     .muted { color:#94a3b8; font-size:14px; margin-bottom:18px; }
     .row { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px; align-items:center; }
@@ -15,19 +27,24 @@
     button.secondary { background:#334155; }
     button:disabled { opacity:.5; cursor:not-allowed; }
     table { width:100%; border-collapse: collapse; margin-top:12px; }
-    th, td { padding:10px; border-bottom:1px solid #1f2937; vertical-align: middle; }
+    th, td { padding:10px; border-bottom:1px solid var(--b); vertical-align: middle; }
     th { text-align:left; color:#cbd5e1; }
     tr:hover { background:#0b1220; }
     .right { text-align:right; }
     .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:#0ea5e9; color:#08121d; font-weight:700; }
-    .ok { color:#22c55e; font-weight:700; }
-    .warn { color:#f59e0b; font-weight:700; }
-    .error { color:#ef4444; font-weight:700; }
     .tag { display:inline-block; padding:2px 6px; border-radius:6px; background:#0b3b6d; font-size:12px; color:#93c5fd; margin-left:8px; }
   </style>
 </head>
 <body>
   <div class="wrap">
+    <!-- ABAS / ATALHOS -->
+    <nav class="tabs">
+      <a class="tab" data-path="/admin/whatsapp" href="/admin/whatsapp">WhatsApp</a>
+      <a class="tab" data-path="/admin/groups" href="/admin/groups">Grupos</a>
+      <a class="tab" data-path="/admin/wa/logs" href="/admin/wa/logs" target="_blank" rel="noopener">Logs</a>
+      <a class="tab" data-path="/api/whatsapp/status" href="/api/whatsapp/status" target="_blank" rel="noopener">Status JSON</a>
+    </nav>
+
     <div class="card">
       <h1>Grupos do WhatsApp</h1>
       <div class="muted">Sincronize os grupos e escolha <b>um ou mais</b> para postar os resultados dos sorteios.</div>
@@ -56,6 +73,14 @@
   </div>
 
   <script>
+    // marca a aba ativa
+    (function(){
+      const p = location.pathname;
+      document.querySelectorAll('.tab').forEach(a=>{
+        if (p === a.getAttribute('data-path')) a.classList.add('active');
+      });
+    })();
+
     const $ = (s) => document.querySelector(s);
     const tbody   = $('#tbody');
     const meta    = $('#meta');
@@ -65,7 +90,7 @@
     const btnTest = $('#btnTest');
 
     let groups = [];
-    let selected = new Set(); // agora vários
+    let selected = new Set(); // vários grupos
 
     async function getJSON(url, opts) {
       const r = await fetch(url, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts));
@@ -102,7 +127,7 @@
 
       groups = st.groups || [];
 
-      // converte legado: se só tiver resultGroupJid, seleciona ele
+      // legado → se só tiver resultGroupJid, seleciona ele
       const list = Array.isArray(st.postGroupJids) && st.postGroupJids.length
         ? st.postGroupJids
         : (st.resultGroupJid ? [st.resultGroupJid] : []);
@@ -127,6 +152,7 @@
           ? `Última sincronização: ${new Date(data.saved.lastSyncAt).toLocaleString()}`
           : '';
         status.textContent = 'Feito ✅';
+        setTimeout(() => (status.textContent = ''), 2500);
       } catch (e) {
         status.textContent = 'Erro ao sincronizar ❌';
         alert(e.message);
