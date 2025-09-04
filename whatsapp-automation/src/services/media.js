@@ -21,7 +21,7 @@ async function downloadToBuffer(url) {
 
 function safe(s = '') {
   return String(s)
-    .replace(/&/g, '&amp;)
+    .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
@@ -194,7 +194,17 @@ function svgPortrait({
 /* =========================================================
  * SVG — Quadrado 1080x1080
  * ======================================================= */
-function svgSquare({ W, H, productB64, productName, dateStr, timeStr, winner, metaDateTime, metaChannel, pCount }) {
+function svgSquare({
+  W, H,
+  productB64,
+  productName,
+  dateStr,
+  timeStr,
+  winner,
+  metaDateTime,
+  metaChannel,
+  pCount
+}) {
   const PAD = 48;
   const panelX = PAD, panelY = PAD, panelW = W - PAD * 2, panelH = H - PAD * 2;
 
@@ -286,7 +296,18 @@ function svgSquare({ W, H, productB64, productName, dateStr, timeStr, winner, me
 /* =========================================================
  * Public API
  * ======================================================= */
-async function generatePoster({ productImageUrl, productName, dateTimeStr, winner, winnerMetaDateTime, winnerMetaChannel, winnerMeta, participants }) {
+async function generatePoster({
+  productImageUrl,
+  productName,
+  dateTimeStr, // "dd/MM/yyyy às HH:mm[:ss]"
+  winner,
+  // NOVOS (opcionais)
+  winnerMetaDateTime,
+  winnerMetaChannel,
+  // retrocompat: se vier winnerMeta (string), tentamos dividir em data/hora + canal
+  winnerMeta,
+  participants
+}) {
   const isSquare = SHAPE === 'square';
   const W = 1080;
   const H = isSquare ? 1080 : 1350;
@@ -297,7 +318,8 @@ async function generatePoster({ productImageUrl, productName, dateTimeStr, winne
     if (productImageUrl) productBuf = await downloadToBuffer(productImageUrl);
   } catch {}
   if (!productBuf) {
-    productBuf = await sharp({ create: { width: 600, height: 600, channels: 4, background: '#eee' }}).png().toBuffer();
+    productBuf = await sharp({ create: { width: 600, height: 600, channels: 4, background: '#eee' }})
+      .png().toBuffer();
   }
   const normalized = await sharp(productBuf)
     .resize(600, 600, { fit: 'inside', withoutEnlargement: true, background: '#ffffff' })
@@ -323,8 +345,22 @@ async function generatePoster({ productImageUrl, productName, dateTimeStr, winne
   }
 
   const svg = isSquare
-    ? svgSquare({ W, H, productB64, productName: productName || 'Sorteio', dateStr: date || '', timeStr: time || '', winner: winner || 'Ganhador(a)', metaDateTime: metaDT, metaChannel: metaCH, pCount })
-    : svgPortrait({ W, H, productB64, productName: productName || 'Sorteio', dateStr: date || '', timeStr: time || '', winner: winner || 'Ganhador(a)', metaDateTime: metaDT, metaChannel: metaCH, pCount });
+    ? svgSquare({
+        W, H, productB64,
+        productName: productName || 'Sorteio',
+        dateStr: date || '', timeStr: time || '',
+        winner: winner || 'Ganhador(a)',
+        metaDateTime: metaDT, metaChannel: metaCH,
+        pCount
+      })
+    : svgPortrait({
+        W, H, productB64,
+        productName: productName || 'Sorteio',
+        dateStr: date || '', timeStr: time || '',
+        winner: winner || 'Ganhador(a)',
+        metaDateTime: metaDT, metaChannel: metaCH,
+        pCount
+      });
 
   const outPath = path.join(MEDIA_DIR, `poster_${Date.now()}.png`);
   await sharp(Buffer.from(svg)).png().toFile(outPath);
