@@ -33,13 +33,13 @@
       border-radius:14px;
       padding:16px;
       box-shadow:0 8px 30px rgba(0,0,0,.35);
-      /* IMPORTANTÍSSIMO: permite que o grid filho encolha mesmo com conteúdo grande */
       min-width:0;
     }
 
-    h2{margin:0 0 12px 0; font-size:18px; display:flex; align-items:center; gap:8px}
+    h2{margin:0 0 12px 0; font-size:18px; display:flex; align-items:center; gap:8px; flex-wrap:wrap}
     .dot{width:10px;height:10px;border-radius:999px;display:inline-block}
     .dot.red{background:var(--bad)} .dot.green{background:var(--ok)}
+    .msisdn{font-weight:600; color:#9bbcff}
 
     .row{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
     .btn{
@@ -51,21 +51,18 @@
     .link{ color:#9bbcff; text-decoration:none; padding:.6rem 0; }
     .link:hover{ text-decoration:underline }
 
-    /* STATUS JSON – não pode empurrar layout */
     .statusBox{
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New", monospace;
       background:#0e1626; border:1px solid var(--b); border-radius:8px;
       padding:12px; margin-top:10px;
-      white-space: pre-wrap;       /* permite múltiplas linhas */
-      overflow-wrap: anywhere;     /* quebra qualquer palavra enorme */
-      word-break: break-word;      /* quebra se necessário */
-      overflow: auto;              /* rolagem se ficar grande */
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      overflow: auto;
       max-height: 220px;
     }
 
-    .qr-card{
-      text-align:center; min-height: 420px;
-    }
+    .qr-card{ text-align:center; min-height: 420px; }
     #qr{
       display:none; width:300px; height:300px; background:#fff; border-radius:8px;
       margin:12px auto 0 auto; object-fit:contain;
@@ -77,7 +74,7 @@
       display:flex; align-items:center; justify-content:center; text-align:center;
       padding:0 12px;
     }
-    small.note{ display:block; color:var(--muted); margin-top:10px }
+    small.note{ display:block; color:#9ca3af; margin-top:10px }
   </style>
 </head>
 <body>
@@ -85,13 +82,18 @@
     <div class="grid">
       <!-- COLUNA ESQUERDA: STATUS + BOTÕES -->
       <div class="card">
-        <h2> Status <span id="dot" class="dot red" title="desconectado"></span></h2>
+        <h2>
+          Status <span id="dot" class="dot red" title="desconectado"></span>
+          <span id="msisdn" class="msisdn"></span>
+        </h2>
 
         <div class="row" style="margin-bottom:4px">
           <button id="btnConnect" class="btn primary">📲 Conectar</button>
           <button id="btnDisconnect" class="btn">🔌 Desconectar</button>
           <button id="btnReset" class="btn">🧹 Limpar sessão</button>
           <a class="link" href="/admin/groups">➡ Ir para Grupos</a>
+          <a class="link" href="/admin/wa/logs" target="_blank">📜 Logs</a>
+          <a class="link" href="/api/whatsapp/status" target="_blank">🧪 Status JSON</a>
         </div>
 
         <pre id="statusBox" class="statusBox">{ "ok": true, "connected": false, "connecting": false }</pre>
@@ -112,6 +114,7 @@
 
   <script>
     const dot    = document.getElementById('dot');
+    const phone  = document.getElementById('msisdn');
     const btnC   = document.getElementById('btnConnect');
     const btnD   = document.getElementById('btnDisconnect');
     const btnR   = document.getElementById('btnReset');
@@ -143,6 +146,8 @@
       const view = { ...s };
       delete view.qr;
       box.textContent = JSON.stringify(view, null, 2);
+      // mostra número, se houver
+      phone.textContent = s?.msisdn ? `(${s.msisdn})` : '';
     }
 
     async function getStatus(){
@@ -154,13 +159,9 @@
         btnC.disabled = !!s.connected || !!s.connecting;
         btnD.disabled = !s.connected && !s.connecting;
 
-        // mostra ou esconde o QR
         if (s.qr) showQR(s.qr); else if (!s.connected) showQR(null);
-
-        // atualiza o painel de status (sem base64 gigante)
         renderStatus(s);
 
-        // se estiver conectando, mantém polling
         if (s.connecting && !polling){
           polling = setInterval(getStatus, 2000);
         }
@@ -195,10 +196,36 @@
       }catch(e){ console.error(e); }
     }
 
+    // ==== SSE opcional (auto-atualiza sem F5 e força reload ao conectar) ====
+    try{
+      const es = new EventSource('/api/whatsapp/stream');
+      es.addEventListener('status', (ev) => {
+        try {
+          const s = JSON.parse(ev.data);
+          setDot(!!s.connected);
+          // se vier msisdn pelo stream
+          if (s.msisdn) phone.textContent = `(${s.msisdn})`;
+          renderStatus(s);
+          if (s.qr) showQR(s.qr); else if (!s.connected) showQR(null);
+          // se acabou de conectar, recarrega uma vez para estados pendentes
+          if (s.connected) {
+            // pequena proteção para não entrar em loop
+            if (!sessionStorage.getItem('wa-connected-reloaded')) {
+              sessionStorage.setItem('wa-connected-reloaded', '1');
+              setTimeout(()=>location.reload(), 300);
+            }
+          } else {
+            sessionStorage.removeItem('wa-connected-reloaded');
+          }
+        } catch (e) {}
+      });
+    }catch(e){ /* SSE indisponível, tudo bem */ }
+
     btnC.addEventListener('click', doConnect);
     btnD.addEventListener('click', doDisconnect);
     btnR.addEventListener('click', doReset);
 
+    // status inicial
     getStatus();
   </script>
 </body>
