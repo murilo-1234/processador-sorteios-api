@@ -3,9 +3,6 @@ const fs = require('fs');
 const path = require('path');
 const { parse, format } = require('date-fns');
 
-// OBS: NUNCA é para mandar o link da página de resultados separado.
-// O link DEVE ficar dentro da legenda da mídia, sempre.
-
 // ==== IMPORT RESILIENTE + FALLBACK PARA zonedTimeToUtc ====
 let zonedTimeToUtcSafe;
 try {
@@ -55,13 +52,11 @@ const TZ = process.env.TZ || 'America/Sao_Paulo';
 const DELAY_MIN = Number(process.env.POST_DELAY_MINUTES ?? 10);
 const DEBUG_JOB = String(process.env.DEBUG_JOB || '').trim() === '1';
 
-// === Flags de comportamento ===
-// NÃO remover o link do resultado do caption:
-const DISABLE_LINK_PREVIEW = false;
-// NUNCA mandar link do resultado separado:
-const SEND_RESULT_URL_SEPARATE = false;
-// Desativar cartão de preview do WhatsApp (o link continua na legenda, só sem card):
-const BAILEYS_LINK_PREVIEW_OFF = String(process.env.BAILEYS_LINK_PREVIEW_OFF || '1') === '1';
+// === Flags de link ===
+// Link sempre dentro da legenda; nunca enviar separado; sem preview.
+const DISABLE_LINK_PREVIEW = false;                     // não usamos mais para remover texto
+const SEND_RESULT_URL_SEPARATE = false;                 // nunca mandar separado
+const BAILEYS_LINK_PREVIEW_OFF = true;                  // sempre sem preview
 
 // ---------- utils ----------
 const dlog = (...a) => { if (DEBUG_JOB) console.log('[JOB]', ...a); };
@@ -144,7 +139,7 @@ function pickMusicSafe() {
   return pickOneCSV(process.env.AUDIO_URLS) || '';
 }
 
-// (mantido por compatibilidade; não usamos para o link do resultado)
+// Remove APENAS URLs específicas (não usamos mais pra RESULT_URL)
 function stripSpecificUrls(text, urls = []) {
   let out = safeStr(text);
   for (const u of urls) {
@@ -429,7 +424,7 @@ async function runOnce(app, opts = {}) {
         COUPON: coupon
       });
 
-      // Mantém o link do resultado DENTRO da legenda:
+      // Mantém o link no texto e preserva quebras/linhas do template
       const captionOut = captionFull;
 
       // 5.4) enviar (prioriza sessão admin; se não, cliente interno)
@@ -444,11 +439,11 @@ async function runOnce(app, opts = {}) {
           try {
             if (!jid || !jid.endsWith('@g.us')) throw new Error(`JID inválido: "${jid}"`);
             const payload = { ...media, caption: safeStr(captionOut) };
-            const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
+            const opts = { linkPreview: false }; // sempre sem preview
 
             await sock.sendMessage(jid, payload, opts); // imagem/vídeo + legenda
 
-            // JAMAS enviaremos o link separado (SEND_RESULT_URL_SEPARATE=false)
+            // Nunca mandar o link separado
             anySentForThisRow = true;
             dlog('enviado', { jid, id: p.id });
           } catch (e) {
