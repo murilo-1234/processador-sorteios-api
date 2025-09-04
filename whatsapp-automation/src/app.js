@@ -209,9 +209,16 @@ class App {
         if (this.waAdmin?.disconnect) {
           await this.waAdmin.disconnect();
         }
-        // limpeza do diretório de sessão (seguro mesmo se já foi limpo)
-        const dir = process.env.WA_SESSION_PATH || path.join(process.cwd(), 'data/baileys');
-        await fs.rm(dir, { recursive: true, force: true });
+        // limpeza do diretório de sessão — cobre os dois nomes + fallbacks
+        const dirCandidates = [
+          process.env.WA_SESSION_PATH,
+          process.env.WHATSAPP_SESSION_PATH,
+          path.join(process.cwd(), 'data', 'baileys'),
+          path.join(process.cwd(), 'data', 'whatsapp-session'),
+        ].filter(Boolean);
+        for (const d of dirCandidates) {
+          try { await fs.rm(d, { recursive: true, force: true }); } catch {}
+        }
 
         // avisa front via SSE
         sseBroadcast('default', { type: 'status', payload: { ok: true, connected: false, connecting: false, hasSock: false } });
