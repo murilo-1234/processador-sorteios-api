@@ -93,7 +93,7 @@ function svgPortrait({
   timeStr,
   winner,
   metaDateTime,   // ex: "Entrou na lista: 03/09/25 17:09:15"
-  metaChannel,    // ex: "Acesso via: WhatsApp: (48) **1707"
+  metaChannel,    // ex: "Acesso via: Instagram: @user"
   pCount
 }) {
   const CARD_W = 980;
