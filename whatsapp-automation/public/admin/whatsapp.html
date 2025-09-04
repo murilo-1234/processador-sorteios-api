@@ -70,7 +70,7 @@
     }
     .placeholder{
       width:300px; height:300px; border-radius:8px; margin:12px auto 0 auto;
-      background:#0e1626; border:1px dashed var(--b); color:var(--muted);
+      background:#0e1626; border:1px dashed var(--b); color:#9ca3af;
       display:flex; align-items:center; justify-content:center; text-align:center;
       padding:0 12px;
     }
@@ -92,8 +92,8 @@
           <button id="btnDisconnect" class="btn">🔌 Desconectar</button>
           <button id="btnReset" class="btn">🧹 Limpar sessão</button>
           <a class="link" href="/admin/groups">➡ Ir para Grupos</a>
-          <a class="link" href="/admin/wa/logs" target="_blank">📜 Logs</a>
-          <a class="link" href="/api/whatsapp/status" target="_blank">🧪 Status JSON</a>
+          <a class="link" href="/admin/wa/logs" target="_blank" rel="noopener">📜 Logs</a>
+          <a class="link" href="/api/whatsapp/status" target="_blank" rel="noopener">🧪 Status JSON</a>
         </div>
 
         <pre id="statusBox" class="statusBox">{ "ok": true, "connected": false, "connecting": false }</pre>
@@ -113,6 +113,15 @@
   </div>
 
   <script>
+    // Endpoints
+    const STATUS_URL = '/api/whatsapp/status';   // consolidado (traz msisdn)
+    const STREAM_URL = '/api/whatsapp/stream';   // SSE
+    const ADMIN_STATUS_URL = '/admin/wa/status';
+    const ADMIN_CONNECT_URL = '/admin/wa/connect';
+    const ADMIN_DISCONNECT_URL = '/admin/wa/disconnect';
+    const ADMIN_RESET_URL = '/admin/wa/reset';
+
+    // Elements
     const dot    = document.getElementById('dot');
     const phone  = document.getElementById('msisdn');
     const btnC   = document.getElementById('btnConnect');
@@ -123,13 +132,17 @@
     const box    = document.getElementById('statusBox');
 
     let polling = null;
+    let es = null;
 
     function setDot(ok){
       dot.classList.toggle('green', ok);
       dot.classList.toggle('red', !ok);
       dot.title = ok ? 'conectado' : 'desconectado';
     }
-
+    function setMsisdn(s){
+      const val = s?.msisdn ? String(s.msisdn) : '';
+      phone.textContent = val ? `(${val})` : '';
+    }
     function showQR(dataURL){
       if (dataURL){
         qr.src = dataURL;
@@ -140,93 +153,90 @@
         ph.style.display = 'flex';
       }
     }
-
     function renderStatus(s){
-      // NÃO MOSTRAR O BASE64 DO QR NO STATUS (remove a chave)
       const view = { ...s };
-      delete view.qr;
+      delete view.qr; // não mostrar base64 no JSON
       box.textContent = JSON.stringify(view, null, 2);
-      // mostra número, se houver
-      phone.textContent = s?.msisdn ? `(${s.msisdn})` : '';
+    }
+    function applyStatus(s){
+      setDot(!!s.connected);
+      setMsisdn(s);
+      btnC.disabled = !!s.connected || !!s.connecting;
+      btnD.disabled = !s.connected && !s.connecting;
+      if (s.qr) showQR(s.qr); else if (!s.connected) showQR(null);
+      renderStatus(s);
     }
 
-    async function getStatus(){
+    async function fetchStatus(){
       try{
-        const r = await fetch('/admin/wa/status', { cache:'no-store' });
-        const s = await r.json();
-
-        setDot(!!s.connected);
-        btnC.disabled = !!s.connected || !!s.connecting;
-        btnD.disabled = !s.connected && !s.connecting;
-
-        if (s.qr) showQR(s.qr); else if (!s.connected) showQR(null);
-        renderStatus(s);
-
-        if (s.connecting && !polling){
-          polling = setInterval(getStatus, 2000);
+        let s = null;
+        try {
+          const r = await fetch(STATUS_URL, { cache:'no-store' }); // preferido (tem msisdn)
+          s = await r.json();
+        } catch (_) {}
+        if (!s || typeof s !== 'object' || !('connected' in s)) {
+          const r2 = await fetch(ADMIN_STATUS_URL, { cache:'no-store' }); // fallback
+          s = await r2.json();
         }
-        if (!s.connecting && polling){
-          clearInterval(polling); polling = null;
-        }
-      }catch(e){
-        console.error(e);
+        applyStatus(s);
+      }catch(e){ console.error(e); }
+    }
+
+    // SSE: tempo real sem F5 (com fallback para polling)
+    function startSSE(){
+      try{
+        es = new EventSource(STREAM_URL);
+        es.addEventListener('status', (ev) => {
+          try{
+            const s = JSON.parse(ev.data);
+            applyStatus(s);
+          }catch(_){}
+        });
+        es.onerror = () => {
+          try { es.close(); } catch(_){}
+          es = null;
+          startPolling();
+        };
+      }catch(_){
+        startPolling();
       }
     }
+    function startPolling(){
+      if (!polling) polling = setInterval(fetchStatus, 2000);
+    }
+    function stopPolling(){
+      if (polling){ clearInterval(polling); polling = null; }
+    }
 
+    // Ações
     async function doConnect(){
       try{
-        await fetch('/admin/wa/connect', { method:'POST' });
-        if (!polling) polling = setInterval(getStatus, 2000);
-        await getStatus();
+        await fetch(ADMIN_CONNECT_URL, { method:'POST' });
+        if (!es) startPolling();
+        await fetchStatus();
       }catch(e){ console.error(e); }
     }
-
     async function doDisconnect(){
       try{
-        await fetch('/admin/wa/disconnect', { method:'POST' });
-        await getStatus();
+        await fetch(ADMIN_DISCONNECT_URL, { method:'POST' });
+        await fetchStatus();
       }catch(e){ console.error(e); }
     }
-
     async function doReset(){
       try{
-        await fetch('/admin/wa/reset', { method:'POST' });
-        if (polling) { clearInterval(polling); polling = null; }
-        await getStatus();
+        await fetch(ADMIN_RESET_URL, { method:'POST' });
+        stopPolling();
+        await fetchStatus();
       }catch(e){ console.error(e); }
     }
-
-    // ==== SSE opcional (auto-atualiza sem F5 e força reload ao conectar) ====
-    try{
-      const es = new EventSource('/api/whatsapp/stream');
-      es.addEventListener('status', (ev) => {
-        try {
-          const s = JSON.parse(ev.data);
-          setDot(!!s.connected);
-          // se vier msisdn pelo stream
-          if (s.msisdn) phone.textContent = `(${s.msisdn})`;
-          renderStatus(s);
-          if (s.qr) showQR(s.qr); else if (!s.connected) showQR(null);
-          // se acabou de conectar, recarrega uma vez para estados pendentes
-          if (s.connected) {
-            // pequena proteção para não entrar em loop
-            if (!sessionStorage.getItem('wa-connected-reloaded')) {
-              sessionStorage.setItem('wa-connected-reloaded', '1');
-              setTimeout(()=>location.reload(), 300);
-            }
-          } else {
-            sessionStorage.removeItem('wa-connected-reloaded');
-          }
-        } catch (e) {}
-      });
-    }catch(e){ /* SSE indisponível, tudo bem */ }
 
     btnC.addEventListener('click', doConnect);
     btnD.addEventListener('click', doDisconnect);
     btnR.addEventListener('click', doReset);
 
-    // status inicial
-    getStatus();
+    // Inicialização
+    startSSE();     // tenta SSE primeiro
+    fetchStatus();  // puxa um snapshot inicial
   </script>
 </body>
 </html>
