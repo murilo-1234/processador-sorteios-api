@@ -3,6 +3,9 @@ const fs = require('fs');
 const path = require('path');
 const { parse, format } = require('date-fns');
 
+// OBS: NUNCA é para mandar o link da página de resultados separado.
+// O link DEVE ficar dentro da legenda da mídia, sempre.
+
 // ==== IMPORT RESILIENTE + FALLBACK PARA zonedTimeToUtc ====
 let zonedTimeToUtcSafe;
 try {
@@ -52,10 +55,13 @@ const TZ = process.env.TZ || 'America/Sao_Paulo';
 const DELAY_MIN = Number(process.env.POST_DELAY_MINUTES ?? 10);
 const DEBUG_JOB = String(process.env.DEBUG_JOB || '').trim() === '1';
 
-// === Flags para evitar preview e/ou enviar URL separada ===
-const DISABLE_LINK_PREVIEW = String(process.env.DISABLE_LINK_PREVIEW || '1') === '1'; // remove preview do resultado
-const SEND_RESULT_URL_SEPARATE = String(process.env.SEND_RESULT_URL_SEPARATE || '1') === '1'; // manda o link em msg separada (se não estiver na legenda)
-const BAILEYS_LINK_PREVIEW_OFF = String(process.env.BAILEYS_LINK_PREVIEW_OFF || '1') === '1'; // { linkPreview:false } nas opções
+// === Flags de comportamento ===
+// NÃO remover o link do resultado do caption:
+const DISABLE_LINK_PREVIEW = false;
+// NUNCA mandar link do resultado separado:
+const SEND_RESULT_URL_SEPARATE = false;
+// Desativar cartão de preview do WhatsApp (o link continua na legenda, só sem card):
+const BAILEYS_LINK_PREVIEW_OFF = String(process.env.BAILEYS_LINK_PREVIEW_OFF || '1') === '1';
 
 // ---------- utils ----------
 const dlog = (...a) => { if (DEBUG_JOB) console.log('[JOB]', ...a); };
@@ -138,17 +144,15 @@ function pickMusicSafe() {
   return pickOneCSV(process.env.AUDIO_URLS) || '';
 }
 
-// Remove APENAS URLs específicas (para manter os links fixos do texts.js)
+// (mantido por compatibilidade; não usamos para o link do resultado)
 function stripSpecificUrls(text, urls = []) {
   let out = safeStr(text);
   for (const u of urls) {
     if (!u) continue;
-    // remove literal e variações com / no fim
     out = out.replaceAll(u, '');
     if (u.endsWith('/')) out = out.replaceAll(u.slice(0, -1), '');
     else out = out.replaceAll(u + '/', '');
   }
-  // normaliza espaços
   return out.replace(/\s{2,}/g, ' ').trim();
 }
 
@@ -425,12 +429,8 @@ async function runOnce(app, opts = {}) {
         COUPON: coupon
       });
 
-      // Evita preview do LINK DE RESULTADO, mas mantém os links fixos do texts.js
-      const captionOut = (DISABLE_LINK_PREVIEW)
-        ? stripSpecificUrls(captionFull, [resultUrlStr])
-        : captionFull;
-
-      const linkAlreadyInside = resultUrlStr && captionOut.includes(resultUrlStr);
+      // Mantém o link do resultado DENTRO da legenda:
+      const captionOut = captionFull;
 
       // 5.4) enviar (prioriza sessão admin; se não, cliente interno)
       const sock = await getPreferredSock(app);
@@ -446,16 +446,11 @@ async function runOnce(app, opts = {}) {
             const payload = { ...media, caption: safeStr(captionOut) };
             const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
 
-            await sock.sendMessage(jid, payload, opts); // imagem/vídeo
+            await sock.sendMessage(jid, payload, opts); // imagem/vídeo + legenda
 
-            // (Opcional) manda o link do resultado em uma segunda mensagem, somente se NÃO estiver na legenda
-            if (SEND_RESULT_URL_SEPARATE && resultUrlStr && !linkAlreadyInside) {
-              await delay(500);
-              await sock.sendMessage(jid, { text: resultUrlStr }, opts);
-            }
-
+            // JAMAS enviaremos o link separado (SEND_RESULT_URL_SEPARATE=false)
             anySentForThisRow = true;
-            dlog('enviado', { jid, id: p.id, withLink: !!(SEND_RESULT_URL_SEPARATE && resultUrlStr && !linkAlreadyInside) });
+            dlog('enviado', { jid, id: p.id });
           } catch (e) {
             errors.push({
               id: p.id, stage: 'sendMessage', jid,
