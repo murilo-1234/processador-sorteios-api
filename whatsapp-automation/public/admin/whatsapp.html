@@ -119,18 +119,17 @@
   </div>
 
   <script>
-    // Destaca a aba ativa conforme a URL
+    // Destaca a aba ativa
     (function markActiveTab(){
       const p = location.pathname;
       document.querySelectorAll('.tab').forEach(a=>{
-        const want = a.getAttribute('data-path');
-        if (p === want) a.classList.add('active');
+        if (p === a.getAttribute('data-path')) a.classList.add('active');
       });
     })();
 
     // Endpoints
-    const STATUS_URL = '/api/whatsapp/status';   // consolidado (traz msisdn)
-    const STREAM_URL = '/api/whatsapp/stream';   // SSE
+    const STATUS_URL = '/api/whatsapp/status';
+    const STREAM_URL = '/api/whatsapp/stream';
     const ADMIN_STATUS_URL = '/admin/wa/status';
     const ADMIN_CONNECT_URL = '/admin/wa/connect';
     const ADMIN_DISCONNECT_URL = '/admin/wa/disconnect';
@@ -170,7 +169,7 @@
     }
     function renderStatus(s){
       const view = { ...s };
-      delete view.qr; // não mostrar base64 no JSON
+      delete view.qr;
       box.textContent = JSON.stringify(view, null, 2);
     }
     function applyStatus(s){
@@ -186,57 +185,59 @@
       try{
         let s = null;
         try {
-          const r = await fetch(STATUS_URL, { cache:'no-store' }); // preferido (tem msisdn)
+          const r = await fetch(STATUS_URL, { cache:'no-store' });
           s = await r.json();
         } catch (_) {}
         if (!s || typeof s !== 'object' || !('connected' in s)) {
-          const r2 = await fetch(ADMIN_STATUS_URL, { cache:'no-store' }); // fallback
+          const r2 = await fetch(ADMIN_STATUS_URL, { cache:'no-store' });
           s = await r2.json();
         }
         applyStatus(s);
-      }catch(e){ console.error(e); }
+        return s;
+      }catch(e){ console.error(e); return null; }
     }
 
-    // SSE: tempo real sem F5 (com fallback para polling)
     function startSSE(){
       try{
         es = new EventSource(STREAM_URL);
         es.addEventListener('status', (ev) => {
-          try{
-            const s = JSON.parse(ev.data);
-            applyStatus(s);
-          }catch(_){}
+          try{ applyStatus(JSON.parse(ev.data)); }catch(_){}
         });
-        es.onerror = () => {
-          try { es.close(); } catch(_){}
-          es = null;
-          startPolling();
-        };
-      }catch(_){
-        startPolling();
-      }
+        es.onerror = () => { try{ es.close(); }catch(_){} es = null; startPolling(); };
+      }catch(_){ startPolling(); }
     }
-    function startPolling(){
-      if (!polling) polling = setInterval(fetchStatus, 2000);
-    }
-    function stopPolling(){
-      if (polling){ clearInterval(polling); polling = null; }
-    }
+    function startPolling(){ if (!polling) polling = setInterval(fetchStatus, 2000); }
+    function stopPolling(){ if (polling){ clearInterval(polling); polling = null; } }
 
     // Ações
     async function doConnect(){
       try{
+        // 1) pega estado atual
+        const s = await fetchStatus();
+
+        // 2) se já conectado, nada a fazer
+        if (s?.connected) return;
+
+        // 3) para garantir QR imediato:
+        //    limpa sessão SEMPRE antes de conectar quando não conectado
+        await fetch(ADMIN_RESET_URL, { method:'POST' });
+
+        // 4) conecta
         await fetch(ADMIN_CONNECT_URL, { method:'POST' });
+
+        // 5) ativa polling (se SSE não estiver ativo) e atualiza
         if (!es) startPolling();
         await fetchStatus();
       }catch(e){ console.error(e); }
     }
+
     async function doDisconnect(){
       try{
         await fetch(ADMIN_DISCONNECT_URL, { method:'POST' });
         await fetchStatus();
       }catch(e){ console.error(e); }
     }
+
     async function doReset(){
       try{
         await fetch(ADMIN_RESET_URL, { method:'POST' });
@@ -250,8 +251,8 @@
     btnR.addEventListener('click', doReset);
 
     // Inicialização
-    startSSE();     // tenta SSE primeiro
-    fetchStatus();  // snapshot inicial
+    startSSE();
+    fetchStatus();
   </script>
 </body>
 </html>
