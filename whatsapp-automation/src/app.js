@@ -199,7 +199,7 @@ class App {
   }
 
   routes() {
-    // Health
+    // Health (inclui info da sessão no disco)
     this.app.get('/health', async (_req, res) => {
       const sess = await hasSavedSession()
       res.json({ ok: true, ts: new Date().toISOString(), sessionDir: sess.dir, sessionFiles: sess.files })
@@ -465,7 +465,6 @@ class App {
       }
 
       const wa = this.getClient({ create: false })
-
       const sess = await hasSavedSession()
 
       res.json({
@@ -478,40 +477,62 @@ class App {
         },
         sessionDir: sess.dir,
         sessionFiles: sess.files,
-        selectedGroups: settings.get()?.postGroupJids || (settings.get()?.resultGroupJid ? [settings.get().resultGroupJid] : []),
+        selectedGroups: settings.get()?.postGroupJids || (settings.get()?.resultGroupJid ? [st.resultGroupJid] : []),
         ts: new Date().toISOString()
       })
     })
   }
 
-  listen() {
+  // ==== helpers de autostart/watchdog por HTTP (usa fetch nativo do Node 18+) ====
+  async callAdminStatus(baseUrl) {
+    try {
+      const r = await fetch(`${baseUrl}/admin/wa/status`, { method: 'GET' })
+      if (!r.ok) return { ok: false, status: r.status }
+      const j = await r.json()
+      return { ok: true, data: j }
+    } catch (e) {
+      return { ok: false, error: e?.message || String(e) }
+    }
+  }
+  async callAdminConnect(baseUrl) {
+    try {
+      const r = await fetch(`${baseUrl}/admin/wa/connect`, { method: 'POST' })
+      return { ok: r.ok, status: r.status }
+    } catch (e) {
+      return { ok: false, error: e?.message || String(e) }
+    }
+  }
+
+  async afterListen() {
     // Boot log útil
-    hasSavedSession().then(s => {
-      console.log(`🚀 Boot info -> Fallback: ${this.isFallbackEnabled ? 'ON' : 'OFF'} | sessionDir=${s.dir || '(none)'} | files=${s.files}`)
-    })
+    const sess = await hasSavedSession()
+    console.log(`🚀 Boot info -> Fallback: ${this.isFallbackEnabled ? 'ON' : 'OFF'} | sessionDir=${sess.dir || '(none)'} | files=${sess.files}`)
 
     // Inicia fallback somente se habilitado
     if (this.isFallbackEnabled) {
       this.initWhatsApp()
     }
 
-    // === AUTOSTART do ADMIN ===
+    // === AUTOSTART do ADMIN via HTTP ===
     const wantAutoStart = envOn(process.env.WA_ADMIN_AUTOSTART, true)
     const autoStartDelay = Number(process.env.WA_AUTOSTART_DELAY_MS || 1500)
+    const baseUrl = process.env.WA_SELF_BASE_URL || `http://127.0.0.1:${PORT}`
 
     if (wantAutoStart) {
       setTimeout(async () => {
         try {
-          if (this.waAdmin?.getStatus) {
-            const st = await this.waAdmin.getStatus()
-            if (!st?.connected && this.waAdmin?.connect) {
-              const sess = await hasSavedSession()
-              if (sess.ok) {
-                console.log('[WA-ADMIN] autostart: sessão encontrada; disparando connect()…')
-                await this.waAdmin.connect()
-              } else {
-                console.log('[WA-ADMIN] autostart: nenhuma sessão salva — aguardando ação manual (QR).')
-              }
+          const st = await this.callAdminStatus(baseUrl)
+          if (!st.ok) {
+            console.log(`[WA-ADMIN] autostart: status indisponível (${st.status || st.error || 'erro'})`)
+            return
+          }
+          if (!st.data?.connected) {
+            if (sess.ok) {
+              console.log('[WA-ADMIN] autostart: sessão encontrada; POST /admin/wa/connect…')
+              const r = await this.callAdminConnect(baseUrl)
+              console.log('[WA-ADMIN] autostart connect ->', r)
+            } else {
+              console.log('[WA-ADMIN] autostart: nenhuma sessão salva — aguarde QR.')
             }
           }
         } catch (e) {
@@ -525,13 +546,13 @@ class App {
     if (watchdogOn) {
       setInterval(async () => {
         try {
-          if (!this.waAdmin?.getStatus || !this.waAdmin?.connect) return
-          const st = await this.waAdmin.getStatus()
-          if (!st?.connected && !st?.connecting) {
-            const sess = await hasSavedSession()
-            if (sess.ok) {
-              console.log('[WA-ADMIN] watchdog: desconectado + sessão presente → connect()')
-              await this.waAdmin.connect()
+          const st = await this.callAdminStatus(baseUrl)
+          if (!st.ok) return
+          if (!st.data?.connected && !st.data?.connecting) {
+            const s = await hasSavedSession()
+            if (s.ok) {
+              console.log('[WA-ADMIN] watchdog: desconectado + sessão presente → POST /admin/wa/connect')
+              await this.callAdminConnect(baseUrl)
             }
           }
         } catch (e) {
@@ -564,9 +585,12 @@ class App {
         console.error('cron runOnce error:', e?.message || e)
       }
     })
+  }
 
-    this.app.listen(PORT, () => {
+  listen() {
+    this.server = this.app.listen(PORT, () => {
       console.log(`🌐 Server listening on :${PORT}`)
+      this.afterListen()
     })
   }
 }
