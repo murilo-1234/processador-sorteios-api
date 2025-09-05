@@ -35,10 +35,30 @@ function envOn(v, def = false) {
   return s === '1' || s === 'true' || s === 'yes' || s === 'on'
 }
 
+// ===== helpers de JID / parsing de números =====
+function phoneToJid(v) {
+  if (!v) return null
+  const s = String(v).trim()
+  if (s.includes('@')) return s
+  const digits = s.replace(/\D/g, '')
+  if (!digits) return null
+  return `${digits}@s.whatsapp.net`
+}
+function parsePhonesToJids(value) {
+  if (!value) return []
+  return String(value)
+    .split(/[,\s;]+/)                 // vírgula, espaço ou ponto-e-vírgula
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(v => v.includes('@') ? v : phoneToJid(v))
+    .filter(Boolean)
+}
+
 const SESSION_DIR_CANDIDATES = [
   process.env.WA_SESSION_PATH,
   process.env.WHATSAPP_SESSION_PATH,
   path.join(process.cwd(), 'data', 'whatsapp-session'),
+  path.join(process.cwd(), 'data', 'baileys'),
 ].filter(Boolean)
 
 async function hasSavedSession() {
@@ -61,6 +81,27 @@ class App {
     this.isFallbackEnabled =
       envOn(process.env.WA_CLIENT_AUTOSTART, false) ||
       envOn(process.env.WA_FALLBACK_ENABLED, false)
+
+    // ======= CONFIG DE ALERTA (via WhatsApp) =======
+    const alertJidsMerged = [
+      ...parsePhonesToJids(process.env.ALERT_WA_PHONES), // lista (novo)
+      ...parsePhonesToJids(process.env.ALERT_WA_PHONE),  // 1 número (compat)
+      ...parsePhonesToJids(process.env.ALERT_WA_JIDS),   // lista de JIDs (opcional)
+      ...parsePhonesToJids(process.env.ALERT_WA_JID),    // 1 JID (compat)
+    ]
+    const uniqJids = [...new Set(alertJidsMerged)]
+
+    this.alertCfg = {
+      adminJids: uniqJids,                                         // agora é lista
+      graceMs: (Number(process.env.ALERT_GRACE_SECONDS) || 120) * 1000,
+      enabled: uniqJids.length > 0
+    }
+    this.alertState = {
+      lastConnected: null,
+      lastChangeAt: Date.now(),
+      downNotifiedAt: null
+    }
+    // ==============================================
 
     const limiter = rateLimit({
       windowMs: 60 * 1000,
@@ -119,6 +160,42 @@ class App {
       await wait(250)
     }
     return !!(wa?.isConnected && wa?.sock)
+  }
+
+  // pega um socket conectado (prefere ADMIN; cai no fallback)
+  async getConnectedSock() {
+    try {
+      if (this.waAdmin && typeof this.waAdmin.getStatus === 'function') {
+        const st = await this.waAdmin.getStatus()
+        if (st?.connected && this.waAdmin.getSock) {
+          return this.waAdmin.getSock()
+        }
+      }
+    } catch (_) {}
+    if (this.isFallbackEnabled) {
+      const wa = this.getClient({ create: false })
+      if (wa?.isConnected && wa?.sock) return wa.sock
+    }
+    return null
+  }
+
+  // envio de alertas (para todos os destinos)
+  async sendAlert(text) {
+    if (!this.alertCfg.enabled || !this.alertCfg.adminJids?.length) return false
+    const sock = await this.getConnectedSock()
+    if (!sock) return false
+
+    let ok = true
+    for (const jid of this.alertCfg.adminJids) {
+      try {
+        await sock.sendMessage(jid, { text })
+        console.log('🔔 ALERT sent to', jid)
+      } catch (e) {
+        ok = false
+        console.error('❌ ALERT send error to', jid, e?.message || e)
+      }
+    }
+    return ok
   }
 
   // pega status consolidado (prioriza admin)
@@ -423,6 +500,15 @@ class App {
       }
     })
 
+    // ===== ALERTAS =====
+    this.app.post('/api/alerts/test', async (_req, res) => {
+      if (!this.alertCfg.enabled) {
+        return res.status(400).json({ ok:false, error:'Defina ALERT_WA_PHONES/ALERT_WA_PHONE (ou ALERT_WA_JID[S]) para habilitar alertas.' })
+      }
+      const ok = await this.sendAlert('🔔 Teste de alerta: sistema de sorteios online ✅')
+      res.json({ ok, to: this.alertCfg.adminJids })
+    })
+
     // job manual
     this.app.post('/api/jobs/run-once', async (req, res) => {
       try {
@@ -466,6 +552,7 @@ class App {
 
       const wa = this.getClient({ create: false })
       const sess = await hasSavedSession()
+      const cfg = settings.get()
 
       res.json({
         admin,
@@ -477,7 +564,7 @@ class App {
         },
         sessionDir: sess.dir,
         sessionFiles: sess.files,
-        selectedGroups: settings.get()?.postGroupJids || (settings.get()?.resultGroupJid ? [st.resultGroupJid] : []),
+        selectedGroups: cfg?.postGroupJids || (cfg?.resultGroupJid ? [cfg.resultGroupJid] : []),
         ts: new Date().toISOString()
       })
     })
@@ -548,11 +635,39 @@ class App {
         try {
           const st = await this.callAdminStatus(baseUrl)
           if (!st.ok) return
-          if (!st.data?.connected && !st.data?.connecting) {
+
+          const connected = !!st.data?.connected
+          const now = Date.now()
+
+          // atualiza estado de alerta
+          if (this.alertState.lastConnected === null) {
+            this.alertState.lastConnected = connected
+            this.alertState.lastChangeAt = now
+          } else if (connected !== this.alertState.lastConnected) {
+            this.alertState.lastConnected = connected
+            this.alertState.lastChangeAt = now
+            // se voltou e já tínhamos avisado queda, manda "voltou"
+            if (connected && this.alertState.downNotifiedAt && this.alertCfg.enabled) {
+              await this.sendAlert('✅ WhatsApp (admin) reconectou e está online novamente.')
+              this.alertState.downNotifiedAt = null
+            }
+          }
+
+          // reconexão automática se há sessão salva
+          if (!connected && !st.data?.connecting) {
             const s = await hasSavedSession()
             if (s.ok) {
               console.log('[WA-ADMIN] watchdog: desconectado + sessão presente → POST /admin/wa/connect')
               await this.callAdminConnect(baseUrl)
+            }
+          }
+
+          // alerta de queda após grace
+          if (!connected && this.alertCfg.enabled && !this.alertState.downNotifiedAt) {
+            const elapsed = now - this.alertState.lastChangeAt
+            if (elapsed >= this.alertCfg.graceMs) {
+              const ok = await this.sendAlert('⚠️ WhatsApp (admin) está offline há alguns minutos. Tentando reconectar automaticamente.')
+              if (ok) this.alertState.downNotifiedAt = now
             }
           }
         } catch (e) {
