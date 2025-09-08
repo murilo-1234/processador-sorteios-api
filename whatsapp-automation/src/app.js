@@ -26,6 +26,14 @@ const { runOnce } = require('./jobs/post-winner')
 // SSE hub
 const { addClient: sseAddClient, broadcast: sseBroadcast } = require('./services/wa-sse')
 
+// === Atendente (opcional) – carregamento tolerante ===
+let attachAssistant = null
+try {
+  ({ attachAssistant } = require('./modules/assistant-bot'))
+} catch (_) {
+  // módulo ainda não criado/implantado – ignorar sem quebrar outros serviços
+}
+
 const PORT = process.env.PORT || 3000
 
 // util: interpreta booleanos em env
@@ -598,6 +606,13 @@ class App {
     // Inicia fallback somente se habilitado
     if (this.isFallbackEnabled) {
       this.initWhatsApp()
+    }
+
+    // ---- Atendente (liga listener se módulo existir e estiver habilitado por env) ----
+    try {
+      if (typeof attachAssistant === 'function') attachAssistant(this)
+    } catch (e) {
+      console.warn('[assistant] attach skipped:', e?.message || e)
     }
 
     // === AUTOSTART do ADMIN via HTTP ===
