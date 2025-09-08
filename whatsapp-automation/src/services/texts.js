@@ -1,5 +1,5 @@
 module.exports = [
-`🚀 Será que o perfume é seu? 🌸💝
+`🚀 *Será que o perfume é seu? 🌸💝*
 👏✨ A ganhadora é {{WINNER}}!
 
 🔍 Veja o resultado completo:
@@ -17,7 +17,7 @@ https://www.natura.com.br/c/brinde?consultoria=clubemac
 🚚 Frete grátis acima de R$99
 🎯 Mais cupons: https://bit.ly/cupons-murilo`,
 
-`🎉 Resultado no ar!
+`🎉 *Resultado no ar!*
 🏆 {{WINNER}} levou este sorteio!
 
 📄 Transparência total: {{RESULT_URL}}
@@ -34,7 +34,7 @@ https://www.natura.com.br/c/corpo-e-banho-sabonete?consultoria=clubemac
 🚚 Frete grátis acima de R$99
 🎯 Mais cupons: https://bit.ly/cupons-murilo`,
 
-`🌟 TEMOS GANHADOR!
+`🌟 *TEMOS GANHADOR!*
 Parabéns, {{WINNER}}! 👏🎁
 
 📌 Confira a página oficial do sorteio:
@@ -52,7 +52,7 @@ https://www.natura.com.br/c/promocoes?consultoria=clubemac
 🚚 Frete grátis acima de R$99
 🎯 Mais cupons: https://bit.ly/cupons-murilo`,
 
-`🥳 Uhuu! Saiu o resultado: {{WINNER}} ganhou!
+`🥳 *Uhuu! Saiu o resultado: {{WINNER}} ganhou!*
 Veja tudo (participantes, regras e transparência):
 👉 {{RESULT_URL}}
 
@@ -67,7 +67,7 @@ https://www.natura.com.br/c/promocoes?consultoria=clubemac
 🚚 Frete grátis acima de R$99
 🎯 Mais cupons: https://bit.ly/cupons-murilo`,
 
-`🎊 Viu se o prêmio é seu?
+`🎊 *Viu se o prêmio é seu?*
 Parabéns, {{WINNER}}! Você foi a sortuda do dia!
 
 🔎 Resultado completo e auditoria:
@@ -85,7 +85,7 @@ https://www.natura.com.br/c/promocao-da-semana?consultoria=clubemac
 🚚 Frete grátis acima de R$99
 🎯 Mais cupons: https://bit.ly/cupons-murilo`,
 
-`🏅 GANHADORA CONFIRMADA!
+`🏅 *GANHADORA CONFIRMADA!*
 Aewww... Parabéns {{WINNER}}!
 Confira a página oficial do sorteio:
 🔗 {{RESULT_URL}}
@@ -102,7 +102,7 @@ https://www.natura.com.br/c/relampago?consultoria=clubemac
 🚚 Frete grátis acima de R$99
 🎯 Mais cupons: https://bit.ly/cupons-murilo`,
 
-`🎁 Resultado e Prêmio liberados!
+`🎁 *Resultado e Prêmio liberados!*
 ✨ {{WINNER}} foi a vencedora!
 
 📃 Transparência total (participantes e regras):
@@ -120,7 +120,7 @@ https://www.natura.com.br/c/promocoes?consultoria=clubemac
 🚚 Frete grátis acima de R$99
 🎯 Mais cupons: https://bit.ly/cupons-murilo`,
 
-`🌼 Sorteio concluído!
+`🌼 *Sorteio concluído!*
 🏆 Parabéns, {{WINNER}}!
 
 🔍 Veja a página do resultado com 100% de transparência:
@@ -138,7 +138,7 @@ https://www.natura.com.br/c/presentes?consultoria=clubemac
 🚚 Frete grátis acima de R$99
 🎯 Mais cupons: https://bit.ly/cupons-murilo`,
 
-`🎈 Temos vencedora... olha que sucesso: {{WINNER}}!
+`🎈 *Temos vencedora... olha que sucesso: {{WINNER}}!*
 Link resultado👇 
 {{RESULT_URL}}
 
@@ -154,7 +154,7 @@ https://www.natura.com.br/c/corpo-e-banho-sabonete-barra?consultoria=clubemac
 🚚 Frete grátis acima de R$99
 🎯 Mais cupons: https://bit.ly/cupons-murilo`,
 
-`✨ Resultado oficial do sorteio de hoje: {{WINNER}}!
+`✨ *Resultado oficial do sorteio de hoje: {{WINNER}}!*
 Detalhes na página:
 {{RESULT_URL}}
 
