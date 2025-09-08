@@ -517,8 +517,37 @@ class App {
       res.json({ ok, to: this.alertCfg.adminJids })
     })
 
-    // job manual
+    // job manual (POST)
     this.app.post('/api/jobs/run-once', async (req, res) => {
+      try {
+        const dry = ['1','true','yes'].includes(String(req.query.dry || '').toLowerCase())
+        let canRun = false
+
+        try {
+          if (this.waAdmin && typeof this.waAdmin.getStatus === 'function') {
+            const st = await this.waAdmin.getStatus()
+            canRun = !!st.connected
+          }
+        } catch (_) {}
+
+        if (!canRun && this.isFallbackEnabled) {
+          const wa = this.getClient({ create: false })
+          canRun = !!(wa?.isConnected)
+        }
+
+        if (!canRun) {
+          return res.status(503).json({ ok:false, error:'Sem sessão conectada para executar o job.' })
+        }
+
+        const out = await runOnce(this.app, { dryRun: dry })
+        res.json(out)
+      } catch (e) {
+        res.status(500).json({ ok: false, error: e?.message || String(e) })
+      }
+    })
+
+    // 🔹 alias GET do job manual (para você chamar no navegador)
+    this.app.get('/api/jobs/run-once', async (req, res) => {
       try {
         const dry = ['1','true','yes'].includes(String(req.query.dry || '').toLowerCase())
         let canRun = false
