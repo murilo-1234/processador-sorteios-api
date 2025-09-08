@@ -4,8 +4,7 @@ const COALESCE_WINDOW_MS = Number(process.env.COALESCE_WINDOW_MS || 1200);
 const GREET_TTL_SECONDS  = Number(process.env.GREET_TTL_SECONDS  || 120);
 
 const buckets = new Map(); // jid -> { timer, msgs:[], lastGreetAt:number }
-
-function _now() { return Date.now(); }
+const now = () => Date.now();
 
 function _get(jid) {
   let s = buckets.get(jid);
@@ -19,22 +18,23 @@ function _get(jid) {
  */
 function pushIncoming(jid, msg, handler) {
   const s = _get(jid);
-  s.msgs.push(msg);
+  s.msgs.push(String(msg ?? ''));
 
   if (s.timer) clearTimeout(s.timer);
   s.timer = setTimeout(() => {
-    const batch = s.msgs.splice(0, s.msgs.length);
-    s.timer = null;
-    const greetedRecently = (_now() - s.lastGreetAt) < GREET_TTL_SECONDS * 1000;
-    const ctx = { shouldGreet: !greetedRecently, greetedRecently };
-    try { handler(batch, ctx); } catch (e) { console.error('[inbox-state] handler error:', e?.message || e); }
+    try {
+      const batch = s.msgs.splice(0, s.msgs.length);
+      s.timer = null;
+      const greetedRecently = (now() - s.lastGreetAt) < GREET_TTL_SECONDS * 1000;
+      const ctx = { shouldGreet: !greetedRecently, greetedRecently };
+      handler(batch, ctx);
+    } catch (e) {
+      console.error('[inbox-state] handler error:', e?.message || e);
+    }
   }, COALESCE_WINDOW_MS);
 }
 
-function markGreeted(jid) {
-  const s = _get(jid);
-  s.lastGreetAt = _now();
-}
+function markGreeted(jid) { _get(jid).lastGreetAt = now(); }
 
 function reset(jid) {
   const s = _get(jid);
