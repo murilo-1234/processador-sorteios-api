@@ -39,7 +39,7 @@ function loadSystemText() {
   const envTxt = (process.env.ASSISTANT_SYSTEM || '').trim();
   if (envTxt) return envTxt;
 
-  // Fallback fiel aos seus pontos principais (links/copuns/formatação)
+  // Fallback fiel aos seus pontos principais (links/cupons/formatação)
   return `
 Você é Murilo, consultor on-line da Natura (atendimento virtual). Regras obrigatórias:
 - Tom leve, humano, claro e objetivo; no máximo 3 emojis por resposta.
@@ -89,38 +89,75 @@ function wantsThanks(text) {
   return /(^|\b)(obrigad[oa]|obg|valeu|vlw|thanks|thank you|🙏|❤|❤️|💖|💗|💜|💙|💚|💛|💞|💝)($|\b)/i.test(s);
 }
 
-// ───────────── Respostas baseadas em regras ─────────────
-async function replyCoupons(sock, jid) {
+// === Botões de URL (Baileys "templateButtons") ===
+const USE_BUTTONS = String(process.env.ASSISTANT_USE_BUTTONS || '1') === '1';
+
+async function sendUrlButtons(sock, jid, headerText, buttons, footer = 'Murilo • Natura') {
   try {
-    const list = await fetchTopCoupons(2);
-    let c1 = 'PEGAP', c2 = 'PEGAQ';
-    if (Array.isArray(list) && list.length) {
-      c1 = list[0] || c1;
-      c2 = list[1] || c2;
-    }
-    enqueueText(sock, jid, `Tenho dois cupons agora: *${c1}* ou *${c2}* 😉`);
-    enqueueText(
-      sock,
-      jid,
-      `Se precisar de mais, veja: ${LINKS.cuponsSite}\nObs.: os cupons funcionam no meu Espaço Natura. Na tela de pagamento, procure por "Murilo Cerqueira".`
-    );
+    await sock.sendMessage(jid, {
+      text: headerText,
+      footer,
+      templateButtons: buttons
+    });
     return true;
-  } catch (_) {
-    enqueueText(sock, jid, `Tenta *PEGAP* ou *PEGAQ* 😉\nMais cupons: ${LINKS.cuponsSite}`);
-    return true;
+  } catch (e) {
+    console.error('[assistant] buttons send error:', e?.message || e);
+    return false;
   }
 }
 
+// ───────────── Respostas baseadas em regras ─────────────
+async function replyCoupons(sock, jid) {
+  // tenta pegar 2 cupons dinâmicos; fallback para PEGAP/PEGAQ
+  let c1 = 'PEGAP', c2 = 'PEGAQ';
+  try {
+    const list = await fetchTopCoupons(2);
+    if (Array.isArray(list) && list.length) {
+      if (list[0]) c1 = list[0];
+      if (list[1]) c2 = list[1];
+    }
+  } catch (_) {}
+
+  const txt =
+    `Tenho dois cupons agora: *${c1}* ou *${c2}* 😉\n` +
+    `Obs.: os cupons só funcionam no meu Espaço Natura — na tela de pagamento, procure por "Murilo Cerqueira".`;
+
+  // Botões (com fallback automático para texto)
+  if (USE_BUTTONS) {
+    const ok = await sendUrlButtons(sock, jid, txt, [
+      { index: 1, urlButton: { displayText: 'Ver promoções', url: LINKS.promosGerais } },
+      { index: 2, urlButton: { displayText: 'Mais cupons',    url: LINKS.cuponsSite   } },
+    ]);
+    if (ok) return true;
+  }
+
+  // Fallback: texto puro (mantém comportamento antigo)
+  enqueueText(sock, jid, txt);
+  enqueueText(sock, jid, `Mais cupons: ${LINKS.cuponsSite}`);
+  enqueueText(sock, jid, `Promoções do dia: ${LINKS.promosGerais}`);
+  return true;
+}
+
 async function replyPromos(sock, jid) {
-  enqueueText(
-    sock,
-    jid,
-    `Ofertas do dia (consultoria ativa):\n` +
-      `• Desconto progressivo ➡️ ${LINKS.promosProgressivo}\n` +
-      `• Produtos em promoção ➡️ ${LINKS.promosGerais}\n` +
-      `• Monte seu kit ➡️ ${LINKS.monteSeuKit}`
-  );
-  // Regra: ao falar de promoções, sempre mostrar cupons também
+  const header =
+    'Ofertas do dia (consultoria ativa):\n' +
+    `• Desconto progressivo ➡️ ${LINKS.promosProgressivo}\n` +
+    `• Produtos em promoção ➡️ ${LINKS.promosGerais}\n` +
+    `• Monte seu kit ➡️ ${LINKS.monteSeuKit}`;
+
+  if (USE_BUTTONS) {
+    const ok = await sendUrlButtons(sock, jid, header, [
+      { index: 1, urlButton: { displayText: 'Ver promoções',       url: LINKS.promosGerais      } },
+      { index: 2, urlButton: { displayText: 'Desconto progressivo', url: LINKS.promosProgressivo } },
+      { index: 3, urlButton: { displayText: 'Monte seu kit',        url: LINKS.monteSeuKit       } },
+    ]);
+    // regra: sempre mostrar cupons junto das promoções
+    await replyCoupons(sock, jid);
+    if (ok) return;
+  }
+
+  // Fallback texto + cupons
+  enqueueText(sock, jid, header);
   await replyCoupons(sock, jid);
 }
 
