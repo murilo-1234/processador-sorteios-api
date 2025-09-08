@@ -1,48 +1,90 @@
-// whatsapp-automation/src/services/coupons.js
 const axios = require('axios');
 const cheerio = require('cheerio');
 
-function extractCodesFromText(text) {
-  const codes = [];
-  const seen = new Set();
-  const regex = /\b[A-Z0-9]{4,12}\b/g;
-  let m;
-  while ((m = regex.exec(text)) !== null) {
-    const code = m[0].toUpperCase();
-    if (!seen.has(code)) {
-      seen.add(code);
-      codes.push(code);
-    }
-  }
-  return codes;
-}
+// Palavras comuns que NÃO são cupom
+const BLACKLIST = new Set([
+  'VEJA', 'MEUS', 'CUPOM', 'CUPONS', 'SORTEIO', 'ENTRE', 'ATENDIMENTO',
+  'ENVIE', 'HOJE', 'VALIDO', 'VÁLIDO', 'PROCURE', 'AJUDA', 'PROBLEMAS',
+  'LINK', 'SITE', 'NATURA', 'MURILO'
+]);
 
 /**
- * Retorna até `limit` cupons (máximo 2) deduplicados, na ordem em que aparecem.
- * Em falha, retorna um array com 1 fallback (DEFAULT_COUPON ou 'CLUBEMAC').
+ * Extrai até `max` cupons a partir do HTML do Clubemac.
+ * Prioriza padrões "PEGA*" e faz fallback para códigos em caixa alta 4..12 chars filtrando blacklist.
  */
-async function fetchTopCoupons(limit = 2) {
-  const capped = Math.max(1, Math.min(Number(limit) || 1, 2)); // garante 1..2
+async function fetchCoupons(max = 2) {
   try {
-    const { data: html } = await axios.get('https://clubemac.com.br/cupons/', { timeout: 15000 });
+    const { data: html } = await axios.get('https://clubemac.com.br/cupons/', {
+      timeout: 15000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; SorteiosBot/1.0)',
+        'Accept': 'text/html'
+      }
+    });
+
     const $ = cheerio.load(html);
-    const text = $('body').text().replace(/\s+/g, ' ').toUpperCase();
-    const codes = extractCodesFromText(text);
-    if (codes.length) {
-      return codes.slice(0, capped);
+
+    // 1) Tenta capturar a partir de atributos/comuns de "copiar cupom"
+    const attrCandidates = new Set();
+    $('[data-clipboard-text], [data-copy], [data-coupon-code], .coupon-code, code').each((_i, el) => {
+      const v =
+        $(el).attr('data-clipboard-text') ||
+        $(el).attr('data-copy') ||
+        $(el).attr('data-coupon-code') ||
+        $(el).text();
+      const s = String(v || '').trim().toUpperCase();
+      if (s && s.length >= 4 && s.length <= 12) attrCandidates.add(s);
+    });
+
+    // 2) Varredura por padrão "PEGA*" (ex.: PEGAP, PEGAQ…), mantendo ordem de aparição
+    const text = $('body').text().toUpperCase();
+    const pegaMatches = [...text.matchAll(/\bPEGA[A-Z0-9]{1,8}\b/g)].map(m => m[0]);
+
+    const ordered = [];
+    const pushOrdered = (code) => {
+      const c = String(code || '').toUpperCase().trim();
+      if (!c) return;
+      if (BLACKLIST.has(c)) return;
+      if (!/^[A-Z0-9]{4,12}$/.test(c)) return;
+      if (!ordered.includes(c)) ordered.push(c);
+    };
+
+    // prioridade: atributos -> PEGA* -> fallback genérico
+    for (const c of attrCandidates) pushOrdered(c);
+    for (const c of pegaMatches) pushOrdered(c);
+
+    if (ordered.length < max) {
+      // 3) Fallback genérico (qualquer "palavra" 4..12 caracteres em caixa alta),
+      // filtrando blacklist e evitando números "soltos".
+      const generic = [...text.matchAll(/\b[A-Z0-9]{4,12}\b/g)].map(m => m[0]);
+      for (const c of generic) pushOrdered(c);
     }
-  } catch (_) {}
-  const fallback = (process.env.DEFAULT_COUPON || 'CLUBEMAC').toUpperCase();
-  return [fallback];
+
+    const out = ordered.slice(0, Math.max(1, max));
+    if (out.length) return out;
+  } catch (_) {
+    // ignora e cai no fallback
+  }
+
+  // Fallback final: cupom padrão
+  const def = String(process.env.DEFAULT_COUPON || 'CLUBEMAC').toUpperCase();
+  return [def].slice(0, Math.max(1, max));
 }
 
-/**
- * Compatibilidade com código existente.
- * Continua disponível e agora apenas delega para fetchTopCoupons(1).
- */
+/** Retorna os cupons em texto amigável, ex.: "PEGAP" ou "PEGAP ou PEGAQ" */
+async function fetchCouponsText(max = 2, sep = ' ou ') {
+  const list = await fetchCoupons(max);
+  return list.length > 1 ? `${list[0]}${sep}${list[1]}` : list[0];
+}
+
+/** Retrocompat: devolve só o 1º cupom (mantém quem já usa) */
 async function fetchFirstCoupon() {
-  const list = await fetchTopCoupons(1);
-  return list[0] || (process.env.DEFAULT_COUPON || 'CLUBEMAC');
+  const list = await fetchCoupons(1);
+  return list[0];
 }
 
-module.exports = { fetchFirstCoupon, fetchTopCoupons };
+module.exports = {
+  fetchCoupons,
+  fetchCouponsText,
+  fetchFirstCoupon
+};
