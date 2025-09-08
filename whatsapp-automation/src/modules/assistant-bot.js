@@ -39,34 +39,15 @@ function loadSystemText() {
   const envTxt = (process.env.ASSISTANT_SYSTEM || '').trim();
   if (envTxt) return envTxt;
 
-  // Fallback fiel aos seus pontos principais (links/cupons/formatação)
+  // Fallback minimalista (mantém regras essenciais)
   return `
-Você é Murilo, consultor on-line da Natura (atendimento virtual). Regras obrigatórias:
-- Tom leve, humano, claro e objetivo; no máximo 3 emojis por resposta.
-- No início de um novo assunto, apresente-se como "Sou o Murilo Cerqueira, consultor de beleza Natura".
-- Foque em produtos Natura e vendas; se desviar, traga gentilmente de volta.
-- NUNCA invente, encurte, formate ou altere links. Não use colchetes/âncoras/markdown em links e não diga "clique aqui".
-- Use APENAS estes links (texto puro) com "?consultoria=clubemac".
-
-Promoções:
-1) Desconto progressivo ➡️ ${LINKS.promosProgressivo}
-2) Produtos em promoção ➡️ ${LINKS.promosGerais}
-3) Monte seu kit ➡️ ${LINKS.monteSeuKit}
-
-Cupons:
-- Diga PEGAP e PEGAQ por padrão e também: ${LINKS.cuponsSite}
-- Explique que só funcionam no Espaço Natura e deve procurar "Murilo Cerqueira" na tela de pagamento.
-
-Sorteios:
-- Para participar, enviar "7" (só o número) em:
-  • WhatsApp: ${LINKS.sorteioWhats}
-  • Instagram: ${LINKS.sorteioInsta}
-  • Messenger: ${LINKS.sorteioMsg}
-- Cada rede = 1 chance extra; resultados no grupo: ${LINKS.grupoResultados}
-
-Agradecimento (obrigado/obg/valeu/❤️): responda breve e carinhosamente e NÃO puxe conversa depois.
-Erros: responda curto e humano ("Desculpe, algo deu errado 😅. Pode tentar novamente?").
-Evite textões; se necessário, quebre em blocos curtos. Nunca repita a pergunta do cliente sem agregar algo novo.
+Você é Murilo, consultor on-line da Natura. Use tom humano, objetivo e até 3 emojis. Use somente links em texto puro com "?consultoria=clubemac". 
+Quando o cliente pedir promoções, envie: 
+• ${LINKS.promosProgressivo}
+• ${LINKS.promosGerais}
+• ${LINKS.monteSeuKit}
+Cupons: use os retornados pelo sistema; se não houver, encaminhe para ${LINKS.cuponsSite} e NÃO invente códigos. 
+Diga que os cupons valem apenas no Espaço Natura do Murilo (selecionar "Murilo Cerqueira" no pagamento).
 `.trim();
 }
 const SYSTEM_TEXT = loadSystemText();
@@ -108,32 +89,58 @@ async function sendUrlButtons(sock, jid, headerText, buttons, footer = 'Murilo �
 
 // ───────────── Respostas baseadas em regras ─────────────
 async function replyCoupons(sock, jid) {
-  // tenta pegar 2 cupons dinâmicos; fallback para PEGAP/PEGAQ
-  let c1 = 'PEGAP', c2 = 'PEGAQ';
+  // tenta pegar até 2 cupons dinâmicos
+  let coupons = [];
   try {
     const list = await fetchTopCoupons(2);
-    if (Array.isArray(list) && list.length) {
-      if (list[0]) c1 = list[0];
-      if (list[1]) c2 = list[1];
-    }
+    if (Array.isArray(list)) coupons = list.filter(Boolean).slice(0, 2);
   } catch (_) {}
 
-  const txt =
-    `Tenho dois cupons agora: *${c1}* ou *${c2}* 😉\n` +
-    `Obs.: os cupons só funcionam no meu Espaço Natura — na tela de pagamento, procure por "Murilo Cerqueira".`;
+  if (coupons.length >= 2) {
+    const txt =
+      `Tenho dois cupons agora: *${coupons[0]}* ou *${coupons[1]}* 😉\n` +
+      `Obs.: os cupons só funcionam no meu Espaço Natura — na tela de pagamento, procure por "Murilo Cerqueira".`;
+    if (USE_BUTTONS) {
+      const ok = await sendUrlButtons(sock, jid, txt, [
+        { index: 1, urlButton: { displayText: 'Ver promoções', url: LINKS.promosGerais } },
+        { index: 2, urlButton: { displayText: 'Mais cupons',    url: LINKS.cuponsSite   } },
+      ]);
+      if (ok) return true;
+    }
+    enqueueText(sock, jid, txt);
+    enqueueText(sock, jid, `Mais cupons: ${LINKS.cuponsSite}`);
+    enqueueText(sock, jid, `Promoções do dia: ${LINKS.promosGerais}`);
+    return true;
+  }
 
-  // Botões (com fallback automático para texto)
+  if (coupons.length === 1) {
+    const txt =
+      `Tenho um cupom agora: *${coupons[0]}* 😉\n` +
+      `Se quiser conferir outros, veja: ${LINKS.cuponsSite}\n` +
+      `Obs.: os cupons só funcionam no meu Espaço Natura — na tela de pagamento, procure por "Murilo Cerqueira".`;
+    if (USE_BUTTONS) {
+      const ok = await sendUrlButtons(sock, jid, txt, [
+        { index: 1, urlButton: { displayText: 'Ver promoções', url: LINKS.promosGerais } },
+        { index: 2, urlButton: { displayText: 'Mais cupons',    url: LINKS.cuponsSite   } },
+      ]);
+      if (ok) return true;
+    }
+    enqueueText(sock, jid, txt);
+    return true;
+  }
+
+  // FALLBACK quando não houver cupom dinâmico → NÃO inventa; manda link
+  const noCupomTxt =
+    `Agora não consegui confirmar cupons ativos. Veja os disponíveis aqui: ${LINKS.cuponsSite} 👈\n` +
+    `Obs.: os cupons só funcionam no meu Espaço Natura — na tela de pagamento, procure por "Murilo Cerqueira".`;
   if (USE_BUTTONS) {
-    const ok = await sendUrlButtons(sock, jid, txt, [
-      { index: 1, urlButton: { displayText: 'Ver promoções', url: LINKS.promosGerais } },
-      { index: 2, urlButton: { displayText: 'Mais cupons',    url: LINKS.cuponsSite   } },
+    const ok = await sendUrlButtons(sock, jid, noCupomTxt, [
+      { index: 1, urlButton: { displayText: 'Mais cupons',    url: LINKS.cuponsSite   } },
+      { index: 2, urlButton: { displayText: 'Ver promoções',  url: LINKS.promosGerais } },
     ]);
     if (ok) return true;
   }
-
-  // Fallback: texto puro (mantém comportamento antigo)
-  enqueueText(sock, jid, txt);
-  enqueueText(sock, jid, `Mais cupons: ${LINKS.cuponsSite}`);
+  enqueueText(sock, jid, noCupomTxt);
   enqueueText(sock, jid, `Promoções do dia: ${LINKS.promosGerais}`);
   return true;
 }
@@ -151,7 +158,7 @@ async function replyPromos(sock, jid) {
       { index: 2, urlButton: { displayText: 'Desconto progressivo', url: LINKS.promosProgressivo } },
       { index: 3, urlButton: { displayText: 'Monte seu kit',        url: LINKS.monteSeuKit       } },
     ]);
-    // regra: sempre mostrar cupons junto das promoções
+    // regra: SEMPRE mostrar cupons junto das promoções
     await replyCoupons(sock, jid);
     if (ok) return;
   }
@@ -188,7 +195,8 @@ async function askOpenAI({ prompt, userName, isNewTopic }) {
     'Regras adicionais de execução:',
     `- Nome do cliente: ${userName || '(desconhecido)'}`,
     `- isNewTopic=${isNewTopic ? 'true' : 'false'} → se true, pode se apresentar; se false, evite nova saudação.`,
-    '- Nunca formate link como markdown/âncora. Exiba o texto exato do link.'
+    '- Nunca formate link como markdown/âncora. Exiba o texto exato do link.',
+    '- Quando o cliente pedir “só cupons”, inclua também o link geral de promoções.'
   ].join('\n');
 
   const messages = [
