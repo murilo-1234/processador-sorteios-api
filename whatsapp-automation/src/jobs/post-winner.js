@@ -25,7 +25,8 @@ if (typeof zonedTimeToUtcSafe !== 'function') {
 const settings = require('../services/settings');
 const { getRows, updateCellByHeader } = require('../services/sheets');
 const { fetchResultInfo } = require('../services/result');
-const { fetchFirstCoupon } = require('../services/coupons');
+// 🔽 alterado: agora importa também fetchTopCoupons (mantendo fetchFirstCoupon p/ compat)
+const { fetchFirstCoupon, fetchTopCoupons } = require('../services/coupons');
 const { generatePoster } = require('../services/media');
 const { makeOverlayVideo } = require('../services/video');
 
@@ -347,8 +348,22 @@ async function runOnce(app, opts = {}) {
     return { ok: true, processed: 0, sent: 0, note: 'sem linhas prontas', skipped };
   }
 
-  // 4) Cupom (uma vez por execução)
-  const coupon = await fetchFirstCoupon();
+  // 4) Cupom (uma vez por execução)  🔽 alterado para até 2 cupons
+  let coupon;
+  try {
+    if (typeof fetchTopCoupons === 'function') {
+      const list = await fetchTopCoupons(2);
+      if (Array.isArray(list) && list.length > 1) {
+        coupon = `${list[0]} ou ${list[1]}`;
+      } else if (Array.isArray(list) && list.length === 1) {
+        coupon = list[0];
+      }
+    }
+  } catch (_) {}
+  if (!coupon) {
+    // compatibilidade/fallback
+    coupon = await fetchFirstCoupon();
+  }
   dlog('coupon', coupon);
 
   // 5) Processa e posta
