@@ -86,5 +86,6 @@ async function fetchFirstCoupon() {
 module.exports = {
   fetchCoupons,
   fetchCouponsText,
-  fetchFirstCoupon
+  fetchFirstCoupon,
+  fetchTopCoupons: fetchCoupons // alias p/ compat com post-winner.js
 };
