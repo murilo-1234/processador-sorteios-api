@@ -36,7 +36,7 @@ async function replyCoupons(sock, jid) {
   return true;
 }
 
-async function askOpenAI(prompt, jid) {
+async function askOpenAI(prompt) {
   if (!OPENAI_API_KEY) {
     return 'Estou online! Se quiser, posso buscar cupons ou tirar dúvidas rápidas.';
   }
@@ -61,17 +61,22 @@ async function askOpenAI(prompt, jid) {
 
 function extractText(msg) {
   try {
+    // Desembrulha ephemeralMessage, quando existir
+    const m0 = msg?.message || {};
+    const m = m0.ephemeralMessage?.message || m0;
+
     // Baileys: message.conversation | extendedTextMessage.text | etc.
-    const m = msg?.message || {};
     if (m.conversation) return m.conversation;
     if (m.extendedTextMessage?.text) return m.extendedTextMessage.text;
     if (m.imageMessage?.caption) return m.imageMessage.caption;
     if (m.videoMessage?.caption) return m.videoMessage.caption;
+    if (m.documentMessage?.caption) return m.documentMessage.caption;
   } catch (_) {}
   return '';
 }
 
 function isGroup(jid) { return String(jid || '').endsWith('@g.us'); }
+function isStatus(jid) { return String(jid || '') === 'status@broadcast'; }
 function isFromMe(msg) { return !!msg?.key?.fromMe; }
 
 function attachAssistant(appInstance) {
@@ -85,13 +90,14 @@ function attachAssistant(appInstance) {
   const INTERVAL = 2500;
   let wired = false;
 
+  const getSock = () =>
+    (appInstance?.waAdmin?.getSock && appInstance.waAdmin.getSock()) ||
+    (appInstance?.whatsappClient?.sock);
+
   const tick = async () => {
     try {
       if (wired) return;
-      const sock =
-        (appInstance?.waAdmin?.getSock && appInstance.waAdmin.getSock()) ||
-        (appInstance?.whatsappClient?.sock);
-
+      const sock = getSock();
       if (!sock || !sock.ev || typeof sock.ev.on !== 'function') return;
 
       // listener
@@ -100,16 +106,14 @@ function attachAssistant(appInstance) {
           if (!ev?.messages?.length) return;
           const m = ev.messages[0];
           const jid = m?.key?.remoteJid;
-          if (!jid || isFromMe(m) || isGroup(jid)) return; // só 1:1 recebidas
+          if (!jid || isFromMe(m) || isGroup(jid) || isStatus(jid)) return; // só 1:1 recebidas
 
           const text = extractText(m);
           if (!text) return;
 
           // coalesce por JID
           pushIncoming(jid, text, async (batch, ctx) => {
-            const sockNow =
-              (appInstance?.waAdmin?.getSock && appInstance.waAdmin.getSock()) ||
-              (appInstance?.whatsappClient?.sock);
+            const sockNow = getSock();
             if (!sockNow) return;
 
             // saudação (1x dentro do TTL)
@@ -126,7 +130,7 @@ function attachAssistant(appInstance) {
             }
 
             // fallback: pergunta para OpenAI
-            const out = await askOpenAI(joined, jid);
+            const out = await askOpenAI(joined);
             enqueueText(sockNow, jid, out);
           });
         } catch (e) {
