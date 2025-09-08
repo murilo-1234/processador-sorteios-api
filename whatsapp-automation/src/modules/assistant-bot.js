@@ -1,18 +1,19 @@
 // src/modules/assistant-bot.js
-// Liga entrada (mensagens 1:1) -> coalesce/greet -> intents (cupons/promos/sorteio) -> OpenAI -> reply-queue
+// Liga entrada (mensagens 1:1) -> coalesce/greet -> intents (cupons/promos/sorteio/agradecimento) -> OpenAI -> reply-queue
 
+const fs = require('fs');
 const axios = require('axios');
 const { pushIncoming, markGreeted } = require('../services/inbox-state');
 const { enqueueText } = require('../services/reply-queue');
 const { fetchTopCoupons } = require('../services/coupons');
 
-const ASSISTANT_ENABLED = String(process.env.ASSISTANT_ENABLED || '0') === '1';
-const OPENAI_API_KEY    = process.env.OPENAI_API_KEY || '';
-const OPENAI_MODEL      = process.env.OPENAI_MODEL || 'gpt-4o';
+const ASSISTANT_ENABLED   = String(process.env.ASSISTANT_ENABLED || '0') === '1';
+const OPENAI_API_KEY      = process.env.OPENAI_API_KEY || '';
+const OPENAI_MODEL        = process.env.OPENAI_MODEL || 'gpt-4o';
+const ASSISTANT_TEMP      = Number(process.env.ASSISTANT_TEMPERATURE || 0.6);
 
-// Saudação curta e humana (pode personalizar via ENV)
-const GREET_TEXT = process.env.ASSISTANT_GREET_TEXT ||
-  'Oi! 👋 Sou o Murilo Cerqueira, consultor de beleza Natura (atendimento virtual). Como posso te ajudar hoje? 😊';
+// Saudação fixa OPCIONAL: deixe vazia para a IA variar naturalmente e evitar dupla saudação
+const GREET_TEXT = (process.env.ASSISTANT_GREET_TEXT || '').trim();
 
 // Links oficiais (sempre com consultoria=clubemac)
 const LINKS = {
@@ -26,14 +27,26 @@ const LINKS = {
   grupoResultados:   'https://chat.whatsapp.com/JSBFWPmUdCZ2Ef5saq0kE6',
 };
 
-// Prompt de sistema (resumo fiel das suas regras)
-const SYSTEM_RULES = `
+// ====== System instructions (preferir arquivo/ENV; fallback mantém suas regras) ======
+function loadSystemText() {
+  try {
+    const file = (process.env.ASSISTANT_SYSTEM_FILE || '').trim();
+    if (file) {
+      const txt = fs.readFileSync(file, 'utf8');
+      if (txt && txt.trim()) return txt.trim();
+    }
+  } catch (_) {}
+  const envTxt = (process.env.ASSISTANT_SYSTEM || '').trim();
+  if (envTxt) return envTxt;
+
+  // Fallback fiel aos seus pontos principais (links/copuns/formatação)
+  return `
 Você é Murilo, consultor on-line da Natura (atendimento virtual). Regras obrigatórias:
 - Tom leve, humano, claro e objetivo; no máximo 3 emojis por resposta.
-- Apresente-se no primeiro contato do assunto: "Sou o Murilo Cerqueira, consultor de beleza Natura".
+- No início de um novo assunto, apresente-se como "Sou o Murilo Cerqueira, consultor de beleza Natura".
 - Foque em produtos Natura e vendas; se desviar, traga gentilmente de volta.
 - NUNCA invente, encurte, formate ou altere links. Não use colchetes/âncoras/markdown em links e não diga "clique aqui".
-- Use APENAS estes links (texto puro) com "?consultoria=clubemac":
+- Use APENAS estes links (texto puro) com "?consultoria=clubemac".
 
 Promoções:
 1) Desconto progressivo ➡️ ${LINKS.promosProgressivo}
@@ -51,38 +64,46 @@ Sorteios:
   • Messenger: ${LINKS.sorteioMsg}
 - Cada rede = 1 chance extra; resultados no grupo: ${LINKS.grupoResultados}
 
+Agradecimento (obrigado/obg/valeu/❤️): responda breve e carinhosamente e NÃO puxe conversa depois.
 Erros: responda curto e humano ("Desculpe, algo deu errado 😅. Pode tentar novamente?").
 Evite textões; se necessário, quebre em blocos curtos. Nunca repita a pergunta do cliente sem agregar algo novo.
-`;
+`.trim();
+}
+const SYSTEM_TEXT = loadSystemText();
 
 // ───────────── Intents ─────────────
-// Cupom: apenas quando a pessoa fala explicitamente cupom/cupons
 function wantsCoupon(text) {
   const s = String(text || '').toLowerCase();
   return /\bcupom\b|\bcupons\b/.test(s);
 }
-// Promoções / ofertas / descontos
 function wantsPromos(text) {
   const s = String(text || '').toLowerCase();
   return /(promo(ç|c)[aã]o|promo\b|oferta|desconto|liquid(a|ã)o|sale)/i.test(s);
 }
-// Sorteio / participar / enviar "7"
 function wantsRaffle(text) {
   const s = String(text || '').toLowerCase();
   return /(sorteio|participar.*sorteio|quero.*sorteio|ganhar.*sorteio|\benviar\b.*\b7\b|\bmandar\b.*\b7\b)/i.test(s);
+}
+function wantsThanks(text) {
+  const s = String(text || '').toLowerCase().trim();
+  return /(^|\b)(obrigad[oa]|obg|valeu|vlw|thanks|thank you|🙏|❤|❤️|💖|💗|💜|💙|💚|💛|💞|💝)($|\b)/i.test(s);
 }
 
 // ───────────── Respostas baseadas em regras ─────────────
 async function replyCoupons(sock, jid) {
   try {
-    const list = await fetchTopCoupons(2); // tenta pegar do site
+    const list = await fetchTopCoupons(2);
     let c1 = 'PEGAP', c2 = 'PEGAQ';
     if (Array.isArray(list) && list.length) {
       c1 = list[0] || c1;
       c2 = list[1] || c2;
     }
     enqueueText(sock, jid, `Tenho dois cupons agora: *${c1}* ou *${c2}* 😉`);
-    enqueueText(sock, jid, `Se precisar de mais, veja: ${LINKS.cuponsSite}\nObs.: os cupons funcionam no meu Espaço Natura. Na tela de pagamento, procure por "Murilo Cerqueira".`);
+    enqueueText(
+      sock,
+      jid,
+      `Se precisar de mais, veja: ${LINKS.cuponsSite}\nObs.: os cupons funcionam no meu Espaço Natura. Na tela de pagamento, procure por "Murilo Cerqueira".`
+    );
     return true;
   } catch (_) {
     enqueueText(sock, jid, `Tenta *PEGAP* ou *PEGAQ* 😉\nMais cupons: ${LINKS.cuponsSite}`);
@@ -115,19 +136,33 @@ function replyRaffle(sock, jid) {
   );
 }
 
+function replyThanks(sock, jid) {
+  enqueueText(sock, jid, 'Por nada! ❤️ Conte comigo sempre!');
+}
+
 // ───────────── OpenAI (fallback) ─────────────
-async function askOpenAI(prompt) {
+async function askOpenAI({ prompt, userName, isNewTopic }) {
   const fallback = 'Estou online! Se quiser, posso buscar promoções, cupons ou tirar dúvidas rápidas. 🙂';
   if (!OPENAI_API_KEY) return fallback;
 
+  const rules = [
+    SYSTEM_TEXT,
+    '',
+    'Regras adicionais de execução:',
+    `- Nome do cliente: ${userName || '(desconhecido)'}`,
+    `- isNewTopic=${isNewTopic ? 'true' : 'false'} → se true, pode se apresentar; se false, evite nova saudação.`,
+    '- Nunca formate link como markdown/âncora. Exiba o texto exato do link.'
+  ].join('\n');
+
   const messages = [
-    { role: 'system', content: SYSTEM_RULES.trim() },
+    { role: 'system', content: rules },
     { role: 'user',   content: String(prompt || '').trim() }
   ];
+
   try {
     const { data } = await axios.post(
       'https://api.openai.com/v1/chat/completions',
-      { model: OPENAI_MODEL, temperature: 0.4, messages },
+      { model: OPENAI_MODEL, temperature: ASSISTANT_TEMP, messages },
       { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' }, timeout: 25000 }
     );
     const out = data?.choices?.[0]?.message?.content?.trim();
@@ -145,7 +180,6 @@ function extractText(msg) {
     const m0 = msg?.message || {};
     const m = m0.ephemeralMessage?.message || m0;
 
-    // Baileys: message.conversation | extendedTextMessage.text | etc.
     if (m.conversation) return m.conversation;
     if (m.extendedTextMessage?.text) return m.extendedTextMessage.text;
     if (m.imageMessage?.caption) return m.imageMessage.caption;
@@ -190,27 +224,42 @@ function attachAssistant(appInstance) {
           const text = extractText(m);
           if (!text) return;
 
-          // Coalesce por JID (decidimos pelo último texto do lote)
+          const userName = (m.pushName || '').trim();
+
+          // Coalesce por JID
           pushIncoming(jid, text, async (batch, ctx) => {
             const sockNow = getSock();
             if (!sockNow) return;
 
-            const last = (batch[batch.length - 1] || '').trim();
+            const joined = batch.join(' ').trim();
 
-            // Saudação (1x dentro do TTL do inbox-state)
-            if (ctx.shouldGreet) {
+            // Agradecimento curto não puxa conversa
+            if (wantsThanks(joined)) { replyThanks(sockNow, jid); return; }
+
+            // Intents rápidas (não acionam IA)
+            if (wantsRaffle(joined)) { replyRaffle(sockNow, jid); return; }
+            if (wantsCoupon(joined)) { await replyCoupons(sockNow, jid); return; }
+            if (wantsPromos(joined)) { await replyPromos(sockNow, jid); return; }
+
+            // Saudação: só 1x. Se GREET_TEXT existir e for novo tópico, manda fixa e
+            // sinaliza para a IA NÃO saudar de novo (isNewTopic=false).
+            let isNewTopicForAI = ctx.shouldGreet;
+            if (ctx.shouldGreet && GREET_TEXT) {
               enqueueText(sockNow, jid, GREET_TEXT);
               markGreeted(jid);
+              isNewTopicForAI = false;
             }
 
-            // Intents em ordem (sorteio -> cupom -> promo -> fallback)
-            if (wantsRaffle(last)) { replyRaffle(sockNow, jid); return; }
-            if (wantsCoupon(last)) { await replyCoupons(sockNow, jid); return; }
-            if (wantsPromos(last)) { await replyPromos(sockNow, jid); return; }
-
-            // Fallback: OpenAI com regras completas
-            const out = await askOpenAI(last);
-            enqueueText(sockNow, jid, out);
+            // Fallback IA (segue suas regras; se isNewTopicForAI=true, pode se apresentar)
+            const out = await askOpenAI({
+              prompt: joined,
+              userName,
+              isNewTopic: isNewTopicForAI
+            });
+            if (out && out.trim()) {
+              enqueueText(sockNow, jid, out.trim());
+              if (ctx.shouldGreet && !GREET_TEXT) markGreeted(jid);
+            }
           });
         } catch (e) {
           console.error('[assistant] upsert error', e?.message || e);
