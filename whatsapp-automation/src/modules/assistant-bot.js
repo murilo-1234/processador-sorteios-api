@@ -9,55 +9,6 @@ const { pushIncoming, markGreeted } = require('../services/inbox-state');
 const { enqueueText } = require('../services/reply-queue');
 const { fetchTopCoupons } = require('../services/coupons');
 
-// Intents e Botões centralizados (já criados)
-let wantsCoupon, wantsPromos, wantsRaffle, wantsThanks, wantsSocial, wantsSoap, wantsCouponProblem, wantsOrderSupport;
-let sendUrlButtons, USE_BUTTONS;
-
-// Carrega helpers de forma segura (caso o projeto ainda não tenha os arquivos, não quebrar)
-try {
-  ({
-    wantsCoupon,
-    wantsPromos,
-    wantsRaffle,
-    wantsThanks,
-    wantsSocial,
-    wantsSoap,
-    wantsCouponProblem,
-    wantsOrderSupport,
-  } = require('../services/intent-helpers'));
-} catch (_) {
-  // fallbacks locais para não quebrar caso helpers não estejam presentes
-  const norm = (t) => String(t || '').toLowerCase();
-  wantsCoupon        = (t) => /\bcupom\b|\bcupons\b/.test(norm(t));
-  wantsPromos        = (t) => /(promo(ç|c)[aã]o|promo\b|oferta|desconto|liquid(a|ã)o|sale)/i.test(norm(t));
-  wantsRaffle        = (t) => /(sorteio|participar.*sorteio|quero.*sorteio|ganhar.*sorteio|\benviar\b.*\b7\b|\bmandar\b.*\b7\b)/i.test(norm(t));
-  wantsThanks        = (t) => /(^|\b)(obrigad[oa]|obg|valeu|vlw|🙏|❤|❤️)($|\b)/i.test(norm(t).trim());
-  wantsSocial        = (t) => /(instagram|insta\b|tiktok|tik[\s-]?tok|whatsapp|zap|grupo)/i.test(norm(t));
-  wantsSoap          = (t) => /(sabonete|sabonetes)/i.test(norm(t));
-  wantsCouponProblem = (t) => /(cupom|codigo|código).*(n[aã]o.*(aplic|funcion)|erro)|erro.*(cupom|c[oó]digo)/i.test(norm(t));
-  wantsOrderSupport  = (t) => /(pedido|entrega|nota fiscal|pagamento|boleto).*(problema|atras|n[aã]o chegou|erro)/i.test(norm(t));
-}
-
-try {
-  ({ sendUrlButtons, USE_BUTTONS } = require('../services/buttons'));
-} catch (_) {
-  // se módulo de botões não existir, usar variável de ambiente e fallback para texto puro
-  // === Botões de URL (opcional) ===
-  // OBS: algumas versões do Baileys não suportam templateButtons; manter try/catch.
-  const USE_BTN_ENV = String(process.env.ASSISTANT_USE_BUTTONS || '0') === '1';
-  sendUrlButtons = async (sock, jid, headerText, buttons, footer = 'Murilo • Natura') => {
-    if (!USE_BTN_ENV) return false;
-    try {
-      await sock.sendMessage(jid, { text: headerText, footer, templateButtons: buttons });
-      return true;
-    } catch (e) {
-      console.error('[assistant] buttons send error:', e?.message || e);
-      return false;
-    }
-  };
-  USE_BUTTONS = USE_BTN_ENV;
-}
-
 const ASSISTANT_ENABLED = String(process.env.ASSISTANT_ENABLED || '0') === '1';
 const OPENAI_API_KEY    = process.env.OPENAI_API_KEY || '';
 const OPENAI_MODEL      = process.env.OPENAI_MODEL || 'gpt-4o';
@@ -98,21 +49,65 @@ function loadSystemText() {
 }
 const SYSTEM_TEXT = loadSystemText();
 
+// ───────────── Intents ─────────────
+function wantsCoupon(text) {
+  const s = String(text || '').toLowerCase();
+  return /\bcupom\b|\bcupons\b/.test(s);
+}
+function wantsPromos(text) {
+  const s = String(text || '').toLowerCase();
+  return /(promo(ç|c)[aã]o|promo\b|oferta|desconto|liquid(a|ã)o|sale)/i.test(s);
+}
+function wantsRaffle(text) {
+  const s = String(text || '').toLowerCase();
+  return /(sorteio|participar.*sorteio|quero.*sorteio|ganhar.*sorteio|\benviar\b.*\b7\b|\bmandar\b.*\b7\b)/i.test(s);
+}
+function wantsThanks(text) {
+  const s = String(text || '').toLowerCase().trim();
+  return /(^|\b)(obrigad[oa]|obg|valeu|vlw|🙏|❤|❤️)($|\b)/i.test(s);
+}
+function wantsSocial(text) {
+  const s = String(text || '').toLowerCase();
+  return /(instagram|insta\b|tiktok|tik[\s-]?tok|whatsapp|zap|grupo)/i.test(s);
+}
+function wantsSoap(text) {
+  const s = String(text || '').toLowerCase();
+  return /(sabonete|sabonetes)/i.test(s);
+}
+function wantsCouponProblem(text) {
+  const s = String(text || '').toLowerCase();
+  return /(cupom|codigo|código).*(n[aã]o.*(aplic|funcion)|erro)|erro.*(cupom|c[oó]digo)/i.test(s);
+}
+function wantsOrderSupport(text) {
+  const s = String(text || '').toLowerCase();
+  return /(pedido|entrega|nota fiscal|pagamento|boleto).*(problema|atras|n[aã]o chegou|erro)/i.test(s);
+}
+
+// === Botões de URL (opcional) ===
+const USE_BUTTONS = String(process.env.ASSISTANT_USE_BUTTONS || '0') === '1';
+async function sendUrlButtons(sock, jid, headerText, buttons, footer = 'Murilo • Natura') {
+  try {
+    await sock.sendMessage(jid, { text: headerText, footer, templateButtons: buttons });
+    return true;
+  } catch (e) {
+    console.error('[assistant] buttons send error:', e?.message || e);
+    return false;
+  }
+}
+
 // ───────────── Respostas baseadas em regras ─────────────
 async function replyCoupons(sock, jid) {
   // 1) tenta pegar cupons dinâmicos
   let list = [];
   try { list = await fetchTopCoupons(2); } catch (_) {}
 
-  // 2) lembrete do Espaço Natura + link de promoções JUNTO
+  // 2) sempre avisar regra do Espaço Natura + link de promoções junto
   const nota = 'Obs.: os cupons só funcionam no meu Espaço Natura — na tela de pagamento, procure por "Murilo Cerqueira".';
   const promoLine = `Promoções do dia: ${LINKS.promosGerais}`;
 
   if (Array.isArray(list) && list.length) {
     const c1 = list[0], c2 = list[1];
-    const linha = c2
-      ? `Tenho dois cupons agora: *${c1}* ou *${c2}* 😉`
-      : `Tenho um cupom agora: *${c1}* 😉`;
+    const linha = c2 ? `Tenho dois cupons agora: *${c1}* ou *${c2}* 😉` : `Tenho um cupom agora: *${c1}* 😉`;
 
     if (USE_BUTTONS) {
       const ok = await sendUrlButtons(sock, jid, `${linha}\n${nota}`, [
@@ -150,15 +145,13 @@ async function replyPromos(sock, jid) {
     `• Produtos em promoção ➡️ ${LINKS.promosGerais}\n` +
     `  Observação: 723 itens com até 70% OFF e frete grátis aplicando cupom.\n` +
     `• Monte seu kit ➡️ ${LINKS.monteSeuKit}\n` +
-    `  Observação: comprando 4 itens (dentre 182), ganha 40% OFF e frete grátis.\n` +
-    `• Sabonetes em promoção ➡️ ${LINKS.sabonetes}`;
+    `  Observação: comprando 4 itens (dentre 182), ganha 40% OFF e frete grátis.`;
 
   if (USE_BUTTONS) {
     const ok = await sendUrlButtons(sock, jid, header, [
-      { index: 1, urlButton: { displayText: 'Ver promoções',        url: LINKS.promosGerais      } },
-      { index: 2, urlButton: { displayText: 'Desconto progressivo',  url: LINKS.promosProgressivo } },
-      { index: 3, urlButton: { displayText: 'Monte seu kit',         url: LINKS.monteSeuKit       } },
-      { index: 4, urlButton: { displayText: 'Sabonetes em promoção', url: LINKS.sabonetes         } },
+      { index: 1, urlButton: { displayText: 'Ver promoções',       url: LINKS.promosGerais      } },
+      { index: 2, urlButton: { displayText: 'Desconto progressivo', url: LINKS.promosProgressivo } },
+      { index: 3, urlButton: { displayText: 'Monte seu kit',        url: LINKS.monteSeuKit       } },
     ]);
     // regra: sempre mostrar cupons junto
     await replyCoupons(sock, jid);
@@ -191,7 +184,7 @@ function replyThanks(sock, jid) {
 }
 
 function replySocial(sock, jid, text) {
-  const s = String(text || '').toLowerCase();
+  const s = (text || '').toLowerCase();
   if (/instagram|insta\b/.test(s)) return enqueueText(sock, jid, `Instagram ➡️ ${LINKS.insta}`);
   if (/tiktok|tik[\s-]?tok/.test(s)) return enqueueText(sock, jid, `Tiktok ➡️ ${LINKS.tiktok}`);
   if (/grupo/.test(s))               return enqueueText(sock, jid, `Grupo de Whatsapp ➡️ ${LINKS.grupoMurilo}`);
@@ -280,97 +273,76 @@ function isGroup(jid)  { return String(jid || '').endsWith('@g.us'); }
 function isStatus(jid) { return String(jid || '') === 'status@broadcast'; }
 function isFromMe(msg) { return !!msg?.key?.fromMe; }
 
-// ===== Patch: rewire automático quando o socket do Baileys muda =====
-let CURRENT_SOCK = null;
-
-// Handler isolado (mesma lógica de antes) — chamado a cada messages.upsert
-async function onMessagesUpsert(ev, getSock) {
-  try {
-    if (!ev?.messages?.length) return;
-    const m = ev.messages[0];
-    const jid = m?.key?.remoteJid;
-    if (!jid || isFromMe(m) || isGroup(jid) || isStatus(jid)) return;
-
-    const text = extractText(m);
-    if (!text) return;
-
-    const userName = (m.pushName || '').trim();
-
-    pushIncoming(jid, text, async (batch, ctx) => {
-      const sockNow = getSock();
-      if (!sockNow) return;
-
-      const joined = batch.join(' ').trim();
-
-      // Intents rápidas
-      if (wantsThanks(joined))        { replyThanks(sockNow, jid); return; }
-      if (wantsCouponProblem(joined)) { replyCouponProblem(sockNow, jid); return; }
-      if (wantsOrderSupport(joined))  { replyOrderSupport(sockNow, jid); return; }
-      if (wantsRaffle(joined))        { replyRaffle(sockNow, jid); return; }
-      if (wantsCoupon(joined))        { await replyCoupons(sockNow, jid); return; }
-      if (wantsPromos(joined))        { await replyPromos(sockNow, jid); return; }
-      if (wantsSocial(joined))        { replySocial(sockNow, jid, joined); return; }
-      if (wantsSoap(joined))          { await replySoap(sockNow, jid); return; }
-
-      // Saudação (opcional)
-      let isNewTopicForAI = ctx.shouldGreet;
-      if (ctx.shouldGreet && GREET_TEXT) {
-        // envia saudação fixa apenas se configurada
-        markGreeted(jid); // marca antes para evitar repetição
-        enqueueText(sockNow, jid, GREET_TEXT);
-        isNewTopicForAI = false; // IA não precisa saudar de novo
-      }
-
-      // Fallback IA
-      const out = await askOpenAI({ prompt: joined, userName, isNewTopic: isNewTopicForAI });
-      if (out && out.trim()) {
-        enqueueText(sockNow, jid, out.trim());
-        if (ctx.shouldGreet && !GREET_TEXT) markGreeted(jid); // se só IA saudou, ainda assim marcar
-      }
-    });
-  } catch (e) {
-    console.error('[assistant] upsert error', e?.message || e);
-  }
-}
-
 // ───────────── Wire-up ─────────────
 function attachAssistant(appInstance) {
   if (!ASSISTANT_ENABLED) { console.log('[assistant] disabled (ASSISTANT_ENABLED!=1)'); return; }
   console.log('[assistant] enabled');
 
   const INTERVAL = 2500;
+  let wired = false;
 
   const getSock = () =>
     (appInstance?.waAdmin?.getSock && appInstance.waAdmin.getSock()) ||
     (appInstance?.whatsappClient?.sock);
 
-  const rewireIfNeeded = () => {
-    const sock = getSock();
-    if (!sock || !sock.ev || typeof sock.ev.on !== 'function') return;
-
-    // Se for o mesmo socket, não faz nada
-    if (CURRENT_SOCK === sock) return;
-
-    console.log('[assistant] new socket detected, wiring listeners...');
-
-    // messages.upsert
-    sock.ev.on('messages.upsert', (ev) => onMessagesUpsert(ev, getSock));
-
-    // Quando a conexão fechar/recuperar, invalida referência para rewire automático
-    sock.ev.on('connection.update', (u) => {
-      const st = u?.connection;
-      if (st === 'close' || st === 'connecting') {
-        CURRENT_SOCK = null;
-        console.log('[assistant] socket invalidated; will rewire when stable');
-      }
-    });
-
-    CURRENT_SOCK = sock;
-    console.log('[assistant] wired to sock');
-  };
-
   const tick = async () => {
-    try { rewireIfNeeded(); } catch (_) {}
+    try {
+      if (wired) return;
+      const sock = getSock();
+      if (!sock || !sock.ev || typeof sock.ev.on !== 'function') return;
+
+      sock.ev.on('messages.upsert', async (ev) => {
+        try {
+          if (!ev?.messages?.length) return;
+          const m = ev.messages[0];
+          const jid = m?.key?.remoteJid;
+          if (!jid || isFromMe(m) || isGroup(jid) || isStatus(jid)) return;
+
+          const text = extractText(m);
+          if (!text) return;
+
+          const userName = (m.pushName || '').trim();
+
+          pushIncoming(jid, text, async (batch, ctx) => {
+            const sockNow = getSock();
+            if (!sockNow) return;
+
+            const joined = batch.join(' ').trim();
+
+            // Intents rápidas
+            if (wantsThanks(joined))        { replyThanks(sockNow, jid); return; }
+            if (wantsCouponProblem(joined)) { replyCouponProblem(sockNow, jid); return; }
+            if (wantsOrderSupport(joined))  { replyOrderSupport(sockNow, jid); return; }
+            if (wantsRaffle(joined))        { replyRaffle(sockNow, jid); return; }
+            if (wantsCoupon(joined))        { await replyCoupons(sockNow, jid); return; }
+            if (wantsPromos(joined))        { await replyPromos(sockNow, jid); return; }
+            if (wantsSocial(joined))        { replySocial(sockNow, jid, joined); return; }
+            if (wantsSoap(joined))          { await replySoap(sockNow, jid); return; }
+
+            // Saudação (opcional)
+            let isNewTopicForAI = ctx.shouldGreet;
+            if (ctx.shouldGreet && GREET_TEXT) {
+              // envia saudação fixa apenas se configurada
+              markGreeted(jid); // marca antes para evitar repetição
+              enqueueText(sockNow, jid, GREET_TEXT);
+              isNewTopicForAI = false; // IA não precisa saudar de novo
+            }
+
+            // Fallback IA
+            const out = await askOpenAI({ prompt: joined, userName, isNewTopic: isNewTopicForAI });
+            if (out && out.trim()) {
+              enqueueText(sockNow, jid, out.trim());
+              if (ctx.shouldGreet && !GREET_TEXT) markGreeted(jid); // se só IA saudou, ainda assim marcar
+            }
+          });
+        } catch (e) {
+          console.error('[assistant] upsert error', e?.message || e);
+        }
+      });
+
+      wired = true;
+      console.log('[assistant] wired to sock');
+    } catch (_) {}
   };
 
   setInterval(tick, INTERVAL);
