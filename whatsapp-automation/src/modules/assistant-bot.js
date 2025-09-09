@@ -127,8 +127,8 @@ async function replyCoupons(sock, jid) {
   const header = 'No momento não consigo listar um código agora. Veja os cupons atuais aqui:';
   if (USE_BUTTONS) {
     const ok = await sendUrlButtons(sock, jid, `${header}\n${LINKS.cuponsSite}\n${nota}`, [
-      { index: 1, urlButton: { displayText: 'Ver cupons',      url: LINKS.cuponsSite   } },
-      { index: 2, urlButton: { displayText: 'Ver promoções',   url: LINKS.promosGerais } },
+      { index: 1, urlButton: { displayText: 'Ver cupons',    url: LINKS.cuponsSite   } },
+      { index: 2, urlButton: { displayText: 'Ver promoções', url: LINKS.promosGerais } },
     ]);
     if (ok) return true;
   }
@@ -141,8 +141,11 @@ async function replyPromos(sock, jid) {
   const header =
     'Ofertas do dia (consultoria ativa):\n' +
     `• Desconto progressivo ➡️ ${LINKS.promosProgressivo}\n` +
+    `  Observação: o desconto máximo (pode chegar a 50%) costuma exigir 3 a 4 produtos dentre 328 disponíveis e há frete grátis aplicando cupom.\n` +
     `• Produtos em promoção ➡️ ${LINKS.promosGerais}\n` +
-    `• Monte seu kit ➡️ ${LINKS.monteSeuKit}`;
+    `  Observação: 723 itens com até 70% OFF e frete grátis aplicando cupom.\n` +
+    `• Monte seu kit ➡️ ${LINKS.monteSeuKit}\n` +
+    `  Observação: comprando 4 itens (dentre 182), ganha 40% OFF e frete grátis.`;
 
   if (USE_BUTTONS) {
     const ok = await sendUrlButtons(sock, jid, header, [
@@ -150,6 +153,7 @@ async function replyPromos(sock, jid) {
       { index: 2, urlButton: { displayText: 'Desconto progressivo', url: LINKS.promosProgressivo } },
       { index: 3, urlButton: { displayText: 'Monte seu kit',        url: LINKS.monteSeuKit       } },
     ]);
+    // regra: sempre mostrar cupons junto
     await replyCoupons(sock, jid);
     if (ok) return;
   }
@@ -159,11 +163,7 @@ async function replyPromos(sock, jid) {
 }
 
 function replySoap(sock, jid) {
-  enqueueText(
-    sock,
-    jid,
-    `Sabonetes em promoção ➡️ ${LINKS.sabonetes}`
-  );
+  enqueueText(sock, jid, `Sabonetes em promoção ➡️ ${LINKS.sabonetes}`);
   return replyCoupons(sock, jid);
 }
 
@@ -232,6 +232,7 @@ async function askOpenAI({ prompt, userName, isNewTopic }) {
     'Regras de execução:',
     `- Nome do cliente: ${userName || '(desconhecido)'}`,
     `- isNewTopic=${isNewTopic ? 'true' : 'false'} (se true, pode se apresentar; se false, evite nova saudação)`,
+    '- Use SOMENTE os links listados nas seções 3/4/5/6/8, sempre com ?consultoria=clubemac. Se não houver link específico, não forneça link.',
     '- Nunca formate link como markdown/âncora. Exiba o texto exato do link.'
   ].join('\n');
 
@@ -321,16 +322,17 @@ function attachAssistant(appInstance) {
             // Saudação (opcional)
             let isNewTopicForAI = ctx.shouldGreet;
             if (ctx.shouldGreet && GREET_TEXT) {
+              // envia saudação fixa apenas se configurada
+              markGreeted(jid); // marca antes para evitar repetição
               enqueueText(sockNow, jid, GREET_TEXT);
-              markGreeted(jid);
-              isNewTopicForAI = false;
+              isNewTopicForAI = false; // IA não precisa saudar de novo
             }
 
             // Fallback IA
             const out = await askOpenAI({ prompt: joined, userName, isNewTopic: isNewTopicForAI });
             if (out && out.trim()) {
               enqueueText(sockNow, jid, out.trim());
-              if (ctx.shouldGreet && !GREET_TEXT) markGreeted(jid);
+              if (ctx.shouldGreet && !GREET_TEXT) markGreeted(jid); // se só IA saudou, ainda assim marcar
             }
           });
         } catch (e) {
