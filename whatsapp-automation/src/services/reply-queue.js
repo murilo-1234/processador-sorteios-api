@@ -1,6 +1,7 @@
 // src/services/reply-queue.js
 // Fila por JID com rate-limit leve, typing e split humanizado,
 // NUNCA dividindo links e priorizando quebra em fim de frase.
+// Também normaliza links Natura para evitar cortes “.com, \n br/...”.
 
 const REPLY_MAX_BURST       = Number(process.env.REPLY_MAX_BURST || 2);
 const REPLY_COOLDOWN_MS     = Number(process.env.REPLY_COOLDOWN_MS || 2000);
@@ -23,9 +24,23 @@ function _getQ(jid) {
   return q;
 }
 
+// ——— Normalização de links para evitar “https://www.natura.com,\nbr/...”
+function _normalizeLinks(t) {
+  let out = String(t || '');
+
+  // juntar “https://www.natura.com, \n br/...” -> “https://www.natura.com.br/...”
+  out = out.replace(/https:\/\/www\.natura\.com[,\s]*br\//gi, 'https://www.natura.com.br/');
+
+  // remover pontuação colada ao final do link (vírgula, ponto e ponto-e-vírgula)
+  out = out.replace(/(https?:\/\/[^\s,.;]+)[,.;]+/g, '$1');
+
+  return out;
+}
+
 // Nunca dividir links: se houver qualquer URL, manda tudo em um bloco.
 function _splitText(txt) {
-  const t = String(txt || '').trim();
+  const norm = _normalizeLinks(txt);
+  const t = String(norm || '').trim();
   if (!t) return [];
   if (URL_RE.test(t)) return [t];
 
@@ -38,12 +53,14 @@ function _splitText(txt) {
   let buf = '';
 
   for (const s of sent) {
-    const candidate = buf ? (buf + ' ' + s.trim()) : s.trim();
+    const piece = s.trim();
+    const candidate = buf ? (buf + ' ' + piece) : piece;
+
     if (candidate.length <= SPLIT_TARGET_CHARS || buf.length === 0) {
       buf = candidate;
     } else {
       out.push(buf.trim());
-      buf = s.trim();
+      buf = piece;
       if (out.length >= SPLIT_MAX_BLOCKS - 1) break;
     }
   }
