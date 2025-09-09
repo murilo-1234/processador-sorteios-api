@@ -280,76 +280,97 @@ function isGroup(jid)  { return String(jid || '').endsWith('@g.us'); }
 function isStatus(jid) { return String(jid || '') === 'status@broadcast'; }
 function isFromMe(msg) { return !!msg?.key?.fromMe; }
 
+// ===== Patch: rewire automático quando o socket do Baileys muda =====
+let CURRENT_SOCK = null;
+
+// Handler isolado (mesma lógica de antes) — chamado a cada messages.upsert
+async function onMessagesUpsert(ev, getSock) {
+  try {
+    if (!ev?.messages?.length) return;
+    const m = ev.messages[0];
+    const jid = m?.key?.remoteJid;
+    if (!jid || isFromMe(m) || isGroup(jid) || isStatus(jid)) return;
+
+    const text = extractText(m);
+    if (!text) return;
+
+    const userName = (m.pushName || '').trim();
+
+    pushIncoming(jid, text, async (batch, ctx) => {
+      const sockNow = getSock();
+      if (!sockNow) return;
+
+      const joined = batch.join(' ').trim();
+
+      // Intents rápidas
+      if (wantsThanks(joined))        { replyThanks(sockNow, jid); return; }
+      if (wantsCouponProblem(joined)) { replyCouponProblem(sockNow, jid); return; }
+      if (wantsOrderSupport(joined))  { replyOrderSupport(sockNow, jid); return; }
+      if (wantsRaffle(joined))        { replyRaffle(sockNow, jid); return; }
+      if (wantsCoupon(joined))        { await replyCoupons(sockNow, jid); return; }
+      if (wantsPromos(joined))        { await replyPromos(sockNow, jid); return; }
+      if (wantsSocial(joined))        { replySocial(sockNow, jid, joined); return; }
+      if (wantsSoap(joined))          { await replySoap(sockNow, jid); return; }
+
+      // Saudação (opcional)
+      let isNewTopicForAI = ctx.shouldGreet;
+      if (ctx.shouldGreet && GREET_TEXT) {
+        // envia saudação fixa apenas se configurada
+        markGreeted(jid); // marca antes para evitar repetição
+        enqueueText(sockNow, jid, GREET_TEXT);
+        isNewTopicForAI = false; // IA não precisa saudar de novo
+      }
+
+      // Fallback IA
+      const out = await askOpenAI({ prompt: joined, userName, isNewTopic: isNewTopicForAI });
+      if (out && out.trim()) {
+        enqueueText(sockNow, jid, out.trim());
+        if (ctx.shouldGreet && !GREET_TEXT) markGreeted(jid); // se só IA saudou, ainda assim marcar
+      }
+    });
+  } catch (e) {
+    console.error('[assistant] upsert error', e?.message || e);
+  }
+}
+
 // ───────────── Wire-up ─────────────
 function attachAssistant(appInstance) {
   if (!ASSISTANT_ENABLED) { console.log('[assistant] disabled (ASSISTANT_ENABLED!=1)'); return; }
   console.log('[assistant] enabled');
 
   const INTERVAL = 2500;
-  let wired = false;
 
   const getSock = () =>
     (appInstance?.waAdmin?.getSock && appInstance.waAdmin.getSock()) ||
     (appInstance?.whatsappClient?.sock);
 
+  const rewireIfNeeded = () => {
+    const sock = getSock();
+    if (!sock || !sock.ev || typeof sock.ev.on !== 'function') return;
+
+    // Se for o mesmo socket, não faz nada
+    if (CURRENT_SOCK === sock) return;
+
+    console.log('[assistant] new socket detected, wiring listeners...');
+
+    // messages.upsert
+    sock.ev.on('messages.upsert', (ev) => onMessagesUpsert(ev, getSock));
+
+    // Quando a conexão fechar/recuperar, invalida referência para rewire automático
+    sock.ev.on('connection.update', (u) => {
+      const st = u?.connection;
+      if (st === 'close' || st === 'connecting') {
+        CURRENT_SOCK = null;
+        console.log('[assistant] socket invalidated; will rewire when stable');
+      }
+    });
+
+    CURRENT_SOCK = sock;
+    console.log('[assistant] wired to sock');
+  };
+
   const tick = async () => {
-    try {
-      if (wired) return;
-      const sock = getSock();
-      if (!sock || !sock.ev || typeof sock.ev.on !== 'function') return;
-
-      sock.ev.on('messages.upsert', async (ev) => {
-        try {
-          if (!ev?.messages?.length) return;
-          const m = ev.messages[0];
-          const jid = m?.key?.remoteJid;
-          if (!jid || isFromMe(m) || isGroup(jid) || isStatus(jid)) return;
-
-          const text = extractText(m);
-          if (!text) return;
-
-          const userName = (m.pushName || '').trim();
-
-          pushIncoming(jid, text, async (batch, ctx) => {
-            const sockNow = getSock();
-            if (!sockNow) return;
-
-            const joined = batch.join(' ').trim();
-
-            // Intents rápidas
-            if (wantsThanks(joined))        { replyThanks(sockNow, jid); return; }
-            if (wantsCouponProblem(joined)) { replyCouponProblem(sockNow, jid); return; }
-            if (wantsOrderSupport(joined))  { replyOrderSupport(sockNow, jid); return; }
-            if (wantsRaffle(joined))        { replyRaffle(sockNow, jid); return; }
-            if (wantsCoupon(joined))        { await replyCoupons(sockNow, jid); return; }
-            if (wantsPromos(joined))        { await replyPromos(sockNow, jid); return; }
-            if (wantsSocial(joined))        { replySocial(sockNow, jid, joined); return; }
-            if (wantsSoap(joined))          { await replySoap(sockNow, jid); return; }
-
-            // Saudação (opcional)
-            let isNewTopicForAI = ctx.shouldGreet;
-            if (ctx.shouldGreet && GREET_TEXT) {
-              // envia saudação fixa apenas se configurada
-              markGreeted(jid); // marca antes para evitar repetição
-              enqueueText(sockNow, jid, GREET_TEXT);
-              isNewTopicForAI = false; // IA não precisa saudar de novo
-            }
-
-            // Fallback IA
-            const out = await askOpenAI({ prompt: joined, userName, isNewTopic: isNewTopicForAI });
-            if (out && out.trim()) {
-              enqueueText(sockNow, jid, out.trim());
-              if (ctx.shouldGreet && !GREET_TEXT) markGreeted(jid); // se só IA saudou, ainda assim marcar
-            }
-          });
-        } catch (e) {
-          console.error('[assistant] upsert error', e?.message || e);
-        }
-      });
-
-      wired = true;
-      console.log('[assistant] wired to sock');
-    } catch (_) {}
+    try { rewireIfNeeded(); } catch (_) {}
   };
 
   setInterval(tick, INTERVAL);
