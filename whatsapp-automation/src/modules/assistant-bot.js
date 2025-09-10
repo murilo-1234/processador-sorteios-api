@@ -38,6 +38,12 @@ try {
 } catch (_) {
   // módulo opcional (heurísticas pós-processamento)
 }
+let linkUtils = null;
+try {
+  linkUtils = require('../services/link-utils');
+} catch (_) {
+  // sanitização de links é opcional; se ausente, segue normal
+}
 
 const ASSISTANT_ENABLED = String(process.env.ASSISTANT_ENABLED || '0') === '1';
 const OPENAI_API_KEY    = process.env.OPENAI_API_KEY || '';
@@ -86,6 +92,20 @@ function loadSystemText() {
   return 'Você é o atendente virtual do Murilo Cerqueira (Natura). Siga as regras do arquivo assistant-system.txt. Não invente links; use apenas os oficiais com ?consultoria=clubemac.';
 }
 const SYSTEM_TEXT = loadSystemText();
+
+// ───────────── helpers de envio seguro ─────────────
+function sendSafe(sock, jid, text) {
+  let msg = String(text || '');
+  try {
+    if (linkUtils && typeof linkUtils.normalizeNaturaUrl === 'function') {
+      msg = linkUtils.normalizeNaturaUrl(msg);
+    }
+    if (linkUtils && typeof linkUtils.sanitizeOutgoing === 'function') {
+      msg = linkUtils.sanitizeOutgoing(msg);
+    }
+  } catch (_) {}
+  enqueueText(sock, jid, msg);
+}
 
 // ───────────── Intents antigas (mantidas para compat) ─────────────
 function wantsCoupon(text) {
@@ -162,9 +182,9 @@ async function replyCoupons(sock, jid) {
       ]);
       if (ok) return true;
     }
-    enqueueText(sock, jid, `${linha}\n${nota}`);
-    enqueueText(sock, jid, `Mais cupons: ${LINKS.cuponsSite}`);
-    enqueueText(sock, jid, promoLine);
+    sendSafe(sock, jid, `${linha}\n${nota}`);
+    sendSafe(sock, jid, `Mais cupons: ${LINKS.cuponsSite}`);
+    sendSafe(sock, jid, promoLine);
     return true;
   }
 
@@ -176,8 +196,8 @@ async function replyCoupons(sock, jid) {
     ]);
     if (ok) return true;
   }
-  enqueueText(sock, jid, `${header} ${LINKS.cuponsSite}\n${nota}`);
-  enqueueText(sock, jid, promoLine);
+  sendSafe(sock, jid, `${header} ${LINKS.cuponsSite}\n${nota}`);
+  sendSafe(sock, jid, promoLine);
   return true;
 }
 
@@ -200,17 +220,17 @@ async function replyPromos(sock, jid) {
     await replyCoupons(sock, jid);
     if (ok) return;
   }
-  enqueueText(sock, jid, header);
+  sendSafe(sock, jid, header);
   await replyCoupons(sock, jid);
 }
 
 function replySoap(sock, jid) {
-  enqueueText(sock, jid, `Sabonetes em promoção ➡️ ${LINKS.sabonetes}`);
+  sendSafe(sock, jid, `Sabonetes em promoção ➡️ ${LINKS.sabonetes}`);
   return replyCoupons(sock, jid);
 }
 
 function replyRaffle(sock, jid) {
-  enqueueText(
+  sendSafe(
     sock,
     jid,
     `Para participar do sorteio, envie **7** (apenas o número) em UMA ou MAIS redes:\n` +
@@ -221,15 +241,15 @@ function replyRaffle(sock, jid) {
   );
 }
 
-function replyThanks(sock, jid) { enqueueText(sock, jid, 'Por nada! ❤️ Conte comigo sempre!'); }
+function replyThanks(sock, jid) { sendSafe(sock, jid, 'Por nada! ❤️ Conte comigo sempre!'); }
 
 function replySocial(sock, jid, text) {
   const s = (text || '').toLowerCase();
-  if (/instagram|insta\b/.test(s)) return enqueueText(sock, jid, `Instagram ➡️ ${LINKS.insta}`);
-  if (/tiktok|tik[\s-]?tok/.test(s)) return enqueueText(sock, jid, `Tiktok ➡️ ${LINKS.tiktok}`);
-  if (/grupo/.test(s))               return enqueueText(sock, jid, `Grupo de Whatsapp ➡️ ${LINKS.grupoMurilo}`);
-  if (/whatsapp|zap/.test(s))        return enqueueText(sock, jid, `Whatsapp ➡️ ${LINKS.whatsMurilo}`);
-  enqueueText(sock, jid,
+  if (/instagram|insta\b/.test(s)) return sendSafe(sock, jid, `Instagram ➡️ ${LINKS.insta}`);
+  if (/tiktok|tik[\s-]?tok/.test(s)) return sendSafe(sock, jid, `Tiktok ➡️ ${LINKS.tiktok}`);
+  if (/grupo/.test(s))               return sendSafe(sock, jid, `Grupo de Whatsapp ➡️ ${LINKS.grupoMurilo}`);
+  if (/whatsapp|zap/.test(s))        return sendSafe(sock, jid, `Whatsapp ➡️ ${LINKS.whatsMurilo}`);
+  sendSafe(sock, jid,
     `Minhas redes:\n` +
     `Instagram ➡️ ${LINKS.insta}\n` +
     `Tiktok ➡️ ${LINKS.tiktok}\n` +
@@ -239,7 +259,7 @@ function replySocial(sock, jid, text) {
 }
 
 function replyCouponProblem(sock, jid) {
-  enqueueText(
+  sendSafe(
     sock,
     jid,
     `O cupom só funciona no meu Espaço Natura. Na tela de pagamento, procure por *Murilo Cerqueira* ou, em "Minha Conta", escolha seu consultor.\n` +
@@ -250,7 +270,7 @@ function replyCouponProblem(sock, jid) {
 }
 
 function replyOrderSupport(sock, jid) {
-  enqueueText(
+  sendSafe(
     sock,
     jid,
     `Pagamentos, nota fiscal, pedido e entrega são tratados pelo suporte oficial da Natura:\n` +
@@ -261,7 +281,7 @@ function replyOrderSupport(sock, jid) {
 }
 
 async function replyBrand(sock, jid, brandName) {
-  enqueueText(
+  sendSafe(
     sock,
     jid,
     `Posso te ajudar com a linha *${brandName}* 😊\n` +
@@ -270,6 +290,17 @@ async function replyBrand(sock, jid, brandName) {
   );
   // 🔧 garante venda: sempre anexar cupons depois de marca
   await replyCoupons(sock, jid);
+}
+
+// 🔧 MENU padrão quando não entender
+function replyHelpMenu(sock, jid) {
+  const txt =
+    'Posso te ajudar com:\n' +
+    `• Suporte oficial (pedidos/entrega): https://www.natura.com.br/ajuda-e-contato\n` +
+    `• Promoções do dia: ${LINKS.promosGerais}\n` +
+    `• Cupons atuais: ${LINKS.cuponsSite}\n` +
+    `• Sorteio: envie o número 7 🙂`;
+  sendSafe(sock, jid, txt);
 }
 
 // ───────────── OpenAI (fallback) ─────────────
@@ -368,7 +399,7 @@ function buildUpsertHandler(getSock) {
         const intent = detectIntent ? detectIntent(joined) : { type: null, data: null };
 
         // 0) segurança primeiro
-        if (intent.type === 'security') { enqueueText(sockNow, jid, securityReply()); return; }
+        if (intent.type === 'security') { sendSafe(sockNow, jid, securityReply()); return; }
 
         // 1) Intents rápidas já existentes
         if (intent.type === 'thanks' || wantsThanks(joined))                 { replyThanks(sockNow, jid); return; }
@@ -389,19 +420,19 @@ function buildUpsertHandler(getSock) {
           const safeName = (nameUtils.pickDisplayName && nameUtils.pickDisplayName(rawName)) || rawName || '';
           const greetMsg = nameUtils.buildGreeting(safeName);
           markGreeted(jid);
-          enqueueText(sockNow, jid, greetMsg);
+          sendSafe(sockNow, jid, greetMsg);
           isNewTopicForAI = false; // evita a IA saudar de novo
         } else if (ctx.shouldGreet && GREET_TEXT) {
           // Saudação fixa (já existente)
           markGreeted(jid);
-          enqueueText(sockNow, jid, GREET_TEXT);
+          sendSafe(sockNow, jid, GREET_TEXT);
           isNewTopicForAI = false;
         }
 
         // Fallback IA
         const out = await askOpenAI({ prompt: joined, userName: rawName, isNewTopic: isNewTopicForAI });
         if (out && out.trim()) {
-          enqueueText(sockNow, jid, out.trim());
+          sendSafe(sockNow, jid, out.trim());
           if (ctx.shouldGreet && !GREET_TEXT && !(RULE_GREETING_ON && nameUtils)) {
             // se a saudação ficou a cargo da IA, ainda marcamos
             markGreeted(jid);
@@ -415,6 +446,9 @@ function buildUpsertHandler(getSock) {
           if (shouldAppend) {
             await replyPromos(sockNow, jid); // replyPromos já chama replyCoupons no final
           }
+        } else {
+          // Se a IA não respondeu (ou vazio), não deixa o cliente sem saída
+          replyHelpMenu(sockNow, jid);
         }
       });
     } catch (e) {
