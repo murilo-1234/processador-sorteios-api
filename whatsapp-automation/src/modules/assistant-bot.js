@@ -2,6 +2,12 @@
 // Liga entrada (mensagens 1:1) -> coalesce/greet ->
 // intents (cupons/promos/sorteio/agradecimento/redes/sabonetes/suporte)
 // -> OpenAI -> reply-queue
+//
+// Compat: mantém a mesma API (attachAssistant).
+// Novidade: rewire automático por referência de socket + watchdog.
+// Flags:
+//   - ASSISTANT_REWIRE_MODE = "auto" (padrão) | "legacy"
+//   - ASSISTANT_REWIRE_INTERVAL_MS = intervalo do watchdog em ms (padrão 15000)
 
 const fs = require('fs');
 const axios = require('axios');
@@ -16,6 +22,10 @@ const ASSISTANT_TEMP    = Number(process.env.ASSISTANT_TEMPERATURE || 0.6);
 
 // Saudação fixa OPCIONAL (deixe vazia para IA variar)
 const GREET_TEXT = (process.env.ASSISTANT_GREET_TEXT || '').trim();
+
+// Rewire/Watchdog
+const REWIRE_MODE = String(process.env.ASSISTANT_REWIRE_MODE || 'auto').toLowerCase();
+const REWIRE_INTERVAL_MS = Math.max(5000, Number(process.env.ASSISTANT_REWIRE_INTERVAL_MS || 15000) | 0);
 
 // Links oficiais (sempre com consultoria=clubemac)
 const LINKS = {
@@ -273,79 +283,158 @@ function isGroup(jid)  { return String(jid || '').endsWith('@g.us'); }
 function isStatus(jid) { return String(jid || '') === 'status@broadcast'; }
 function isFromMe(msg) { return !!msg?.key?.fromMe; }
 
-// ───────────── Wire-up ─────────────
+// ───────────── Core handler (messages.upsert) ─────────────
+function buildUpsertHandler(getSock) {
+  return async (ev) => {
+    try {
+      if (!ev?.messages?.length) return;
+      const m = ev.messages[0];
+      const jid = m?.key?.remoteJid;
+      if (!jid || isFromMe(m) || isGroup(jid) || isStatus(jid)) return;
+
+      const text = extractText(m);
+      if (!text) return;
+
+      // Nome exibido pelo WhatsApp; a IA usa quando aplicável
+      const rawName = (m.pushName || '').trim();
+
+      pushIncoming(jid, text, async (batch, ctx) => {
+        const sockNow = getSock();
+        if (!sockNow) return;
+
+        const joined = batch.join(' ').trim();
+
+        // Intents rápidas
+        if (wantsThanks(joined))        { replyThanks(sockNow, jid); return; }
+        if (wantsCouponProblem(joined)) { replyCouponProblem(sockNow, jid); return; }
+        if (wantsOrderSupport(joined))  { replyOrderSupport(sockNow, jid); return; }
+        if (wantsRaffle(joined))        { replyRaffle(sockNow, jid); return; }
+        if (wantsCoupon(joined))        { await replyCoupons(sockNow, jid); return; }
+        if (wantsPromos(joined))        { await replyPromos(sockNow, jid); return; }
+        if (wantsSocial(joined))        { replySocial(sockNow, jid, joined); return; }
+        if (wantsSoap(joined))          { await replySoap(sockNow, jid); return; }
+
+        // Saudação (opcional)
+        let isNewTopicForAI = ctx.shouldGreet;
+        if (ctx.shouldGreet && GREET_TEXT) {
+          // envia saudação fixa apenas se configurada
+          markGreeted(jid); // marca antes para evitar repetição
+          enqueueText(sockNow, jid, GREET_TEXT);
+          isNewTopicForAI = false; // IA não precisa saudar de novo
+        }
+
+        // Fallback IA
+        const out = await askOpenAI({ prompt: joined, userName: rawName, isNewTopic: isNewTopicForAI });
+        if (out && out.trim()) {
+          enqueueText(sockNow, jid, out.trim());
+          if (ctx.shouldGreet && !GREET_TEXT) markGreeted(jid); // se só IA saudou, ainda assim marcar
+        }
+      });
+    } catch (e) {
+      console.error('[assistant] upsert error', e?.message || e);
+    }
+  };
+}
+
+// ───────────── Wire-up (com rewire por referência) ─────────────
 function attachAssistant(appInstance) {
   if (!ASSISTANT_ENABLED) { console.log('[assistant] disabled (ASSISTANT_ENABLED!=1)'); return; }
-  console.log('[assistant] enabled');
+  console.log('[assistant] enabled (rewire:', REWIRE_MODE, ', interval:', REWIRE_INTERVAL_MS, ')');
 
-  const INTERVAL = 2500;
-  let wired = false;
-
+  // Pega o socket atual do app
   const getSock = () =>
     (appInstance?.waAdmin?.getSock && appInstance.waAdmin.getSock()) ||
     (appInstance?.whatsappClient?.sock);
 
-  const tick = async () => {
+  // Estado de wire
+  let currentSocketRef = null;
+  let upsertHandler = null;
+  let connHandler = null;
+
+  const offSafe = (sock, event, handler) => {
     try {
-      if (wired) return;
-      const sock = getSock();
-      if (!sock || !sock.ev || typeof sock.ev.on !== 'function') return;
-
-      sock.ev.on('messages.upsert', async (ev) => {
-        try {
-          if (!ev?.messages?.length) return;
-          const m = ev.messages[0];
-          const jid = m?.key?.remoteJid;
-          if (!jid || isFromMe(m) || isGroup(jid) || isStatus(jid)) return;
-
-          const text = extractText(m);
-          if (!text) return;
-
-          const userName = (m.pushName || '').trim();
-
-          pushIncoming(jid, text, async (batch, ctx) => {
-            const sockNow = getSock();
-            if (!sockNow) return;
-
-            const joined = batch.join(' ').trim();
-
-            // Intents rápidas
-            if (wantsThanks(joined))        { replyThanks(sockNow, jid); return; }
-            if (wantsCouponProblem(joined)) { replyCouponProblem(sockNow, jid); return; }
-            if (wantsOrderSupport(joined))  { replyOrderSupport(sockNow, jid); return; }
-            if (wantsRaffle(joined))        { replyRaffle(sockNow, jid); return; }
-            if (wantsCoupon(joined))        { await replyCoupons(sockNow, jid); return; }
-            if (wantsPromos(joined))        { await replyPromos(sockNow, jid); return; }
-            if (wantsSocial(joined))        { replySocial(sockNow, jid, joined); return; }
-            if (wantsSoap(joined))          { await replySoap(sockNow, jid); return; }
-
-            // Saudação (opcional)
-            let isNewTopicForAI = ctx.shouldGreet;
-            if (ctx.shouldGreet && GREET_TEXT) {
-              // envia saudação fixa apenas se configurada
-              markGreeted(jid); // marca antes para evitar repetição
-              enqueueText(sockNow, jid, GREET_TEXT);
-              isNewTopicForAI = false; // IA não precisa saudar de novo
-            }
-
-            // Fallback IA
-            const out = await askOpenAI({ prompt: joined, userName, isNewTopic: isNewTopicForAI });
-            if (out && out.trim()) {
-              enqueueText(sockNow, jid, out.trim());
-              if (ctx.shouldGreet && !GREET_TEXT) markGreeted(jid); // se só IA saudou, ainda assim marcar
-            }
-          });
-        } catch (e) {
-          console.error('[assistant] upsert error', e?.message || e);
-        }
-      });
-
-      wired = true;
-      console.log('[assistant] wired to sock');
+      if (!sock?.ev || !handler) return;
+      if (typeof sock.ev.off === 'function') sock.ev.off(event, handler);
+      else if (typeof sock.ev.removeListener === 'function') sock.ev.removeListener(event, handler);
     } catch (_) {}
   };
 
-  setInterval(tick, INTERVAL);
+  // Liga handlers no socket indicado
+  const wireToSock = (sock) => {
+    if (!sock || !sock.ev || typeof sock.ev.on !== 'function') return false;
+
+    // Se já estamos neste socket, apenas garanta handlers
+    if (currentSocketRef === sock && upsertHandler) return true;
+
+    // Desliga do anterior
+    if (currentSocketRef) {
+      offSafe(currentSocketRef, 'messages.upsert', upsertHandler);
+      offSafe(currentSocketRef, 'connection.update', connHandler);
+    }
+
+    // Cria handlers novos vinculados ao getSock
+    upsertHandler = buildUpsertHandler(getSock);
+    connHandler = (ev) => {
+      // Quando a conexão abrir, garanta wire no socket atual
+      if (ev?.connection === 'open') {
+        // pequeno delay para garantir user carregado
+        setTimeout(() => ensureWired(), 200);
+      }
+    };
+
+    // Liga
+    sock.ev.on('messages.upsert', upsertHandler);
+    if (typeof sock.ev.on === 'function') {
+      sock.ev.on('connection.update', connHandler);
+    }
+
+    currentSocketRef = sock;
+
+    // Identificação do socket para log
+    const sid =
+      (sock?.user && (sock.user.id || sock.user.jid)) ||
+      (sock?.authState && sock.authState.creds?.me?.id) ||
+      'unknown-sock';
+    console.log('[assistant] wired to sock', sid);
+
+    return true;
+  };
+
+  // Garante que estamos ligados ao socket atual (ou religa se mudou)
+  const ensureWired = () => {
+    const sock = getSock();
+    if (!sock) return false;
+    if (sock !== currentSocketRef) {
+      return wireToSock(sock);
+    }
+
+    // Sanidade: se por algum motivo o handler sumiu, religar
+    try {
+      const hasOn = !!sock?.ev && typeof sock.ev.on === 'function';
+      const needRewire = !hasOn || !upsertHandler;
+      if (needRewire) return wireToSock(sock);
+    } catch (_) {}
+    return true;
+  };
+
+  // Modo "auto": rewire instantâneo + watchdog
+  if (REWIRE_MODE === 'auto') {
+    // tenta ligar imediatamente
+    ensureWired();
+    // watchdog leve de auto-cura
+    setInterval(() => {
+      try { ensureWired(); } catch (_) {}
+    }, REWIRE_INTERVAL_MS);
+  } else {
+    // Modo "legacy": tenta ligar uma vez e não força rewire
+    const tryOnce = () => {
+      const sock = getSock();
+      if (sock) wireToSock(sock);
+    };
+    tryOnce();
+    // ainda assim, mantemos um ping leve (bem espaçado) só para ligar após boot
+    setTimeout(tryOnce, 2000);
+  }
 }
 
 module.exports = { attachAssistant };
