@@ -1,0 +1,18 @@
+{
+  "brands": [
+    { "name": "Mamãe e Bebê", "syn": ["mamae e bebe", "mamae bebe", "mamãe bebe", "mame e bebe", "mmb", "mamãe & bebê"] },
+    { "name": "Tododia", "syn": ["todo dia", "to dodi a", "todia"] },
+    { "name": "Ekos", "syn": ["ecos", "ekoz"] },
+    { "name": "Kaiak", "syn": ["kayak", "kaiack", "caiak", "cayak", "kaiak pulso", "pulso"] },
+    { "name": "Humor", "syn": ["humoor", "humr"] },
+    { "name": "Luna", "syn": ["lunna"] },
+    { "name": "Essencial", "syn": ["esencial", "essenciais"] },
+    { "name": "Cronos", "syn": ["cronos", "crônios", "chronos", "cronos skincare"] },
+    { "name": "Faces", "syn": ["face", "faaces"] },
+    { "name": "Una", "syn": ["unna"] },
+    { "name": "Erva Doce", "syn": ["erva doce", "ervadoce"] },
+    { "name": "Souve", "syn": ["sove", "sou vi", "sou"] },
+    { "name": "Biografia", "syn": ["bio grafia", "biographia"] },
+    { "name": "Ilía", "syn": ["ilia", "ilia se"] }
+  ]
+}
