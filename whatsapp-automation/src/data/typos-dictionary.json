@@ -1,0 +1,12 @@
+{
+  "coupon": ["cupom","cupons","cupon","cupao","cupum","coupon","kupon","cumpom","copom"],
+  "promos": ["promocao","promocoes","promo","promos","oferta","ofertas","desconto","descontos","liquidacao","sale","ofertinhas"],
+  "order_support": [
+    "pedido","compra","encomenda","pacote","entrega","nota fiscal","pagamento","boleto",
+    "rastreio","codigo de rastreio","transportadora","nao recebi","atrasou","cade meu","onde esta","nao chegou","sumiu"
+  ],
+  "soap": ["sabonete","sabonetes","sabonete barra","sabonete líquido","sabonete liquido"],
+  "social": ["instagram","insta","tiktok","tik tok","whatsapp","zap","grupo","whats"],
+  "security": ["golpe","fraude","scam","phishing","link suspeito","link duvidoso","pix errado","pix indevido","cobranca estranha","cobranca indevida","ligacao","live","dinheiro"],
+  "raffle": ["sorteio","quero participar do sorteio","entrar no sorteio","como participo do sorteio","7","sete"]
+}
