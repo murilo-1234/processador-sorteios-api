@@ -88,15 +88,15 @@ function detectIntent(rawText = '') {
 
   // 7) cupom/cupon/cupao/kupon (fuzzy leve) — sem confundir "cpom" (CPOM)
   if (!/\bcpom\b/i.test(norm)) {
-    const couponTokens = words('coupon', ['cupom','cupons','cupon','cupao','cupum','coupon','kupon','cumpom']);
+    const couponTokens = words('coupon', ['cupom','cupons','cupon','cupao','cupum','coupon','kupon','cumpom','copom','coupom','coupoin']);
     if (anyWord(norm, couponTokens) || fuzzyIncludes(norm.trim(), couponTokens, 2)) {
       return { type: 'coupon' };
     }
   }
 
-  // 8) sabonete(s)
+  // 8) sabonete(s) — aceita typos comuns
   const soapTokens = words('soap', ['sabonete','sabonetes']);
-  if (anyWord(norm, soapTokens)) {
+  if (anyWord(norm, soapTokens) || fuzzyIncludes(norm.trim(), ['sabonte','sabontes','sabones','sabone','sabonets'], 2)) {
     return { type: 'soap' };
   }
 
