@@ -31,9 +31,6 @@ function _normalizeLinks(t) {
   // juntar “https://www.natura.com, \n br/” -> “https://www.natura.com.br/...”
   out = out.replace(/https:\/\/www\.natura\.com[,\s]*br\//gi, 'https://www.natura.com.br/');
 
-  // corrigir “wwwnatura.com.br” (sem ponto após www)
-  out = out.replace(/https?:\/\/wwwnatura\.com\.br/gi, 'https://www.natura.com.br');
-
   // corrigir “wwwnatura.com.br” (faltou o ponto)
   out = out.replace(/https?:\/\/wwwnatura\.com\.br/gi, 'https://www.natura.com.br');
 
