@@ -32,6 +32,12 @@ try {
 } catch (_) {
   // módulo pode não existir ainda — seguimos com o comportamento atual
 }
+let heuristics = null;
+try {
+  heuristics = require('../services/heuristics');
+} catch (_) {
+  // módulo opcional (heurísticas pós-processamento)
+}
 
 const ASSISTANT_ENABLED = String(process.env.ASSISTANT_ENABLED || '0') === '1';
 const OPENAI_API_KEY    = process.env.OPENAI_API_KEY || '';
@@ -54,7 +60,8 @@ const LINKS = {
   promosGerais:      'https://www.natura.com.br/c/promocoes?consultoria=clubemac',
   monteSeuKit:       'https://www.natura.com.br/c/monte-seu-kit?consultoria=clubemac',
   sabonetes:         'https://www.natura.com.br/c/corpo-e-banho-sabonete-barra?consultoria=clubemac',
-  cuponsSite:        'https://clubemac.com.br/cupons',
+  // 🔧 corrigido: link público de "Mais cupons"
+  cuponsSite:        'https://bit.ly/cupons-murilo',
   sorteioWhats:      'https://wa.me/5548991021707',
   sorteioInsta:      'https://ig.me/m/murilo_cerqueira_consultoria',
   sorteioMsg:        'http://m.me/murilocerqueiraconsultor',
@@ -83,14 +90,18 @@ const SYSTEM_TEXT = loadSystemText();
 // ───────────── Intents antigas (mantidas para compat) ─────────────
 function wantsCoupon(text) {
   const s = String(text || '').toLowerCase();
-  return /\bcupom\b|\bcupons\b/.test(s);
+  // cobre typos comuns
+  return /\b(cupom|cupon|cupum|cupao|coupon|kupon)s?\b/.test(s);
 }
 function wantsPromos(text) {
   const s = String(text || '').toLowerCase();
-  return /(promo(ç|c)[aã]o|promo\b|oferta|desconto|liquid(a|ã)o|sale)/i.test(s);
+  return /(promo(ç|c)[aã]o|promos?\b|oferta|desconto|liquid(a|ã)c?[aã]o|sale)/i.test(s);
 }
 function wantsRaffle(text) {
-  const s = String(text || '').toLowerCase();
+  const s = String(text || '').toLowerCase().trim();
+  // tolera "7", "7!", "7.", " sete ", "quero participar do sorteio"
+  if (/^7[!,.…]*$/.test(s)) return true;
+  if (/\bsete\b/.test(s)) return true;
   return /(sorteio|participar.*sorteio|quero.*sorteio|ganhar.*sorteio|\benviar\b.*\b7\b|\bmandar\b.*\b7\b)/i.test(s);
 }
 function wantsThanks(text) {
@@ -111,7 +122,14 @@ function wantsCouponProblem(text) {
 }
 function wantsOrderSupport(text) {
   const s = String(text || '').toLowerCase();
-  return /(pedido|entrega|nota fiscal|pagamento|boleto).*(problema|atras|n[aã]o chegou|erro)/i.test(s);
+  // amplia cobertura sem exigir a palavra "pedido"
+  return /(pedido|compra|encomenda|pacote|entrega|nota fiscal|pagamento|boleto).*(problema|atras|n[aã]o chegou|nao recebi|erro|sumiu|cad[eê])|rastre(i|ei)o|codigo de rastreio|transportadora/.test(s);
+}
+
+// Heurística leve para saber se a conversa é sobre PRODUTO/CATEGORIA (para anexar promo+cupons no fallback IA)
+function wantsProductTopic(text) {
+  const s = String(text || '').toLowerCase();
+  return /(perfume|perfumaria|hidratante|hidratantes|desodorante|maquiagem|batom|base|rosto|s[ée]rum|sabonete|cabelos?|shampoo|condicionador|mascara|cronograma|barba|infantil|presente|kit|aura|ekos|kaiak|essencial|luna|tododia|mam[aã]e e beb[êe]|una|faces|chronos|lumina|biome|bothanica)/i.test(s);
 }
 
 // === Botões de URL (opcional) ===
@@ -175,7 +193,7 @@ async function replyPromos(sock, jid) {
 
   if (USE_BUTTONS) {
     const ok = await sendUrlButtons(sock, jid, header, [
-      { index: 1, urlButton: { displayText: 'Ver promoções',       url: LINKS.promosGerais      } },
+      { index: 1, urlButton: { displayText: 'Ver promoções',        url: LINKS.promosGerais      } },
       { index: 2, urlButton: { displayText: 'Desconto progressivo', url: LINKS.promosProgressivo } },
       { index: 3, urlButton: { displayText: 'Monte seu kit',        url: LINKS.monteSeuKit       } },
     ]);
@@ -242,7 +260,7 @@ function replyOrderSupport(sock, jid) {
   );
 }
 
-function replyBrand(sock, jid, brandName) {
+async function replyBrand(sock, jid, brandName) {
   enqueueText(
     sock,
     jid,
@@ -250,11 +268,13 @@ function replyBrand(sock, jid, brandName) {
     `Você pode conferir os itens em promoção aqui: ${LINKS.promosGerais}\n` +
     `Se quiser, me diga qual produto da linha que você procura.`
   );
+  // 🔧 garante venda: sempre anexar cupons depois de marca
+  await replyCoupons(sock, jid);
 }
 
 // ───────────── OpenAI (fallback) ─────────────
 async function askOpenAI({ prompt, userName, isNewTopic }) {
-  const fallback = 'Estou online! Se quiser, posso buscar promoções, cupons ou tirar dúvidas rápidas. 🙂';
+  const fallback = 'Estou online! Se quiser, posso buscar promoções, cupons ou tirar dúvidas rápidas. 🙂✨';
   if (!OPENAI_API_KEY) return fallback;
 
   const rules = [
@@ -264,7 +284,9 @@ async function askOpenAI({ prompt, userName, isNewTopic }) {
     `- Nome do cliente: ${userName || '(desconhecido)'}`,
     `- isNewTopic=${isNewTopic ? 'true' : 'false'} (se true, pode se apresentar; se false, evite nova saudação)`,
     '- Use SOMENTE os links listados nas seções 3/4/5/6/8, sempre com ?consultoria=clubemac. Se não houver link específico, não forneça link.',
-    '- Nunca formate link como markdown/âncora. Exiba o texto exato do link.'
+    '- Nunca formate link como markdown/âncora. Exiba o texto exato do link.',
+    '- Inclua 2–3 emojis por resposta (sem exagero).',
+    '- Se a pergunta for ambígua ou envolver produto/foto, SEMPRE finalize com o bloco de promoções + cupons.'
   ].join('\n');
 
   const messages = [
@@ -300,6 +322,13 @@ function extractText(msg) {
   } catch (_) {}
   return '';
 }
+function hasMedia(msg) {
+  try {
+    const m0 = msg?.message || {};
+    const m = m0.ephemeralMessage?.message || m0;
+    return !!(m.imageMessage || m.videoMessage || m.documentMessage || m.audioMessage || m.stickerMessage);
+  } catch (_) { return false; }
+}
 function isGroup(jid)  { return String(jid || '').endsWith('@g.us'); }
 function isStatus(jid) { return String(jid || '') === 'status@broadcast'; }
 function isFromMe(msg) { return !!msg?.key?.fromMe; }
@@ -327,6 +356,7 @@ function buildUpsertHandler(getSock) {
       if (!text || !text.trim()) return;
 
       const rawName = (m.pushName || '').trim();
+      const hadMedia = hasMedia(m);
 
       pushIncoming(jid, text, async (batch, ctx) => {
         const sockNow = getSock();
@@ -349,7 +379,7 @@ function buildUpsertHandler(getSock) {
         if (intent.type === 'promos'         || wantsPromos(joined))         { await replyPromos(sockNow, jid); return; }
         if (intent.type === 'social'         || wantsSocial(joined))         { replySocial(sockNow, jid, joined); return; }
         if (intent.type === 'soap'           || wantsSoap(joined))           { await replySoap(sockNow, jid); return; }
-        if (intent.type === 'brand')                                           { replyBrand(sockNow, jid, intent.data.name); return; }
+        if (intent.type === 'brand')                                           { await replyBrand(sockNow, jid, intent.data.name); return; }
 
         // Saudação (opcional)
         let isNewTopicForAI = ctx.shouldGreet;
@@ -375,6 +405,15 @@ function buildUpsertHandler(getSock) {
           if (ctx.shouldGreet && !GREET_TEXT && !(RULE_GREETING_ON && nameUtils)) {
             // se a saudação ficou a cargo da IA, ainda marcamos
             markGreeted(jid);
+          }
+
+          // 🔧 Heurística "nunca sair seco": se é conversa de produto/ambígua ou veio mídia, anexar promo+cupons
+          let shouldAppend = hadMedia || wantsProductTopic(joined);
+          if (!shouldAppend && heuristics && typeof heuristics.decideAppendPromoAndCoupons === 'function') {
+            try { shouldAppend = heuristics.decideAppendPromoAndCoupons({ userText: joined, hadMedia }); } catch (_) {}
+          }
+          if (shouldAppend) {
+            await replyPromos(sockNow, jid); // replyPromos já chama replyCoupons no final
           }
         }
       });
