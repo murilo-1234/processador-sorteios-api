@@ -720,6 +720,17 @@ class App {
       }, 30_000)
     }
 
+    // === (NOVO) Socket Watcher: detecta troca de socket e reanexa listeners ===
+    try {
+      const wantWatcher = envOn(process.env.WA_SOCKET_WATCHER, true) // ON por padrão
+      if (wantWatcher) {
+        const { startSocketWatcher } = require('./services/socket-watcher')
+        startSocketWatcher(this)
+      }
+    } catch (e) {
+      console.warn('[socket-watcher] não iniciado:', e?.message || e)
+    }
+
     // Cron: só roda se houver sessão conectada
     cron.schedule('*/1 * * * *', async () => {
       try {
