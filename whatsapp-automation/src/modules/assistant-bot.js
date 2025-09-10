@@ -1,6 +1,6 @@
 // src/modules/assistant-bot.js
 // Liga entrada (mensagens 1:1) -> coalesce/greet ->
-// intents (cupons/promos/sorteio/agradecimento/redes/sabonetes/suporte)
+// intents (cupons/promos/sorteio/agradecimento/redes/sabonetes/suporte/segurança/marcas)
 // -> OpenAI -> reply-queue
 //
 // Compat: mantém a mesma API (attachAssistant).
@@ -15,6 +15,24 @@ const { pushIncoming, markGreeted } = require('../services/inbox-state');
 const { enqueueText } = require('../services/reply-queue');
 const { fetchTopCoupons } = require('../services/coupons');
 
+// ⚠️ utilitários já existentes no seu repo
+const { detectIntent } = require('../services/intent-registry');
+const { securityReply } = require('../services/security');
+
+// ⚠️ utilitários novos (opt-in, sem quebrar nada se ausentes)
+let transcribeAudioIfAny = null;
+try {
+  ({ transcribeAudioIfAny } = require('../services/audio-transcriber'));
+} catch (_) {
+  // módulo pode não existir ainda — tudo continua funcionando sem áudio
+}
+let nameUtils = null;
+try {
+  nameUtils = require('../services/name-utils');
+} catch (_) {
+  // módulo pode não existir ainda — seguimos com o comportamento atual
+}
+
 const ASSISTANT_ENABLED = String(process.env.ASSISTANT_ENABLED || '0') === '1';
 const OPENAI_API_KEY    = process.env.OPENAI_API_KEY || '';
 const OPENAI_MODEL      = process.env.OPENAI_MODEL || 'gpt-4o';
@@ -22,6 +40,9 @@ const ASSISTANT_TEMP    = Number(process.env.ASSISTANT_TEMPERATURE || 0.6);
 
 // Saudação fixa OPCIONAL (deixe vazia para IA variar)
 const GREET_TEXT = (process.env.ASSISTANT_GREET_TEXT || '').trim();
+
+// Saudação por regra (determinística) — NOVO (opt-in)
+const RULE_GREETING_ON = String(process.env.ASSISTANT_RULE_GREETING || '0') === '1';
 
 // Rewire/Watchdog
 const REWIRE_MODE = String(process.env.ASSISTANT_REWIRE_MODE || 'auto').toLowerCase();
@@ -55,11 +76,11 @@ function loadSystemText() {
   } catch (_) {}
   const envTxt = (process.env.ASSISTANT_SYSTEM || '').trim();
   if (envTxt) return envTxt;
-  return 'Você é o atendente virtual do Murilo (Natura). Siga as regras do arquivo assistant-system.txt. Não invente links; use apenas os oficiais com ?consultoria=clubemac.';
+  return 'Você é o atendente virtual do Murilo Cerqueira (Natura). Siga as regras do arquivo assistant-system.txt. Não invente links; use apenas os oficiais com ?consultoria=clubemac.';
 }
 const SYSTEM_TEXT = loadSystemText();
 
-// ───────────── Intents ─────────────
+// ───────────── Intents antigas (mantidas para compat) ─────────────
 function wantsCoupon(text) {
   const s = String(text || '').toLowerCase();
   return /\bcupom\b|\bcupons\b/.test(s);
@@ -107,18 +128,15 @@ async function sendUrlButtons(sock, jid, headerText, buttons, footer = 'Murilo �
 
 // ───────────── Respostas baseadas em regras ─────────────
 async function replyCoupons(sock, jid) {
-  // 1) tenta pegar cupons dinâmicos
   let list = [];
   try { list = await fetchTopCoupons(2); } catch (_) {}
 
-  // 2) sempre avisar regra do Espaço Natura + link de promoções junto
   const nota = 'Obs.: os cupons só funcionam no meu Espaço Natura — na tela de pagamento, procure por "Murilo Cerqueira".';
   const promoLine = `Promoções do dia: ${LINKS.promosGerais}`;
 
   if (Array.isArray(list) && list.length) {
     const c1 = list[0], c2 = list[1];
     const linha = c2 ? `Tenho dois cupons agora: *${c1}* ou *${c2}* 😉` : `Tenho um cupom agora: *${c1}* 😉`;
-
     if (USE_BUTTONS) {
       const ok = await sendUrlButtons(sock, jid, `${linha}\n${nota}`, [
         { index: 1, urlButton: { displayText: 'Ver promoções', url: LINKS.promosGerais } },
@@ -126,14 +144,12 @@ async function replyCoupons(sock, jid) {
       ]);
       if (ok) return true;
     }
-
     enqueueText(sock, jid, `${linha}\n${nota}`);
     enqueueText(sock, jid, `Mais cupons: ${LINKS.cuponsSite}`);
     enqueueText(sock, jid, promoLine);
     return true;
   }
 
-  // 3) sem cupons: NÃO inventa. Manda só o link de cupons + promoções.
   const header = 'No momento não consigo listar um código agora. Veja os cupons atuais aqui:';
   if (USE_BUTTONS) {
     const ok = await sendUrlButtons(sock, jid, `${header}\n${LINKS.cuponsSite}\n${nota}`, [
@@ -163,11 +179,9 @@ async function replyPromos(sock, jid) {
       { index: 2, urlButton: { displayText: 'Desconto progressivo', url: LINKS.promosProgressivo } },
       { index: 3, urlButton: { displayText: 'Monte seu kit',        url: LINKS.monteSeuKit       } },
     ]);
-    // regra: sempre mostrar cupons junto
     await replyCoupons(sock, jid);
     if (ok) return;
   }
-
   enqueueText(sock, jid, header);
   await replyCoupons(sock, jid);
 }
@@ -189,9 +203,7 @@ function replyRaffle(sock, jid) {
   );
 }
 
-function replyThanks(sock, jid) {
-  enqueueText(sock, jid, 'Por nada! ❤️ Conte comigo sempre!');
-}
+function replyThanks(sock, jid) { enqueueText(sock, jid, 'Por nada! ❤️ Conte comigo sempre!'); }
 
 function replySocial(sock, jid, text) {
   const s = (text || '').toLowerCase();
@@ -199,7 +211,6 @@ function replySocial(sock, jid, text) {
   if (/tiktok|tik[\s-]?tok/.test(s)) return enqueueText(sock, jid, `Tiktok ➡️ ${LINKS.tiktok}`);
   if (/grupo/.test(s))               return enqueueText(sock, jid, `Grupo de Whatsapp ➡️ ${LINKS.grupoMurilo}`);
   if (/whatsapp|zap/.test(s))        return enqueueText(sock, jid, `Whatsapp ➡️ ${LINKS.whatsMurilo}`);
-  // genérico: manda todos
   enqueueText(sock, jid,
     `Minhas redes:\n` +
     `Instagram ➡️ ${LINKS.insta}\n` +
@@ -228,6 +239,16 @@ function replyOrderSupport(sock, jid) {
     `https://www.natura.com.br/ajuda-e-contato\n` +
     `Dica: no chat, digite 4x “Falar com atendente” para acelerar o atendimento humano.\n` +
     `Visualizar seus pedidos: https://www.natura.com.br/meus-dados/pedidos?consultoria=clubemac`
+  );
+}
+
+function replyBrand(sock, jid, brandName) {
+  enqueueText(
+    sock,
+    jid,
+    `Posso te ajudar com a linha *${brandName}* 😊\n` +
+    `Você pode conferir os itens em promoção aqui: ${LINKS.promosGerais}\n` +
+    `Se quiser, me diga qual produto da linha que você procura.`
   );
 }
 
@@ -292,10 +313,19 @@ function buildUpsertHandler(getSock) {
       const jid = m?.key?.remoteJid;
       if (!jid || isFromMe(m) || isGroup(jid) || isStatus(jid)) return;
 
-      const text = extractText(m);
-      if (!text) return;
+      // texto de entrada (ou transcrição se áudio)
+      let text = extractText(m);
 
-      // Nome exibido pelo WhatsApp; a IA usa quando aplicável
+      // NOVO: transcrição de áudio (opt-in)
+      if ((!text || !text.trim()) && typeof transcribeAudioIfAny === 'function') {
+        try {
+          const sockNow0 = getSock();
+          text = await transcribeAudioIfAny(sockNow0, m);
+        } catch (_) { /* ignora falha de transcrição */ }
+      }
+
+      if (!text || !text.trim()) return;
+
       const rawName = (m.pushName || '').trim();
 
       pushIncoming(jid, text, async (batch, ctx) => {
@@ -304,30 +334,48 @@ function buildUpsertHandler(getSock) {
 
         const joined = batch.join(' ').trim();
 
-        // Intents rápidas
-        if (wantsThanks(joined))        { replyThanks(sockNow, jid); return; }
-        if (wantsCouponProblem(joined)) { replyCouponProblem(sockNow, jid); return; }
-        if (wantsOrderSupport(joined))  { replyOrderSupport(sockNow, jid); return; }
-        if (wantsRaffle(joined))        { replyRaffle(sockNow, jid); return; }
-        if (wantsCoupon(joined))        { await replyCoupons(sockNow, jid); return; }
-        if (wantsPromos(joined))        { await replyPromos(sockNow, jid); return; }
-        if (wantsSocial(joined))        { replySocial(sockNow, jid, joined); return; }
-        if (wantsSoap(joined))          { await replySoap(sockNow, jid); return; }
+        // ===== Nova detecção centralizada =====
+        const intent = detectIntent ? detectIntent(joined) : { type: null, data: null };
+
+        // 0) segurança primeiro
+        if (intent.type === 'security') { enqueueText(sockNow, jid, securityReply()); return; }
+
+        // 1) Intents rápidas já existentes
+        if (intent.type === 'thanks' || wantsThanks(joined))                 { replyThanks(sockNow, jid); return; }
+        if (intent.type === 'coupon_problem' || wantsCouponProblem(joined))  { replyCouponProblem(sockNow, jid); return; }
+        if (intent.type === 'order_support'  || wantsOrderSupport(joined))   { replyOrderSupport(sockNow, jid); return; }
+        if (intent.type === 'raffle'         || wantsRaffle(joined))         { replyRaffle(sockNow, jid); return; }
+        if (intent.type === 'coupon'         || wantsCoupon(joined))         { await replyCoupons(sockNow, jid); return; }
+        if (intent.type === 'promos'         || wantsPromos(joined))         { await replyPromos(sockNow, jid); return; }
+        if (intent.type === 'social'         || wantsSocial(joined))         { replySocial(sockNow, jid, joined); return; }
+        if (intent.type === 'soap'           || wantsSoap(joined))           { await replySoap(sockNow, jid); return; }
+        if (intent.type === 'brand')                                           { replyBrand(sockNow, jid, intent.data.name); return; }
 
         // Saudação (opcional)
         let isNewTopicForAI = ctx.shouldGreet;
-        if (ctx.shouldGreet && GREET_TEXT) {
-          // envia saudação fixa apenas se configurada
-          markGreeted(jid); // marca antes para evitar repetição
+
+        // NOVO: saudação determinística por regra (opt-in)
+        if (ctx.shouldGreet && RULE_GREETING_ON && nameUtils && typeof nameUtils.buildGreeting === 'function') {
+          const safeName = (nameUtils.pickDisplayName && nameUtils.pickDisplayName(rawName)) || rawName || '';
+          const greetMsg = nameUtils.buildGreeting(safeName);
+          markGreeted(jid);
+          enqueueText(sockNow, jid, greetMsg);
+          isNewTopicForAI = false; // evita a IA saudar de novo
+        } else if (ctx.shouldGreet && GREET_TEXT) {
+          // Saudação fixa (já existente)
+          markGreeted(jid);
           enqueueText(sockNow, jid, GREET_TEXT);
-          isNewTopicForAI = false; // IA não precisa saudar de novo
+          isNewTopicForAI = false;
         }
 
         // Fallback IA
         const out = await askOpenAI({ prompt: joined, userName: rawName, isNewTopic: isNewTopicForAI });
         if (out && out.trim()) {
           enqueueText(sockNow, jid, out.trim());
-          if (ctx.shouldGreet && !GREET_TEXT) markGreeted(jid); // se só IA saudou, ainda assim marcar
+          if (ctx.shouldGreet && !GREET_TEXT && !(RULE_GREETING_ON && nameUtils)) {
+            // se a saudação ficou a cargo da IA, ainda marcamos
+            markGreeted(jid);
+          }
         }
       });
     } catch (e) {
@@ -341,12 +389,10 @@ function attachAssistant(appInstance) {
   if (!ASSISTANT_ENABLED) { console.log('[assistant] disabled (ASSISTANT_ENABLED!=1)'); return; }
   console.log('[assistant] enabled (rewire:', REWIRE_MODE, ', interval:', REWIRE_INTERVAL_MS, ')');
 
-  // Pega o socket atual do app
   const getSock = () =>
     (appInstance?.waAdmin?.getSock && appInstance.waAdmin.getSock()) ||
     (appInstance?.whatsappClient?.sock);
 
-  // Estado de wire
   let currentSocketRef = null;
   let upsertHandler = null;
   let connHandler = null;
@@ -359,38 +405,23 @@ function attachAssistant(appInstance) {
     } catch (_) {}
   };
 
-  // Liga handlers no socket indicado
   const wireToSock = (sock) => {
     if (!sock || !sock.ev || typeof sock.ev.on !== 'function') return false;
-
-    // Se já estamos neste socket, apenas garanta handlers
     if (currentSocketRef === sock && upsertHandler) return true;
 
-    // Desliga do anterior
     if (currentSocketRef) {
       offSafe(currentSocketRef, 'messages.upsert', upsertHandler);
       offSafe(currentSocketRef, 'connection.update', connHandler);
     }
 
-    // Cria handlers novos vinculados ao getSock
     upsertHandler = buildUpsertHandler(getSock);
-    connHandler = (ev) => {
-      // Quando a conexão abrir, garanta wire no socket atual
-      if (ev?.connection === 'open') {
-        // pequeno delay para garantir user carregado
-        setTimeout(() => ensureWired(), 200);
-      }
-    };
+    connHandler = (ev) => { if (ev?.connection === 'open') setTimeout(() => ensureWired(), 200); };
 
-    // Liga
     sock.ev.on('messages.upsert', upsertHandler);
-    if (typeof sock.ev.on === 'function') {
-      sock.ev.on('connection.update', connHandler);
-    }
+    if (typeof sock.ev.on === 'function') { sock.ev.on('connection.update', connHandler); }
 
     currentSocketRef = sock;
 
-    // Identificação do socket para log
     const sid =
       (sock?.user && (sock.user.id || sock.user.jid)) ||
       (sock?.authState && sock.authState.creds?.me?.id) ||
@@ -400,15 +431,10 @@ function attachAssistant(appInstance) {
     return true;
   };
 
-  // Garante que estamos ligados ao socket atual (ou religa se mudou)
   const ensureWired = () => {
     const sock = getSock();
     if (!sock) return false;
-    if (sock !== currentSocketRef) {
-      return wireToSock(sock);
-    }
-
-    // Sanidade: se por algum motivo o handler sumiu, religar
+    if (sock !== currentSocketRef) return wireToSock(sock);
     try {
       const hasOn = !!sock?.ev && typeof sock.ev.on === 'function';
       const needRewire = !hasOn || !upsertHandler;
@@ -417,23 +443,12 @@ function attachAssistant(appInstance) {
     return true;
   };
 
-  // Modo "auto": rewire instantâneo + watchdog
   if (REWIRE_MODE === 'auto') {
-    // tenta ligar imediatamente
     ensureWired();
-    // watchdog leve de auto-cura
-    setInterval(() => {
-      try { ensureWired(); } catch (_) {}
-    }, REWIRE_INTERVAL_MS);
+    setInterval(() => { try { ensureWired(); } catch (_) {} }, REWIRE_INTERVAL_MS);
   } else {
-    // Modo "legacy": tenta ligar uma vez e não força rewire
-    const tryOnce = () => {
-      const sock = getSock();
-      if (sock) wireToSock(sock);
-    };
-    tryOnce();
-    // ainda assim, mantemos um ping leve (bem espaçado) só para ligar após boot
-    setTimeout(tryOnce, 2000);
+    const tryOnce = () => { const sock = getSock(); if (sock) wireToSock(sock); };
+    tryOnce(); setTimeout(tryOnce, 2000);
   }
 }
 
