@@ -1,27 +1,15 @@
 // src/services/security.js
-// Detector simples de "golpe/fraude" + resposta padrão.
-
 const { normalize } = require('./text-normalizer');
 
 function hasSecurityRisk(rawText = '') {
   const n = ` ${normalize(rawText)} `;
   const hit = [
-    // palavras diretas
-    'golpe', 'fraude', 'scam', 'phishing', 'link suspeito', 'link duvidoso',
-    // pix/dinheiro/cobrança estranha
-    'pix errado', 'pix indevido', 'cobranca estranha', 'cobranca indevida',
-    'deposito', 'deposito em conta', 'dinheiro', 'premio', 'premios',
-    // contato que NÃO fazemos (variações)
-    'ligacao', 'ligaram', 'ligou', 'liguei', 'atendi', 'atenderam',
-    'chamada', 'telefonema', 'telefone', 'live', 'ao vivo', 'atendimento por telefone'
+    'golpe','fraude','scam','phishing','link suspeito','link duvidoso',
+    'pix errado','pix indevido','cobranca estranha','cobranca indevida',
+    'deposito','deposito em conta','dinheiro','premio','premios',
+    'ligacao','ligaram','ligou','atendi','chamada','telefone','live','ao vivo'
   ];
-
-  for (const k of hit) {
-    if (n.includes(` ${k} `)) return true;
-  }
-
-  // padrões combinados e tronco "lig"
-  if (/\blig(a|o|u|aram|uei|acao|acoes)\b/.test(n)) return true;
+  for (const k of hit) if (n.includes(` ${k} `)) return true;
 
   const hasPix = n.includes(' pix ');
   const hasErr = /errad|estranh|suspeit|duvidos|nao reconhec/.test(n);
@@ -41,5 +29,4 @@ function securityReply() {
     'https://www.natura.com.br/ajuda-e-contato ✨'
   ].join('\n');
 }
-
 module.exports = { hasSecurityRisk, securityReply };
