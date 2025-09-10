@@ -38,6 +38,8 @@ function _normalizeLinks(t) {
 }
 
 // Nunca dividir links: se houver qualquer URL, manda tudo em um bloco.
+// Split “mais humano”: tenta evitar blocos muito curtos (anti-órfão) e
+// respeita a ideia de parágrafos/sentenças.
 function _splitText(txt) {
   const norm = _normalizeLinks(txt);
   const t = String(norm || '').trim();
@@ -54,17 +56,43 @@ function _splitText(txt) {
 
   for (const s of sent) {
     const piece = s.trim();
-    const candidate = buf ? (buf + ' ' + piece) : piece;
 
-    if (candidate.length <= SPLIT_TARGET_CHARS || buf.length === 0) {
+    // Se a sentença é muito curta e o buffer ainda cabe, tenta juntar para evitar “órfão”
+    const candidate = buf ? (buf + ' ' + piece) : piece;
+    const wouldOverflow = candidate.length > SPLIT_TARGET_CHARS;
+
+    if (!wouldOverflow || !buf) {
+      // Ainda cabe no buffer (ou é a primeira sentença)
       buf = candidate;
-    } else {
-      out.push(buf.trim());
-      buf = piece;
-      if (out.length >= SPLIT_MAX_BLOCKS - 1) break;
+      continue;
+    }
+
+    // Estouraria o alvo. Decide se empurra agora ou tenta não criar bloco minúsculo.
+    // Regra anti-órfão: se a sentença atual é bem curta (< 30) ou o buffer está abaixo de 80% do alvo,
+    // permita estourar um pouco para evitar uma sobra muito pequena no próximo bloco.
+    if (piece.length < 30 || buf.length < Math.floor(SPLIT_TARGET_CHARS * 0.8)) {
+      buf = candidate; // estoura um pouco o alvo para evitar bloco minúsculo depois
+      continue;
+    }
+
+    // Fecha bloco e inicia próximo
+    out.push(buf.trim());
+    buf = piece;
+
+    if (out.length >= SPLIT_MAX_BLOCKS - 1) break;
+  }
+
+  if (buf) out.push(buf.trim());
+
+  // Se o último bloco ficou muito curto (ex.: < 30 chars), junta ao anterior quando possível.
+  if (out.length >= 2) {
+    const last = out[out.length - 1];
+    if (last.length < 30) {
+      out[out.length - 2] = `${out[out.length - 2]} ${last}`.trim();
+      out.pop();
     }
   }
-  if (buf) out.push(buf.trim());
+
   return out.slice(0, SPLIT_MAX_BLOCKS);
 }
 
