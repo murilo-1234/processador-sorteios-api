@@ -1,18 +1,22 @@
 {
   "brands": [
-    { "name": "Mamãe e Bebê", "syn": ["mamae e bebe", "mamae bebe", "mamãe bebe", "mame e bebe", "mmb", "mamãe & bebê"] },
-    { "name": "Tododia", "syn": ["todo dia", "to dodi a", "todia"] },
-    { "name": "Ekos", "syn": ["ecos", "ekoz"] },
-    { "name": "Kaiak", "syn": ["kayak", "kaiack", "caiak", "cayak", "kaiak pulso", "pulso"] },
-    { "name": "Humor", "syn": ["humoor", "humr"] },
+    { "name": "Mamãe e Bebê", "syn": ["mamae e bebe", "mamae bebe", "mamãe bebe", "mame e bebe", "mmb", "mamãe & bebê", "infantil mamãe e bebê"] },
+    { "name": "Tododia", "syn": ["todo dia", "to do dia", "todia", "todo-dia"] },
+    { "name": "Ekos", "syn": ["ecos", "ekoz", "ekôs"] },
+    { "name": "Kaiak", "syn": ["kayak", "kaiack", "caiak", "cayak", "kaiak pulso", "pulso", "kaiak aventura", "aventura"] },
+    { "name": "Humor", "syn": ["humoor", "humr", "humour"] },
     { "name": "Luna", "syn": ["lunna"] },
     { "name": "Essencial", "syn": ["esencial", "essenciais"] },
-    { "name": "Cronos", "syn": ["cronos", "crônios", "chronos", "cronos skincare"] },
+    { "name": "Chronos", "syn": ["cronos", "crônios", "chronus", "cronos skincare", "chronos derma", "chronos-derma"] },
     { "name": "Faces", "syn": ["face", "faaces"] },
     { "name": "Una", "syn": ["unna"] },
+    { "name": "Ilía", "syn": ["ilia", "ilía", "ilia se", "ilía se"] },
     { "name": "Erva Doce", "syn": ["erva doce", "ervadoce"] },
     { "name": "Souve", "syn": ["sove", "sou vi", "sou"] },
     { "name": "Biografia", "syn": ["bio grafia", "biographia"] },
-    { "name": "Ilía", "syn": ["ilia", "ilia se"] }
+    { "name": "Aura", "syn": ["aura natura"] },
+    { "name": "Biome", "syn": ["bio me", "biomé"] },
+    { "name": "Bothanica", "syn": ["botanica", "botânica", "bothânica"] },
+    { "name": "Lumina", "syn": ["lumyna"] }
   ]
 }
