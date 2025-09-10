@@ -18,8 +18,7 @@ function normalizeNaturaUrl(text) {
   // https://www.natura.com, \n br/  -> https://www.natura.com.br/
   out = out.replace(/https:\/\/www\.natura\.com[,\s]*br\//gi, 'https://www.natura.com.br/');
 
-  // wwwnatura.com.br / wwwnatura -> www.natura.com.br
-  out = out.replace(/https?:\/\/wwwnatura\.com\.br/gi, 'https://www.natura.com.br');
+  // wwwnatura.com.br -> www.natura.com.br
   out = out.replace(/https?:\/\/wwwnatura\.com\.br/gi, 'https://www.natura.com.br');
 
   // forçar www.
@@ -30,6 +29,9 @@ function normalizeNaturaUrl(text) {
 
   // retirar pontuação colada ao fim do link
   out = out.replace(/(https?:\/\/[^\s,.;]+)[,.;]+/g, '$1');
+
+  // corrigir bitly grafado errado
+  out = out.replace(/https?:\/\/bitly\//gi, 'https://bit.ly/');
 
   return out;
 }
@@ -59,4 +61,36 @@ function ensureConsultoriaParam(url) {
   }
 }
 
-module.exports = { normalizeNaturaUrl, isAllowedLink, ensureConsultoriaParam, ALLOWED_HOSTS };
+// Sanitiza todo o texto: normaliza Natura, garante ?consultoria, barra links fora da whitelist
+function sanitizeOutgoing(text) {
+  let out = normalizeNaturaUrl(String(text || ''));
+
+  // encontra todos os links
+  const links = [...out.matchAll(/https?:\/\/[^\s]+/gi)].map(m => m[0]);
+  if (!links.length) return out;
+
+  let safe = out;
+  for (const href of links) {
+    let fixed = ensureConsultoriaParam(href);
+    const allowed = isAllowedLink(fixed);
+    if (!allowed) {
+      // remove o link não permitido
+      safe = safe.split(href).join('');
+      continue;
+    }
+    if (fixed !== href) {
+      safe = safe.split(href).join(fixed);
+    }
+  }
+
+  // se ficou vazio após remoção de link suspeito, mostra caminhos oficiais
+  if (!safe.trim()) {
+    safe =
+      `Para garantir sua segurança, use apenas os links oficiais:\n` +
+      `• Promoções: https://www.natura.com.br/c/promocoes?consultoria=clubemac\n` +
+      `• Cupons: https://bit.ly/cupons-murilo`;
+  }
+  return safe.replace(/\s{2,}/g, ' ').trim();
+}
+
+module.exports = { normalizeNaturaUrl, isAllowedLink, ensureConsultoriaParam, sanitizeOutgoing, ALLOWED_HOSTS };
