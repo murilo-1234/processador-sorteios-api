@@ -31,11 +31,11 @@ function hasSecurityRisk(rawText = '') {
 function securityReply() {
   return [
     '⚠️ *Atenção com golpes*',
-    '— Eu sou o atendente virtual do *Murilo Cerqueira (Natura)*.',
+    '— Eu sou o atendente virtual do *Murilo Cerqueira (Natura)*. 🙂',
     '— *Não fazemos ligações* pedindo códigos, PIX ou dados sensíveis.',
     '— Desconfie de links encurtados ou que não sejam do site oficial.',
     '— Se recebeu cobrança estranha/PIX errado, *não pague* e fale com o suporte oficial:',
-    'https://www.natura.com.br/ajuda-e-contato'
+    'https://www.natura.com.br/ajuda-e-contato ✨'
   ].join('\n');
 }
 
