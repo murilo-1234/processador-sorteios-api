@@ -24,17 +24,36 @@ function _getQ(jid) {
   return q;
 }
 
-// ——— Normalização de links para evitar “https://www.natura.com,\nbr/...”
+// ——— Normalização de links para evitar “https://www.natura.com,\nbr/...” e “wwwnatura.com.br”
 function _normalizeLinks(t) {
   let out = String(t || '');
 
-  // juntar “https://www.natura.com, \n br/...” -> “https://www.natura.com.br/...”
+  // juntar “https://www.natura.com, \n br/” -> “https://www.natura.com.br/...”
   out = out.replace(/https:\/\/www\.natura\.com[,\s]*br\//gi, 'https://www.natura.com.br/');
+
+  // corrigir “wwwnatura.com.br” (sem ponto após www)
+  out = out.replace(/https?:\/\/wwwnatura\.com\.br/gi, 'https://www.natura.com.br');
+
+  // corrigir “wwwnatura.com.br” (faltou o ponto)
+  out = out.replace(/https?:\/\/wwwnatura\.com\.br/gi, 'https://www.natura.com.br');
+
+  // forçar "www." quando vier "https://natura.com.br"
+  out = out.replace(/https?:\/\/(natura\.com\.br)/gi, 'https://www.$1');
+
+  // remover espaços espalhados no domínio: "www. natura . com . br" -> "www.natura.com.br"
+  out = out.replace(/https?:\/\/www\.\s*natura\.\s*com\s*\.\s*br/gi, 'https://www.natura.com.br');
 
   // remover pontuação colada ao final do link (vírgula, ponto e ponto-e-vírgula)
   out = out.replace(/(https?:\/\/[^\s,.;]+)[,.;]+/g, '$1');
 
   return out;
+}
+
+// Emojis de segurança: se vier absolutamente sem emoji, acrescenta 2 leves.
+function _ensureEmojis(t) {
+  const hasEmoji = /[\p{Emoji}]/u.test(String(t || ''));
+  if (hasEmoji) return t;
+  return `${t} 🙂✨`.trim();
 }
 
 // Nunca dividir links: se houver qualquer URL, manda tudo em um bloco.
@@ -44,7 +63,7 @@ function _splitText(txt) {
   const norm = _normalizeLinks(txt);
   const t = String(norm || '').trim();
   if (!t) return [];
-  if (URL_RE.test(t)) return [t];
+  if (URL_RE.test(t)) return [_ensureEmojis(t)];
 
   // Quebra por frases, preservando pontuação.
   const sent = t
@@ -76,13 +95,13 @@ function _splitText(txt) {
     }
 
     // Fecha bloco e inicia próximo
-    out.push(buf.trim());
+    out.push(_ensureEmojis(buf.trim()));
     buf = piece;
 
     if (out.length >= SPLIT_MAX_BLOCKS - 1) break;
   }
 
-  if (buf) out.push(buf.trim());
+  if (buf) out.push(_ensureEmojis(buf.trim()));
 
   // Se o último bloco ficou muito curto (ex.: < 30 chars), junta ao anterior quando possível.
   if (out.length >= 2) {
