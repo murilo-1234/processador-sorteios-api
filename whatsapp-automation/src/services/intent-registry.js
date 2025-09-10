@@ -5,6 +5,11 @@ const { normalize, hasWord, removeDiacritics } = require('./text-normalizer');
 const { fuzzyIncludes } = require('./fuzzy');
 const brandsDb = require('../data/natura-brands.json');
 
+let typosDb = null;
+try {
+  typosDb = require('../data/typos-dictionary.json'); // opcional
+} catch (_) { typosDb = null; }
+
 const BRAND_LIST = brandsDb?.brands || [];
 
 function detectBrand(norm) {
@@ -24,13 +29,21 @@ function detectBrand(norm) {
   return null;
 }
 
+function anyWord(norm, list=[]) {
+  for (const w of list) {
+    const k = ` ${removeDiacritics(String(w)).toLowerCase()} `;
+    if (norm.includes(k)) return true;
+  }
+  return false;
+}
+
 function detectIntent(rawText = '') {
   const raw = String(rawText || '');
   const norm = ` ${normalize(raw)} `;
 
-  // 1) sorteio com "7" sozinho
+  // 1) sorteio com "7" sozinho / "sete" / frases equivalentes
   const rawTrim = removeDiacritics(raw).trim().toLowerCase();
-  if (rawTrim === '7' || /\benviar\b.*\b7\b/.test(rawTrim)) {
+  if (/^7[!,.…]*$/.test(rawTrim) || rawTrim === 'sete' || /\bquero (participar|entrar).*\bsorteio\b/.test(rawTrim)) {
     return { type: 'raffle' };
   }
 
@@ -43,34 +56,53 @@ function detectIntent(rawText = '') {
   const { hasSecurityRisk } = require('./security');
   if (hasSecurityRisk(raw)) return { type: 'security' };
 
+  // dicionário opcional
+  const d = typosDb || {};
+  const words = (k, fallback=[]) => Array.isArray(d[k]) && d[k].length ? d[k] : fallback;
+
   // 4) problemas com cupom
   if (/(cupom|codigo|c[oó]digo).*(nao.*(aplic|funcion)|erro)|erro.*(cupom|codigo)/i.test(norm)) {
     return { type: 'coupon_problem' };
   }
 
-  // 5) suporte a pedido/entrega/pagamento
-  if (/(pedido|entrega|nota fiscal|pagamento|boleto).*(problema|atras|nao chegou|erro)/i.test(norm)) {
-    return { type: 'order_support' };
+  // 5) suporte a pedido/entrega/pagamento (mesmo sem "pedido")
+  const pedidoTokens = words('order_support', [
+    'pedido','compra','encomenda','pacote','entrega','nota fiscal','pagamento','boleto','rastreio','codigo de rastreio','transportadora','nao recebi','atrasou','cade meu'
+  ]);
+  if (anyWord(norm, pedidoTokens)) {
+    // reforço: combina com termos de atraso/erro
+    if (/(problema|atras|nao chegou|nao recebi|erro|sumiu|cade)/.test(norm)) {
+      return { type: 'order_support' };
+    }
+    // ou presença explícita de rastreio/transportadora
+    if (/(rastre(i|ei)o|transportadora)/.test(norm)) {
+      return { type: 'order_support' };
+    }
   }
 
   // 6) promoções (promocao/promocoes/promo/oferta/desconto/liquidacao/sale)
-  if (/(promoc|promo\b|oferta|desconto|liquida|sale)/i.test(norm)) {
+  const promoTokens = words('promos', ['promocao','promocoes','promo','oferta','ofertas','desconto','descontos','liquidacao','sale']);
+  if (anyWord(norm, promoTokens) || /(promo(ç|c)[aã]o|promos?\b|oferta|desconto|liquida|sale)/i.test(norm)) {
     return { type: 'promos' };
   }
 
-  // 7) cupom/cupon/cupao/kupon (fuzzy leve)
-  if (/(cupom|cupon|cupao|kupon|coupon)s?/i.test(norm) ||
-      fuzzyIncludes(norm.trim(), ['cupom', 'cupons', 'cupao', 'cupon', 'coupon'], 2)) {
-    return { type: 'coupon' };
+  // 7) cupom/cupon/cupao/kupon (fuzzy leve) — sem confundir "cpom" (CPOM)
+  if (!/\bcpom\b/i.test(norm)) {
+    const couponTokens = words('coupon', ['cupom','cupons','cupon','cupao','cupum','coupon','kupon','cumpom']);
+    if (anyWord(norm, couponTokens) || fuzzyIncludes(norm.trim(), couponTokens, 2)) {
+      return { type: 'coupon' };
+    }
   }
 
   // 8) sabonete(s)
-  if (/(sabonete|sabonetes)/i.test(norm)) {
+  const soapTokens = words('soap', ['sabonete','sabonetes']);
+  if (anyWord(norm, soapTokens)) {
     return { type: 'soap' };
   }
 
   // 9) redes sociais
-  if (/(instagram|insta\b|tiktok|tik[\s-]?tok|whatsapp|zap|grupo)/i.test(norm)) {
+  const socialTokens = words('social', ['instagram','insta','tiktok','tik tok','whatsapp','zap','grupo']);
+  if (anyWord(norm, socialTokens)) {
     return { type: 'social' };
   }
 
