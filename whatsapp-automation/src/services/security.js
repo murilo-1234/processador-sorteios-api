@@ -11,15 +11,18 @@ function hasSecurityRisk(rawText = '') {
     // pix/dinheiro/cobrança estranha
     'pix errado', 'pix indevido', 'cobranca estranha', 'cobranca indevida',
     'deposito', 'deposito em conta', 'dinheiro', 'premio', 'premios',
-    // contato que NÃO fazemos
-    'ligacao', 'chamada', 'telefone', 'live', 'ao vivo'
+    // contato que NÃO fazemos (variações)
+    'ligacao', 'ligaram', 'ligou', 'liguei', 'atendi', 'atenderam',
+    'chamada', 'telefonema', 'telefone', 'live', 'ao vivo', 'atendimento por telefone'
   ];
 
   for (const k of hit) {
     if (n.includes(` ${k} `)) return true;
   }
 
-  // padrões combinados
+  // padrões combinados e tronco "lig"
+  if (/\blig(a|o|u|aram|uei|acao|acoes)\b/.test(n)) return true;
+
   const hasPix = n.includes(' pix ');
   const hasErr = /errad|estranh|suspeit|duvidos|nao reconhec/.test(n);
   const hasCob = n.includes(' cobranca ');
