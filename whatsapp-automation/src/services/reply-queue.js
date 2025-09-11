@@ -1,7 +1,7 @@
 // src/services/reply-queue.js
 // Fila por JID com rate-limit leve, typing e split humanizado,
 // NUNCA dividindo links e priorizando quebra em fim de frase.
-// Também normaliza links Natura para evitar cortes “.com, \n br/...”.
+// (Correções de link desativadas: Playground é responsável pelos links.)
 
 const REPLY_MAX_BURST       = Number(process.env.REPLY_MAX_BURST || 2);
 const REPLY_COOLDOWN_MS     = Number(process.env.REPLY_COOLDOWN_MS || 2000);
@@ -24,29 +24,10 @@ function _getQ(jid) {
   return q;
 }
 
-// ——— Normalização de links para evitar “https://www.natura.com,\nbr/...” e “wwwnatura.com.br”
-function _normalizeLinks(t) {
-  let out = String(t || '');
+// Correções de link desativadas (identidade)
+function _normalizeLinks(t) { return String(t || ''); }
 
-  // juntar “https://www.natura.com, \n br/” -> “https://www.natura.com.br/...”
-  out = out.replace(/https:\/\/www\.natura\.com[,\s]*br\//gi, 'https://www.natura.com.br/');
-
-  // corrigir “wwwnatura.com.br” (faltou o ponto)
-  out = out.replace(/https?:\/\/wwwnatura\.com\.br/gi, 'https://www.natura.com.br');
-
-  // forçar "www." quando vier "https://natura.com.br"
-  out = out.replace(/https?:\/\/(natura\.com\.br)/gi, 'https://www.$1');
-
-  // remover espaços espalhados no domínio: "www. natura . com . br" -> "www.natura.com.br"
-  out = out.replace(/https?:\/\/www\.\s*natura\.\s*com\s*\.\s*br/gi, 'https://www.natura.com.br');
-
-  // remover pontuação colada ao final do link (vírgula, ponto e ponto-e-vírgula)
-  out = out.replace(/(https?:\/\/[^\s,.;]+)[,.;]+/g, '$1');
-
-  return out;
-}
-
-// Emojis de segurança: se vier absolutamente sem emoji, acrescenta 2 leves.
+// Emojis leves: se vier absolutamente sem emoji, acrescenta 2
 function _ensureEmojis(t) {
   const hasEmoji = /[\p{Emoji}]/u.test(String(t || ''));
   if (hasEmoji) return t;
@@ -78,16 +59,13 @@ function _splitText(txt) {
     const wouldOverflow = candidate.length > SPLIT_TARGET_CHARS;
 
     if (!wouldOverflow || !buf) {
-      // Ainda cabe no buffer (ou é a primeira sentença)
       buf = candidate;
       continue;
     }
 
-    // Estouraria o alvo. Decide se empurra agora ou tenta não criar bloco minúsculo.
-    // Regra anti-órfão: se a sentença atual é bem curta (< 30) ou o buffer está abaixo de 80% do alvo,
-    // permita estourar um pouco para evitar uma sobra muito pequena no próximo bloco.
+    // Regra anti-órfão
     if (piece.length < 30 || buf.length < Math.floor(SPLIT_TARGET_CHARS * 0.8)) {
-      buf = candidate; // estoura um pouco o alvo para evitar bloco minúsculo depois
+      buf = candidate;
       continue;
     }
 
@@ -100,7 +78,7 @@ function _splitText(txt) {
 
   if (buf) out.push(_ensureEmojis(buf.trim()));
 
-  // Se o último bloco ficou muito curto (ex.: < 30 chars), junta ao anterior quando possível.
+  // Junta bloco final muito curto
   if (out.length >= 2) {
     const last = out[out.length - 1];
     if (last.length < 30) {
