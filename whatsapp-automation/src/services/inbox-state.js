@@ -1,7 +1,8 @@
 // src/services/inbox-state.js
 // Estado leve por JID: coalesce de entrada + greeted TTL
 const COALESCE_WINDOW_MS = Number(process.env.COALESCE_WINDOW_MS || 1200);
-const GREET_TTL_SECONDS  = Number(process.env.GREET_TTL_SECONDS  || 120);
+// TTL padrão: 24h (evita repetir saudação dentro do mesmo assunto)
+const GREET_TTL_SECONDS  = Number(process.env.GREET_TTL_SECONDS  || 86400);
 
 const buckets = new Map(); // jid -> { timer, msgs:[], lastGreetAt:number }
 const now = () => Date.now();
