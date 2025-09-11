@@ -8,7 +8,6 @@ const axios = require('axios');
 const { pushIncoming, markGreeted } = require('../services/inbox-state');
 const { enqueueText } = require('../services/reply-queue');
 const { fetchTopCoupons } = require('../services/coupons');
-const { normalizeNaturaUrl, isAllowedLink, ensureConsultoriaParam } = require('../services/link-utils');
 
 // utilitários existentes
 const { detectIntent } = require('../services/intent-registry');
@@ -27,7 +26,7 @@ const OPENAI_API_KEY    = process.env.OPENAI_API_KEY || '';
 const OPENAI_MODEL      = process.env.OPENAI_MODEL || 'gpt-4o';
 const ASSISTANT_TEMP    = Number(process.env.ASSISTANT_TEMPERATURE || 0.6);
 
-// Saudação fixa opcional
+// Saudação fixa opcional (se vazia, Playground saúda)
 const GREET_TEXT = (process.env.ASSISTANT_GREET_TEXT || '').trim();
 const RULE_GREETING_ON = String(process.env.ASSISTANT_RULE_GREETING || '0') === '1';
 
@@ -35,7 +34,7 @@ const RULE_GREETING_ON = String(process.env.ASSISTANT_RULE_GREETING || '0') === 
 const REWIRE_MODE = String(process.env.ASSISTANT_REWIRE_MODE || 'auto').toLowerCase();
 const REWIRE_INTERVAL_MS = Math.max(5000, Number(process.env.ASSISTANT_REWIRE_INTERVAL_MS || 15000) | 0);
 
-// Links oficiais
+// Links oficiais (mantidos para atalhos de intenção, se usados)
 const LINKS = {
   promosProgressivo: 'https://www.natura.com.br/c/promocao-da-semana?consultoria=clubemac',
   promosGerais:      'https://www.natura.com.br/c/promocoes?consultoria=clubemac',
@@ -103,7 +102,7 @@ function wantsOrderSupport(text) {
   return /(pedido|compra|encomenda|pacote|entrega|nota fiscal|pagamento|boleto).*(problema|atras|n[aã]o chegou|nao recebi|erro|sumiu|cad[eê])|rastre(i|ei)o|codigo de rastreio|transportadora/.test(s);
 }
 
-// tópico de produto (tolerante)
+// tópico de produto (tolerante) – mantido para compat, embora não haja mais “append” automático
 function wantsProductTopic(text) {
   const s = String(text || '').toLowerCase();
   return /(hidrat\w+|perfum\w+|desodorant\w+|sabonete\w*|cabel\w+|maquiag\w+|barb\w+|infantil\w*|present\w*|kit\w*|aura\b|ekos\b|kaiak\b|essencial\b|luna\b|tododia\b|mam[aã]e.*beb[eê]\b|una\b|faces\b|chronos\b|lumina\b|biome\b|bothanica\b)/i.test(s);
@@ -121,32 +120,21 @@ async function sendUrlButtons(sock, jid, headerText, buttons, footer = 'Murilo �
   }
 }
 
-// Sanitização de links (anti-IA “viajar”)
-const URL_RE = /https?:\/\/\S+/gi;
-function sanitizeOutText(t) {
-  if (!t) return t;
-  let out = normalizeNaturaUrl(String(t));
-  const found = out.match(URL_RE) || [];
-  for (const rawUrl of found) {
-    if (!isAllowedLink(rawUrl)) {
-      // remove links fora da lista
-      out = out.replace(rawUrl, '');
-      continue;
-    }
-    // força consultoria nos links Natura
-    if (/www\.natura\.com\.br/i.test(rawUrl)) {
-      const fixed = ensureConsultoriaParam(rawUrl);
-      if (fixed !== rawUrl) out = out.replace(rawUrl, fixed);
-    }
+// ==== CUPOM: substituição de marcador {{CUPOM}} vindo do Playground ====
+async function replaceCouponMarkers(text) {
+  try {
+    if (!text || !/\{\{\s*CUPOM\s*\}\}/i.test(text)) return text;
+    const list = await fetchTopCoupons(2);
+    const cup = Array.isArray(list) && list.length
+      ? (list.length > 1 ? `${list[0]} ou ${list[1]}` : list[0])
+      : 'CLUBEMAC';
+    return text.replace(/\{\{\s*CUPOM\s*\}\}/gi, cup);
+  } catch (_) {
+    return text;
   }
-  return out.replace(/\s{2,}/g, ' ').trim();
-}
-function hasAllowedLink(t) {
-  const found = String(t || '').match(URL_RE) || [];
-  return found.some(isAllowedLink);
 }
 
-// Respostas baseadas em regra
+// Respostas baseadas em regra (mantidas p/ compat se usuário digitar diretamente)
 async function replyCoupons(sock, jid) {
   let list = [];
   try { list = await fetchTopCoupons(2); } catch (_) {}
@@ -269,19 +257,7 @@ async function replyBrand(sock, jid, brandName) {
   await replyCoupons(sock, jid);
 }
 
-function replyMenu(sock, jid) {
-  enqueueText(
-    sock, jid,
-    'Posso te ajudar com:\n' +
-    '• SUPORTE (pedidos/nota/entrega)\n' +
-    '• PROMOÇÕES (ofertas do dia)\n' +
-    '• CUPOM (códigos válidos)\n' +
-    '• SORTEIO (como participar)\n' +
-    'É só digitar uma dessas opções que eu te levo direto 😉'
-  );
-}
-
-// ───────── OpenAI fallback ─────────
+// ───────── OpenAI (Playground) ─────────
 async function askOpenAI({ prompt, userName, isNewTopic }) {
   const fallback = 'Estou online! Se quiser, posso buscar promoções, cupons ou tirar dúvidas rápidas. 🙂✨';
   if (!OPENAI_API_KEY) return fallback;
@@ -294,8 +270,7 @@ async function askOpenAI({ prompt, userName, isNewTopic }) {
     `- isNewTopic=${isNewTopic ? 'true' : 'false'} (se true, pode se apresentar; se false, evite nova saudação)`,
     '- Use SOMENTE os links listados nas seções 3/4/5/6/8, sempre com ?consultoria=clubemac. Se não houver link específico, não forneça link.',
     '- Nunca formate link como markdown/âncora. Exiba o texto exato do link.',
-    '- Inclua 2–3 emojis por resposta (sem exagero).',
-    '- Se a pergunta for ambígua ou envolver produto/foto, finalize oferecendo promoções + cupons.'
+    '- Se precisar de cupom, escreva exatamente o marcador {{CUPOM}} que o sistema substituirá pelo(s) código(s).'
   ].join('\n');
 
   try {
@@ -369,7 +344,7 @@ function buildUpsertHandler(getSock) {
         // 0) segurança
         if (intent.type === 'security') { enqueueText(sockNow, jid, securityReply()); return; }
 
-        // 1) atalhos
+        // 1) atalhos (mantidos p/ compat)
         if (intent.type === 'thanks' || wantsThanks(joined))                 { replyThanks(sockNow, jid); return; }
         if (intent.type === 'coupon_problem' || wantsCouponProblem(joined))  { replyCouponProblem(sockNow, jid); return; }
         if (intent.type === 'order_support'  || wantsOrderSupport(joined))   { replyOrderSupport(sockNow, jid); return; }
@@ -380,10 +355,10 @@ function buildUpsertHandler(getSock) {
         if (intent.type === 'soap'           || wantsSoap(joined))           { await replySoap(sockNow, jid); return; }
         if (intent.type === 'brand')                                           { await replyBrand(sockNow, jid, intent.data.name); return; }
 
-        // Saudação por regra (opt-in)
+        // Saudação por regra (opcional). Se desligada, Playground saúda.
         let isNewTopicForAI = ctx.shouldGreet;
         if (ctx.shouldGreet && RULE_GREETING_ON && nameUtils && typeof nameUtils.buildRuleGreeting === 'function') {
-          const first = (nameUtils.cleanFirstName && nameUtils.cleanFirstName(rawName)) || '';
+          const first = (nameUtils.pickDisplayName && nameUtils.pickDisplayName(rawName)) || '';
           const greetMsg = nameUtils.buildRuleGreeting(first);
           markGreeted(jid);
           enqueueText(sockNow, jid, greetMsg);
@@ -394,26 +369,23 @@ function buildUpsertHandler(getSock) {
           isNewTopicForAI = false;
         }
 
-        // Fallback IA (+ sanitização e failsafe de vendas)
-        const rawOut = await askOpenAI({ prompt: joined, userName: rawName, isNewTopic: isNewTopicForAI });
-        let out = sanitizeOutText(rawOut);
+        // Playground
+        const rawOut = await askOpenAI({
+          prompt: joined,
+          userName: (nameUtils && nameUtils.pickDisplayName ? nameUtils.pickDisplayName(rawName) : rawName),
+          isNewTopic: isNewTopicForAI
+        });
+
+        // Substituição de {{CUPOM}} — sem anexos extras
+        const out = await replaceCouponMarkers(rawOut);
 
         if (out && out.trim()) {
           enqueueText(sockNow, jid, out.trim());
           if (ctx.shouldGreet && !GREET_TEXT && !(RULE_GREETING_ON && nameUtils)) markGreeted(jid);
         }
 
-        // Failsafe: se não veio link aprovado OU é conversa de produto/foto, anexar vendas
-        let mustAppend = hadMedia || wantsProductTopic(joined) || !hasAllowedLink(out);
-        if (!mustAppend && heuristics && typeof heuristics.decideAppendPromoAndCoupons === 'function') {
-          try { mustAppend = heuristics.decideAppendPromoAndCoupons({ userText: joined, hadMedia, iaOut: out }); } catch (_) {}
-        }
-        if (mustAppend) {
-          await replyPromos(sockNow, jid); // já inclui cupons
-        } else {
-          // menu leve para navegação
-          replyMenu(sockNow, jid);
-        }
+        // Sem “failsafe append” e sem menu extra — Playground controla todo o conteúdo
+        void hadMedia; void heuristics; void wantsProductTopic; // silencioso
       });
     } catch (e) {
       console.error('[assistant] upsert error', e?.message || e);
