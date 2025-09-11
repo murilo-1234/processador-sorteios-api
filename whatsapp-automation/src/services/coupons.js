@@ -74,14 +74,13 @@ async function fetchCoupons(max = 2) {
       if (s && s.length >= 4 && s.length <= 12) pushOrdered(s);
     });
 
-    // 2) Varredura por padrão "PEGA*" (ex.: PEGAP, PEGAQ…), mantendo ordem de aparição
+    // 2) Varredura por padrão "PEGA*"
     const text = $('body').text().toUpperCase();
     const pegaMatches = [...text.matchAll(/\bPEGA[A-Z0-9]{1,8}\b/g)].map(m => m[0]);
     for (const c of pegaMatches) pushOrdered(c);
 
     if (ordered.length < max) {
-      // 3) Fallback genérico (qualquer "palavra" 4..12 caracteres em caixa alta),
-      // filtrando blacklist e evitando números "soltos".
+      // 3) Fallback genérico
       const generic = [...text.matchAll(/\b[A-Z0-9]{4,12}\b/g)].map(m => m[0]);
       for (const c of generic) pushOrdered(c);
     }
@@ -95,7 +94,7 @@ async function fetchCoupons(max = 2) {
     // ignora e cai no fallback
   }
 
-  // Fallback final: cupom padrão (também atualiza cache para evitar bater no site a cada chamada)
+  // Fallback final
   _cache = { ts: now, list: [DEFAULT_COUPON] };
   return [DEFAULT_COUPON].slice(0, Math.max(1, max));
 }
