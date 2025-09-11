@@ -1,7 +1,7 @@
 // src/modules/assistant-bot.js
 // Liga entrada (mensagens 1:1) -> coalesce/greet ->
 // intents (cupons/promos/sorteio/agradecimento/redes/sabonetes/suporte/segurança/marcas)
-// -> OpenAI -> reply-queue
+// -> OpenAI (Playground) -> reply-queue
 
 const fs = require('fs');
 const axios = require('axios');
@@ -294,6 +294,7 @@ async function askOpenAI({ prompt, userName, isNewTopic }) {
 function extractText(msg) {
   try {
     const m0 = msg?.message || {};
+    as const;
     const m = m0.ephemeralMessage?.message || m0;
     if (m.conversation) return m.conversation;
     if (m.extendedTextMessage?.text) return m.extendedTextMessage.text;
@@ -340,20 +341,23 @@ function buildUpsertHandler(getSock) {
         const joined = batch.join(' ').trim();
 
         const intent = detectIntent ? detectIntent(joined) : { type: null, data: null };
+        const MODE = String(process.env.ASSISTANT_MODE || 'hybrid').toLowerCase();
 
-        // 0) segurança
+        // 0) segurança (sempre ativa)
         if (intent.type === 'security') { enqueueText(sockNow, jid, securityReply()); return; }
 
-        // 1) atalhos (mantidos p/ compat)
-        if (intent.type === 'thanks' || wantsThanks(joined))                 { replyThanks(sockNow, jid); return; }
-        if (intent.type === 'coupon_problem' || wantsCouponProblem(joined))  { replyCouponProblem(sockNow, jid); return; }
-        if (intent.type === 'order_support'  || wantsOrderSupport(joined))   { replyOrderSupport(sockNow, jid); return; }
-        if (intent.type === 'raffle'         || wantsRaffle(joined))         { replyRaffle(sockNow, jid); return; }
-        if (intent.type === 'coupon'         || wantsCoupon(joined))         { await replyCoupons(sockNow, jid); return; }
-        if (intent.type === 'promos'         || wantsPromos(joined))         { await replyPromos(sockNow, jid); return; }
-        if (intent.type === 'social'         || wantsSocial(joined))         { replySocial(sockNow, jid, joined); return; }
-        if (intent.type === 'soap'           || wantsSoap(joined))           { await replySoap(sockNow, jid); return; }
-        if (intent.type === 'brand')                                           { await replyBrand(sockNow, jid, intent.data.name); return; }
+        // 1) atalhos (somente quando em modo "hybrid"; em "llm_strict" tudo vai para o Playground)
+        if (MODE === 'hybrid') {
+          if (intent.type === 'thanks' || wantsThanks(joined))                 { replyThanks(sockNow, jid); return; }
+          if (intent.type === 'coupon_problem' || wantsCouponProblem(joined))  { replyCouponProblem(sockNow, jid); return; }
+          if (intent.type === 'order_support'  || wantsOrderSupport(joined))   { replyOrderSupport(sockNow, jid); return; }
+          if (intent.type === 'raffle'         || wantsRaffle(joined))         { replyRaffle(sockNow, jid); return; }
+          if (intent.type === 'coupon'         || wantsCoupon(joined))         { await replyCoupons(sockNow, jid); return; }
+          if (intent.type === 'promos'         || wantsPromos(joined))         { await replyPromos(sockNow, jid); return; }
+          if (intent.type === 'social'         || wantsSocial(joined))         { replySocial(sockNow, jid, joined); return; }
+          if (intent.type === 'soap'           || wantsSoap(joined))           { await replySoap(sockNow, jid); return; }
+          if (intent.type === 'brand')                                           { await replyBrand(sockNow, jid, intent.data.name); return; }
+        }
 
         // Saudação por regra (opcional). Se desligada, Playground saúda.
         let isNewTopicForAI = ctx.shouldGreet;
