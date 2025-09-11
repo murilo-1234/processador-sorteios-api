@@ -1,5 +1,5 @@
 // src/services/name-utils.js
-// Higienização de nome e saudação por regra (opcional)
+// Higienização de nome e saudação por regra (opcional) — SEM EV: sempre 1º nome.
 
 function cleanFirstName(raw) {
   const s = String(raw || '').trim();
@@ -26,7 +26,7 @@ function buildRuleGreeting(firstName) {
   return `Olá! Sou o atendente virtual do ${who}. Como posso te ajudar hoje? 🙂`;
 }
 
-// alias para compatibilidade com o assistant-bot.js
+// alias para compatibilidade
 function buildGreeting(name) {
   return buildRuleGreeting(name);
 }
