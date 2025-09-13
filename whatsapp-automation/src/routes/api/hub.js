@@ -1,9 +1,10 @@
 // whatsapp-automation/src/routes/api/hub.js
-// API NOVA do Hub (isolada). Não mexe nas rotas antigas.
-// Por enquanto é um esqueleto seguro: lista instâncias, status "stub",
-// SSE de keepalive e endpoints de connect/disconnect com TODO.
+// API do Hub (isolada) + página multi-abas.
+// Mantém compat: não mexe nas rotas antigas do sistema.
 
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const router = express.Router();
 
 const {
@@ -11,18 +12,41 @@ const {
   getInstance,
 } = require('../../services/instance-registry');
 
-// Lista instâncias configuradas
-router.get('/api/hub/instances', (req, res) => {
+/* ---------------------------------------------------------------------------------------------
+ * Helpers de rótulos (labels das abas)
+ * - Salva/ler rótulos num JSON dentro do diretório de sessão
+ * - DEFAULT do dir agora é ./data/baileys (não mais /data/wa-sessions)
+ * -------------------------------------------------------------------------------------------*/
+const SESSION_BASE =
+  process.env.WA_SESSION_BASE ||
+  path.join(process.cwd(), 'data', 'baileys');
+
+const LABELS_FILE = path.join(SESSION_BASE, 'wa-instance-labels.json');
+
+function readLabels() {
+  try { return JSON.parse(fs.readFileSync(LABELS_FILE, 'utf8')); }
+  catch { return {}; }
+}
+function writeLabels(obj) {
+  try { fs.mkdirSync(path.dirname(LABELS_FILE), { recursive: true }); } catch {}
+  fs.writeFileSync(LABELS_FILE, JSON.stringify(obj, null, 2));
+}
+
+/* ---------------------------------------------------------------------------------------------
+ * API: lista de instâncias
+ * -------------------------------------------------------------------------------------------*/
+router.get('/api/hub/instances', (_req, res) => {
   return res.json({ ok: true, instances: listInstances() });
 });
 
-// Status "stub" (vamos integrar ao WhatsApp depois)
+/* ---------------------------------------------------------------------------------------------
+ * API: status (stub por enquanto – não interfere no que já existe)
+ * -------------------------------------------------------------------------------------------*/
 router.get('/api/hub/status', (req, res) => {
   const inst = String(req.query.inst || '').trim();
   const info = getInstance(inst);
   if (!info) return res.status(404).json({ ok: false, error: 'instance_not_found' });
 
-  // TODO: integrar com o status real do WhatsApp (sock)
   return res.json({
     ok: true,
     inst,
@@ -33,7 +57,9 @@ router.get('/api/hub/status', (req, res) => {
   });
 });
 
-// SSE de keepalive (a UI fica "ouvindo" e a gente manda pings)
+/* ---------------------------------------------------------------------------------------------
+ * API: SSE de keepalive (hello + ping)
+ * -------------------------------------------------------------------------------------------*/
 router.get('/api/hub/stream', (req, res) => {
   const inst = String(req.query.inst || '').trim();
   if (!getInstance(inst)) {
@@ -52,98 +78,81 @@ router.get('/api/hub/stream', (req, res) => {
   const send = (event, data) =>
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 
-  // hello imediato e pings periódicos
   send('hello', { inst, t: Date.now() });
-  const interval = setInterval(() => send('ping', { t: Date.now() }), 25000);
-
+  const interval = setInterval(() => send('ping', { t: Date.now() }), 25_000);
   req.on('close', () => clearInterval(interval));
 });
 
-// Conectar (stub) – futuramente dispara o fluxo que gera QR
+/* ---------------------------------------------------------------------------------------------
+ * API: connect/disconnect (stubs – não liga/desliga nada por enquanto)
+ * -------------------------------------------------------------------------------------------*/
 router.post('/api/hub/connect', (req, res) => {
   const inst = String(req.query.inst || '').trim();
   if (!getInstance(inst)) return res.status(404).json({ ok: false, error: 'instance_not_found' });
-
-  // TODO: acionar connect real
   return res.status(202).json({ ok: true, inst, queued: true });
 });
 
-// Desconectar (stub) – futuramente faz logout/clear session
 router.post('/api/hub/disconnect', (req, res) => {
   const inst = String(req.query.inst || '').trim();
   if (!getInstance(inst)) return res.status(404).json({ ok: false, error: 'instance_not_found' });
-
-  // TODO: acionar disconnect real
   return res.status(202).json({ ok: true, inst, queued: true });
 });
 
-// ====== Suporte a rótulos (nomes das abas) ======
-const fs = require('fs');
-const path = require('path');
+/* ---------------------------------------------------------------------------------------------
+ * API: salvar rótulo da instância
+ * - Compat com dois caminhos: /api/instances/:id/label e /admin/api/instances/:id/label
+ *   (a UI chama o segundo).
+ * -------------------------------------------------------------------------------------------*/
+const saveLabelHandler = [
+  express.json(),
+  (req, res) => {
+    const id = String(req.params.id || '').trim();
+    const label = String(req.body?.label || '').trim();
+    if (!id)    return res.status(400).json({ ok: false, error: 'missing id' });
+    if (!label) return res.status(400).json({ ok: false, error: 'label obrigatório' });
 
-const LABELS_FILE =
-  process.env.WA_LABELS_FILE ||
-  path.join(process.env.WA_SESSION_BASE || '/data/wa-sessions', '..', 'wa-instance-labels.json');
+    if (!getInstance(id)) {
+      return res.status(404).json({ ok: false, error: 'instância não encontrada' });
+    }
 
-function readLabels() {
-  try {
-    return JSON.parse(fs.readFileSync(LABELS_FILE, 'utf8'));
-  } catch (_) {
-    return {};
+    const labels = readLabels();
+    labels[id] = label;
+    writeLabels(labels);
+
+    return res.json({ ok: true, instance: { id, label } });
   }
-}
-function writeLabels(obj) {
+];
+
+router.post('/api/instances/:id/label',  ...saveLabelHandler);
+router.post('/admin/api/instances/:id/label', ...saveLabelHandler);
+
+/* ---------------------------------------------------------------------------------------------
+ * Página multi-abas (dois aliases: /admin/wa-multi e /wa-multi)
+ * - Usa a UI clássica dentro de um iframe: /admin/whatsapp?inst=...
+ * - Renomear aba usa /admin/api/instances/:id/label
+ * -------------------------------------------------------------------------------------------*/
+router.get(['/admin/wa-multi', '/wa-multi'], async (req, res) => {
+  // Tenta via HTTP (absolute) e cai para leitura direta se falhar
+  let instances = [];
   try {
-    fs.mkdirSync(path.dirname(LABELS_FILE), { recursive: true });
-  } catch {}
-  fs.writeFileSync(LABELS_FILE, JSON.stringify(obj, null, 2));
-}
+    const origin = `${req.protocol}://${req.get('host')}`;
+    const r = await fetch(origin + '/api/hub/instances');
+    const j = await r.json().catch(() => ({}));
+    instances = Array.isArray(j.instances) ? j.instances : [];
+  } catch {
+    instances = listInstances();
+  }
 
-// API para salvar rótulo da instância
-router.post('/instances/:id/label', express.json(), (req, res) => {
-  const id = req.params.id;
-  const { label } = req.body || {};
-  if (!label) return res.status(400).json({ ok: false, error: 'label obrigatório' });
-
-  const inst = getInstance(id);
-  if (!inst) return res.status(404).json({ ok: false, error: 'instância não encontrada' });
-
-  inst.label = String(label);
-
-  // Se você persiste instâncias em arquivo, salve aqui (ex.: saveRegistry()).
-  return res.json({ ok: true, instance: { id: inst.id, label: inst.label } });
-});
-
-
-// ====== Página com múltiplas abas ======
-router.get('/wa-multi', async (req, res) => {
-  // URL base (o admin fica montado sob /admin, então removemos "/admin")
-  const base = req.baseUrl.replace(/\/admin$/, '');
-
-  // Consulta as instâncias do hub
-  // (usa sua própria API já existente: /api/hub/instances)
-  const instancesResp = await fetch(`${base}/api/hub/instances`);
-  const instancesJson = await instancesResp.json().catch(() => ({ instances: [] }));
-  const instances = Array.isArray(instancesJson.instances) ? instancesJson.instances : [];
-
-  // Mescla rótulos salvos em disco
   const labels = readLabels();
   const withLabels = instances.map((inst, idx) => ({
     id: String(inst.id),
     label: labels[inst.id] || inst.label || `whatsapp ${idx + 1}`,
   }));
 
-  // Gera botões/abas
-  const tabs = withLabels
-    .map(
-      (inst, i) => `
-      <button class="tab ${i === 0 ? 'active' : ''}" data-inst="${inst.id}" data-label="${inst.label}">
-        ${inst.label}
-      </button>`
-    )
-    .join('');
+  const tabs = withLabels.map((inst, i) =>
+    `<button class="tab ${i === 0 ? 'active' : ''}" data-inst="${inst.id}" data-label="${inst.label}">${inst.label}</button>`
+  ).join('');
 
-  // Primeira aba selecionada
   const first = withLabels[0]?.id || '';
 
   res.type('html').send(`<!doctype html>
@@ -168,13 +177,10 @@ router.get('/wa-multi', async (req, res) => {
 <body>
   <div class="wrap">
     <h2>Hub – Admin <small class="tip">(multi)</small></h2>
-    <p class="tip">Dica: os botões abaixo são as “abas”. Clique para alternar entre os números.  
-    Dê <b>duplo-clique</b> em uma aba para renomear.</p>
+    <p class="tip">Os botões abaixo são as “abas”. Clique para alternar. Dê <b>duplo clique</b> para renomear.</p>
 
     <div class="row" id="tabs">${tabs}
-      <button id="add" class="tab" style="background:#253051" title="Abrir UI clássica">
-        +
-      </button>
+      <button id="add" class="tab" style="background:#253051" title="Abrir lista clássica">+</button>
     </div>
 
     <div class="toolbar">
@@ -184,17 +190,13 @@ router.get('/wa-multi', async (req, res) => {
       <span class="pill">Status JSON</span>
     </div>
 
-    <iframe id="frame"
-      src="${base}/admin/whatsapp?inst=${encodeURIComponent(first)}"
-      loading="lazy"
-      referrerpolicy="no-referrer"
-      allow="clipboard-write"></iframe>
+    <iframe id="frame" src="/admin/whatsapp?inst=${encodeURIComponent(first)}"
+      loading="lazy" referrerpolicy="no-referrer" allow="clipboard-write"></iframe>
   </div>
 
 <script>
-  const base = "${base}";
   const tabsEl = document.getElementById('tabs');
-  const frame = document.getElementById('frame');
+  const frame  = document.getElementById('frame');
 
   function setActive(btn){
     [...tabsEl.querySelectorAll('.tab')].forEach(b => b.classList.remove('active'));
@@ -206,10 +208,9 @@ router.get('/wa-multi', async (req, res) => {
     if (!btn || btn.id === 'add') return;
     const inst = btn.dataset.inst;
     setActive(btn);
-    frame.src = base + "/admin/whatsapp?inst=" + encodeURIComponent(inst);
+    frame.src = "/admin/whatsapp?inst=" + encodeURIComponent(inst);
   });
 
-  // Renomear com duplo-clique
   tabsEl.addEventListener('dblclick', async (e) => {
     const btn = e.target.closest('.tab');
     if (!btn || btn.id === 'add') return;
@@ -218,25 +219,18 @@ router.get('/wa-multi', async (req, res) => {
     const next = prompt("Nome da aba:", current);
     if (!next || next === current) return;
 
-    const ok = await fetch(base + "/admin/api/instances/" + encodeURIComponent(inst) + "/label", {
+    const ok = await fetch("/admin/api/instances/" + encodeURIComponent(inst) + "/label", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ label: next })
     }).then(r => r.ok).catch(() => false);
 
-    if (ok) {
-      btn.dataset.label = next;
-      btn.textContent = next;
-    } else {
-      alert("Não foi possível salvar o nome. Tente novamente.");
-    }
+    if (ok) { btn.dataset.label = next; btn.textContent = next; }
+    else { alert("Não foi possível salvar o nome. Tente novamente."); }
   });
 
-  // Botão “+” → abre a UI clássica (só para o usuário escolher)
   document.getElementById('add').addEventListener('click', () => {
-    const act = tabsEl.querySelector('.tab.active');
-    const inst = act?.dataset.inst || '';
-    window.open(base + "/admin/hub", "_blank");
+    window.open("/admin/hub", "_blank");
   });
 </script>
 </body>
