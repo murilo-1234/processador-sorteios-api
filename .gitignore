@@ -1,0 +1,7 @@
+# Dados do Hub (não versionar)
+data/wa-instances.json
+whatsapp-automation/data/wa-instances.json
+
+# Sessões do WhatsApp (Baileys) - ficam só no disco persistente da Render
+data/whatsapp-session/
+whatsapp-automation/data/whatsapp-session/
