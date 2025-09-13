@@ -5,28 +5,27 @@ const path = require('path');
 
 const router = express.Router();
 
-/* ------------------------------------------------------------------ */
-/* Helpers: instâncias e rótulos                                       */
-/* ------------------------------------------------------------------ */
+/* --------------------------------------------------------- */
+/* Helpers: instâncias e rótulos                             */
+/* --------------------------------------------------------- */
 
 function getEnvInstanceIds() {
   const raw = process.env.WA_INSTANCE_IDS || '';
   return raw
     .split(',')
-    .map((s) => s.trim())
+    .map(s => s.trim())
     .filter(Boolean);
 }
 
-// tenta usar um “registry” do projeto (se existir)
+// tenta pegar do registry do projeto (se existir)
 function tryListInstancesFromRegistry() {
   try {
     // eslint-disable-next-line global-require, import/no-extraneous-dependencies
     const { listInstances } = require('../../services/instance-registry');
     const arr = listInstances?.() || [];
-    // normaliza: { id, label? }
     return arr
-      .map((i) => ({ id: i.id, label: i.label || i.id }))
-      .filter((i) => i.id);
+      .map(i => ({ id: i.id, label: i.label || i.id }))
+      .filter(i => i.id);
   } catch {
     return null;
   }
@@ -36,7 +35,6 @@ function listInstances() {
   const fromSvc = tryListInstancesFromRegistry();
   if (fromSvc && Array.isArray(fromSvc) && fromSvc.length) return fromSvc;
 
-  // fallback: só com env
   const ids = getEnvInstanceIds();
   return ids.map((id, idx) => ({
     id,
@@ -46,63 +44,53 @@ function listInstances() {
 
 const SESSION_BASE = process.env.WA_SESSION_BASE || '/data/wa-sessions';
 const LABELS_FILE =
-  process.env.WA_LABELS_FILE || path.join(SESSION_BASE, '..', 'wa-instance-labels.json');
+  process.env.WA_LABELS_FILE ||
+  path.join(SESSION_BASE, '..', 'wa-instance-labels.json');
 
 function readLabels() {
-  try {
-    return JSON.parse(fs.readFileSync(LABELS_FILE, 'utf8'));
-  } catch {
-    return {};
-  }
+  try { return JSON.parse(fs.readFileSync(LABELS_FILE, 'utf8')); }
+  catch { return {}; }
 }
 function writeLabels(obj) {
-  try {
-    fs.mkdirSync(path.dirname(LABELS_FILE), { recursive: true });
-  } catch {}
+  try { fs.mkdirSync(path.dirname(LABELS_FILE), { recursive: true }); } catch {}
   fs.writeFileSync(LABELS_FILE, JSON.stringify(obj, null, 2));
 }
 
 function mergeLabels(insts) {
   const labels = readLabels();
-  return insts.map((i) => ({
+  return insts.map(i => ({
     id: i.id,
     label: labels[i.id] || i.label || i.id,
   }));
 }
 
 function escHtml(s = '') {
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(s).replace(/&/g, '&amp;')
+                  .replace(/</g, '&lt;')
+                  .replace(/>/g, '&gt;');
 }
 
-/* ------------------------------------------------------------------ */
-/* /admin/hub - listagem simples                                       */
-/* ------------------------------------------------------------------ */
+/* --------------------------------------------------------- */
+/* /admin/hub - listagem simples                             */
+/* --------------------------------------------------------- */
 
 router.get(['/hub', '/admin/hub'], (req, res) => {
-  const origin = `${req.protocol}://${req.get('host')}`; // https://… (sem /admin)
+  const origin = `${req.protocol}://${req.get('host')}`; // https://... (sem /admin)
   const insts = mergeLabels(listInstances());
 
   const rows = insts.length
-    ? insts
-        .map(
-          (it) => `
-          <tr>
-            <td style="font-family:monospace">${escHtml(it.id)}</td>
-            <td>
-              <a href="${origin}/api/hub/instances/${encodeURIComponent(it.id)}/status" target="_blank">status</a> ·
-              <a href="${origin}/api/hub/instances/${encodeURIComponent(it.id)}/qr" target="_blank">qr</a> ·
-              <a href="#" onclick="post('${origin}/api/hub/instances/${encodeURIComponent(it.id)}/connect');return false;">conectar</a> ·
-              <a href="#" onclick="post('${origin}/api/hub/instances/${encodeURIComponent(it.id)}/disconnect');return false;">desconectar</a> ·
-              <a href="#" onclick="if(confirm('Limpar sessão de ${escHtml(
-                it.id
-              )}?')) post('${origin}/api/hub/instances/${encodeURIComponent(it.id)}/clear');return false;">limpar sessão</a> ·
-              <a href="${origin}/admin/whatsapp?inst=${encodeURIComponent(
-                it.id
-              )}" target="_blank">UI clássica</a>
-            </td>
-          </tr>`
-        )
-        .join('')
+    ? insts.map(it => `
+      <tr>
+        <td style="font-family:monospace">${escHtml(it.id)}</td>
+        <td>
+          <a href="${origin}/api/hub/instances/${encodeURIComponent(it.id)}/status" target="_blank">status</a> ·
+          <a href="${origin}/api/hub/instances/${encodeURIComponent(it.id)}/qr" target="_blank">qr</a> ·
+          <a href="#" onclick="post('${origin}/api/hub/instances/${encodeURIComponent(it.id)}/connect');return false;">conectar</a> ·
+          <a href="#" onclick="post('${origin}/api/hub/instances/${encodeURIComponent(it.id)}/disconnect');return false;">desconectar</a> ·
+          <a href="#" onclick="if(confirm('Limpar sessão de ${escHtml(it.id)}?')) post('${origin}/api/hub/instances/${encodeURIComponent(it.id)}/clear');return false;">limpar sessão</a> ·
+          <a href="${origin}/admin/whatsapp?inst=${encodeURIComponent(it.id)}" target="_blank">UI clássica</a>
+        </td>
+      </tr>`).join('')
     : `<tr><td colspan="2">Sem IDs. Defina a env <code>WA_INSTANCE_IDS</code> (ex.: 489111707,48922223333)</td></tr>`;
 
   res.type('html').send(`<!doctype html>
@@ -138,23 +126,18 @@ router.get(['/hub', '/admin/hub'], (req, res) => {
 </html>`);
 });
 
-/* ------------------------------------------------------------------ */
-/* /admin/wa-multi - UI com abas                                       */
-/* ------------------------------------------------------------------ */
+/* --------------------------------------------------------- */
+/* /admin/wa-multi - UI com abas                             */
+/* --------------------------------------------------------- */
 
 router.get(['/wa-multi', '/admin/wa-multi'], (req, res) => {
-  const origin = `${req.protocol}://${req.get('host')}`; // https://… (sem /admin)
-  const adminBase = `${origin}/admin`; // https://…/admin
+  const origin = `${req.protocol}://${req.get('host')}`;   // https://... (sem /admin)
+  const adminBase = `${origin}/admin`;                     // https://.../admin
   const insts = mergeLabels(listInstances());
 
-  const buttons = insts
-    .map(
-      (it, i) =>
-        `<button class="tab${i === 0 ? ' active' : ''}" data-inst="${escHtml(it.id)}">${escHtml(
-          it.label
-        )}</button>`
-    )
-    .join(' ');
+  const buttons = insts.map((it, i) =>
+    `<button class="tab${i === 0 ? ' active' : ''}" data-inst="${escHtml(it.id)}">${escHtml(it.label)}</button>`
+  ).join(' ');
 
   res.type('html').send(`<!doctype html>
 <html>
@@ -163,10 +146,7 @@ router.get(['/wa-multi', '/admin/wa-multi'], (req, res) => {
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Hub – Admin (multi)</title>
 <style>
-  :root{
-    --bg:#0f1623;--panel:#162231;--text:#d9e1ee;--muted:#9bb0c9;
-    --brand:#1f6feb;--line:#20324a
-  }
+  :root{ --bg:#0f1623;--panel:#162231;--text:#d9e1ee;--muted:#9bb0c9;--brand:#1f6feb;--line:#20324a }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
   .wrap{padding:24px;max-width:1200px;margin:0 auto}
@@ -221,18 +201,34 @@ router.get(['/wa-multi', '/admin/wa-multi'], (req, res) => {
   const ADMIN  = ${JSON.stringify(adminBase)};   // https://…/admin
   const INSTS  = ${JSON.stringify(insts)};       // [{id,label},...]
 
-  // raiz da sua API do hub
-  const API = ORIGIN + '/api/hub';
+  // raiz da API do hub
+  const API_ROOT = ORIGIN + '/api/hub';
+
+  // vamos detectar automaticamente se o backend usa /instances ou /inst
+  let _seg = 'instances'; // padrão novo
+  async function pickSeg(id){
+    if (window.__pickedSeg) return _seg;
+    for (const seg of ['instances','inst']) {
+      try {
+        const r = await fetch(\`\${API_ROOT}/\${seg}/\${encodeURIComponent(id)}/status\`);
+        if (r.ok) { _seg = seg; window.__pickedSeg = true; return _seg; }
+      } catch {}
+    }
+    // se nada respondeu OK, ficamos no 'instances' mesmo
+    window.__pickedSeg = true;
+    return _seg;
+  }
 
   let current = INSTS.length ? INSTS[0].id : '';
 
+  // util POST JSON
   async function postJson(url, body){
     const r = await fetch(url, {
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify(body || {})
     });
-    return r.json().catch(()=> ({}));
+    return r;
   }
 
   // Alternar aba
@@ -255,10 +251,10 @@ router.get(['/wa-multi', '/admin/wa-multi'], (req, res) => {
     const label = prompt('Novo nome para esta aba:', atual);
     if(!label || label === atual) return;
 
-    // rota vive sob /admin
-    const res = await postJson(ADMIN + '/api/instances/' + encodeURIComponent(id) + '/label', { label });
-    if(res && res.ok) btn.textContent = label;
-    else alert('Não consegui renomear: ' + (res && res.error || 'erro'));
+    const r = await postJson(ADMIN + '/api/instances/' + encodeURIComponent(id) + '/label', { label });
+    const j = await r.json().catch(()=> ({}));
+    if(j && j.ok) btn.textContent = label;
+    else alert('Não consegui renomear');
   });
 
   // UI clássica
@@ -270,14 +266,16 @@ router.get(['/wa-multi', '/admin/wa-multi'], (req, res) => {
   // Status + QR
   async function render(){
     await renderStatus();
-    renderQR();
+    await renderQR();
   }
+
   async function renderStatus(){
     const txt = document.getElementById('status');
     if(!current){ txt.value = 'Nenhuma instância selecionada'; return; }
     txt.value = 'Carregando status...';
     try{
-      const r = await fetch(API + '/instances/' + encodeURIComponent(current) + '/status');
+      const seg = await pickSeg(current);
+      const r = await fetch(\`\${API_ROOT}/\${seg}/\${encodeURIComponent(current)}/status\`);
       if(!r.ok) throw new Error(r.status);
       const j = await r.json();
       txt.value = JSON.stringify(j, null, 2);
@@ -285,11 +283,13 @@ router.get(['/wa-multi', '/admin/wa-multi'], (req, res) => {
       txt.value = 'Erro ao consultar status';
     }
   }
-  function renderQR(){
+
+  async function renderQR(){
     const box = document.getElementById('qr-area');
     if(!current){ box.textContent = 'Selecione uma instância'; return; }
+    const seg = await pickSeg(current);
     const ts = Date.now();
-    box.innerHTML = '<img alt="QR" src="' + (API + '/instances/' + encodeURIComponent(current) + '/qr?ts=' + ts) + '">';
+    box.innerHTML = '<img alt="QR" src="' + (API_ROOT + '/' + seg + '/' + encodeURIComponent(current) + '/qr?ts=' + ts) + '">';
   }
 
   // Ações
@@ -300,7 +300,8 @@ router.get(['/wa-multi', '/admin/wa-multi'], (req, res) => {
   async function doAction(kind){
     if(!current) return;
     try{
-      const r = await fetch(API + '/instances/' + encodeURIComponent(current) + '/' + kind, { method:'POST' });
+      const seg = await pickSeg(current);
+      const r = await fetch(\`\${API_ROOT}/\${seg}/\${encodeURIComponent(current)}/\${kind}\`, { method:'POST' });
       if(!r.ok) throw new Error(r.status);
       await render();
     }catch(e){
@@ -316,24 +317,20 @@ router.get(['/wa-multi', '/admin/wa-multi'], (req, res) => {
 </html>`);
 });
 
-/* ------------------------------------------------------------------ */
-/* API: salvar rótulo (rename)                                        */
-/* POST /admin/api/instances/:id/label                                */
-/* ------------------------------------------------------------------ */
-router.post(
-  ['/api/instances/:id/label', '/admin/api/instances/:id/label'],
-  express.json(),
-  (req, res) => {
-    const id = String(req.params.id || '').trim();
-    const label = String(req.body?.label || '').trim();
-    if (!id) return res.status(400).json({ ok: false, error: 'missing id' });
+/* --------------------------------------------------------- */
+/* API: salvar rótulo (rename)                               */
+/* POST /admin/api/instances/:id/label                       */
+/* --------------------------------------------------------- */
+router.post(['/api/instances/:id/label', '/admin/api/instances/:id/label'], express.json(), (req, res) => {
+  const id = String(req.params.id || '').trim();
+  const label = String(req.body?.label || '').trim();
+  if (!id) return res.status(400).json({ ok: false, error: 'missing id' });
 
-    const labels = readLabels();
-    labels[id] = label || id;
-    writeLabels(labels);
+  const labels = readLabels();
+  labels[id] = label || id;
+  writeLabels(labels);
 
-    res.json({ ok: true, id, label: labels[id] });
-  }
-);
+  res.json({ ok: true, id, label: labels[id] });
+});
 
 module.exports = router;
