@@ -132,7 +132,7 @@ router.get(['/hub', '/admin/hub'], (req, res) => {
 
 router.get(['/wa-multi', '/admin/wa-multi'], (req, res) => {
   const origin = `${req.protocol}://${req.get('host')}`;   // https://... (sem /admin)
-  const adminBase = `${origin}/admin`;                     // https://.../admin
+  const adminBase = `${origin}/admin`;                     // https://…/admin
   const insts = mergeLabels(listInstances());
 
   const buttons = insts.map((it, i) =>
