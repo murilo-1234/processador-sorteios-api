@@ -100,15 +100,20 @@ function writeLabels(obj) {
 }
 
 // API para salvar rótulo da instância
-router.post('/api/instances/:id/label', express.json(), (req, res) => {
-  const id = String(req.params.id || '').trim();
-  const label = String(req.body?.label || '').trim();
-  if (!id) return res.status(400).json({ ok: false, error: 'missing id' });
-  const labels = readLabels();
-  labels[id] = label || id;
-  writeLabels(labels);
-  return res.json({ ok: true, id, label: labels[id] });
+router.post('/instances/:id/label', express.json(), (req, res) => {
+  const id = req.params.id;
+  const { label } = req.body || {};
+  if (!label) return res.status(400).json({ ok: false, error: 'label obrigatório' });
+
+  const inst = getInstance(id);
+  if (!inst) return res.status(404).json({ ok: false, error: 'instância não encontrada' });
+
+  inst.label = String(label);
+
+  // Se você persiste instâncias em arquivo, salve aqui (ex.: saveRegistry()).
+  return res.json({ ok: true, instance: { id: inst.id, label: inst.label } });
 });
+
 
 // ====== Página com múltiplas abas ======
 router.get('/wa-multi', async (req, res) => {
