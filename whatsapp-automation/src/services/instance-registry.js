@@ -1,13 +1,12 @@
 // whatsapp-automation/src/services/instance-registry.js
-// Lê instâncias do ENV WA_INSTANCE_IDS (CSV) ou de um arquivo JSON.
-// Mantém em memória e expõe helpers simples.
+// Fonte: ENV WA_INSTANCE_IDS ou arquivo JSON (opcional).
 
 const fs = require('fs');
 const path = require('path');
 
 const FILE_CANDIDATES = [
   path.resolve('/data/wa-instances.json'),
-  path.resolve(process.cwd(), 'data', 'wa-instances.json'), // fallback no projeto
+  path.resolve(process.cwd(), 'data', 'wa-instances.json'),
 ];
 
 let cache = [];
@@ -32,7 +31,7 @@ function readJsonIfExists(file) {
       const arr = JSON.parse(txt);
       if (Array.isArray(arr)) return arr;
     }
-  } catch (_) { /* ignore */ }
+  } catch (_) {}
   return null;
 }
 
