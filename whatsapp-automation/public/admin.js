@@ -2,6 +2,35 @@
 
 let currentSection = 'dashboard';
 
+// ===== Bridge multi-instância (clássico) =====
+const QS = new URLSearchParams(location.search);
+let CURRENT_INST = QS.get('inst') || ''; // ex: 489111707
+
+// Monkey-patch do fetch: anexa ?inst=... em TODAS as chamadas /api/
+const _fetch = window.fetch.bind(window);
+window.fetch = (input, init) => {
+  try {
+    let url = (typeof input === 'string') ? input : input.url;
+    if (CURRENT_INST && typeof url === 'string' && url.startsWith('/api/')) {
+      const sep = url.includes('?') ? '&' : '?';
+      url = url + sep + 'inst=' + encodeURIComponent(CURRENT_INST);
+      input = url;
+    }
+  } catch (e) {
+    // silencioso
+  }
+  return _fetch(input, init);
+};
+
+// (Opcional) Badge no topo com a instância atual
+document.addEventListener('DOMContentLoaded', async () => {
+  if (!CURRENT_INST) return;
+  const badge = document.createElement('div');
+  badge.style.cssText = 'position:fixed;right:12px;top:12px;background:#eef;border:1px solid #99c;padding:6px 10px;border-radius:8px;font:12px/1.2 sans-serif;z-index:9999';
+  badge.textContent = 'Instância atual: ' + CURRENT_INST;
+  document.body.appendChild(badge);
+});
+
 // Inicialização
 document.addEventListener('DOMContentLoaded', function() {
     loadStats();
