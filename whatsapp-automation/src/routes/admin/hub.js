@@ -126,7 +126,7 @@ router.get('/hub', (req, res) => {
 /* /admin/wa-multi - UI em abas + rename rótulo                        */
 /* ------------------------------------------------------------------ */
 
-router.get('/wa-multi', (req, res) => {
+router.get('/admin/wa-multi', (req, res) => {
   const origin = `${req.protocol}://${req.get('host')}`;        // ex.: https://app.onrender.com
   const adminBase = `${origin}${req.baseUrl || '/admin'}`;      // ex.: https://app.onrender.com/admin
 
@@ -281,7 +281,7 @@ router.get('/wa-multi', (req, res) => {
 /* API: salvar rótulo (rename)                                        */
 /* POST /admin/api/instances/:id/label                                */
 /* ------------------------------------------------------------------ */
-router.post('/api/instances/:id/label', express.json(), (req, res) => {
+router.post('/admin/api/instances/:id/label', express.json(), (req, res) => {
   const id = String(req.params.id || '').trim();
   const label = String(req.body?.label || '').trim();
   if (!id) return res.status(400).json({ ok: false, error: 'missing id' });
