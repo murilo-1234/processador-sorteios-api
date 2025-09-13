@@ -1,6 +1,7 @@
 // src/routes/admin/hub.js
 const express = require('express');
 const router = express.Router();
+const path = require('path');
 
 function getInstanceIds() {
   const raw = process.env.WA_INSTANCE_IDS || '';
@@ -72,6 +73,11 @@ router.get('/admin/hub', (req, res) => {
 </body>
 </html>
   `);
+});
+
+// UI com múltiplas abas (abre a página /public/admin-multi.html)
+router.get('/admin/wa-multi', (req, res) => {
+  res.sendFile(path.join(__dirname, '../../../public/admin-multi.html'));
 });
 
 module.exports = router;
