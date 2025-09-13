@@ -1,5 +1,5 @@
 // whatsapp-automation/src/routes/api/hub.js
-// API do Hub (isolada) + página multi-abas.
+// API do Hub (isolada) + página multi-abas, com retrocompat.
 // Mantém compat: não mexe nas rotas antigas do sistema.
 
 const express = require('express');
@@ -12,11 +12,11 @@ const {
   getInstance,
 } = require('../../services/instance-registry');
 
-/* ---------------------------------------------------------------------------------------------
+/* ==============================================================================================
  * Helpers de rótulos (labels das abas)
  * - Salva/ler rótulos num JSON dentro do diretório de sessão
  * - DEFAULT do dir agora é ./data/baileys (não mais /data/wa-sessions)
- * -------------------------------------------------------------------------------------------*/
+ * ============================================================================================*/
 const SESSION_BASE =
   process.env.WA_SESSION_BASE ||
   path.join(process.cwd(), 'data', 'baileys');
@@ -32,21 +32,32 @@ function writeLabels(obj) {
   fs.writeFileSync(LABELS_FILE, JSON.stringify(obj, null, 2));
 }
 
-/* ---------------------------------------------------------------------------------------------
- * API: lista de instâncias
- * -------------------------------------------------------------------------------------------*/
+/* ==============================================================================================
+ * Utils
+ * ============================================================================================*/
+function escHtml(s = '') {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// PNG 1x1 transparente (placeholder) — satisfaz <img src="/qr">
+const ONE_BY_ONE_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/atqK1QAAAAASUVORK5CYII=',
+  'base64'
+);
+
+/* ==============================================================================================
+ * API NOVA
+ * ============================================================================================*/
 router.get('/api/hub/instances', (_req, res) => {
   return res.json({ ok: true, instances: listInstances() });
 });
 
-/* ---------------------------------------------------------------------------------------------
- * API: status (stub por enquanto – não interfere no que já existe)
- * -------------------------------------------------------------------------------------------*/
 router.get('/api/hub/status', (req, res) => {
   const inst = String(req.query.inst || '').trim();
   const info = getInstance(inst);
   if (!info) return res.status(404).json({ ok: false, error: 'instance_not_found' });
 
+  // STUB: integre com status real do WhatsApp quando quiser
   return res.json({
     ok: true,
     inst,
@@ -57,9 +68,6 @@ router.get('/api/hub/status', (req, res) => {
   });
 });
 
-/* ---------------------------------------------------------------------------------------------
- * API: SSE de keepalive (hello + ping)
- * -------------------------------------------------------------------------------------------*/
 router.get('/api/hub/stream', (req, res) => {
   const inst = String(req.query.inst || '').trim();
   if (!getInstance(inst)) {
@@ -83,9 +91,6 @@ router.get('/api/hub/stream', (req, res) => {
   req.on('close', () => clearInterval(interval));
 });
 
-/* ---------------------------------------------------------------------------------------------
- * API: connect/disconnect (stubs – não liga/desliga nada por enquanto)
- * -------------------------------------------------------------------------------------------*/
 router.post('/api/hub/connect', (req, res) => {
   const inst = String(req.query.inst || '').trim();
   if (!getInstance(inst)) return res.status(404).json({ ok: false, error: 'instance_not_found' });
@@ -98,11 +103,69 @@ router.post('/api/hub/disconnect', (req, res) => {
   return res.status(202).json({ ok: true, inst, queued: true });
 });
 
-/* ---------------------------------------------------------------------------------------------
- * API: salvar rótulo da instância
- * - Compat com dois caminhos: /api/instances/:id/label e /admin/api/instances/:id/label
- *   (a UI chama o segundo).
- * -------------------------------------------------------------------------------------------*/
+/* ==============================================================================================
+ * API ANTIGA (retrocompat com a UI que chama /api/hub/inst/:id/...)
+ *   - status / qr / connect / disconnect / clear
+ *   - também oferece alias /api/hub/instances/:id/status para quem preferir /instances
+ * ============================================================================================*/
+
+// STATUS
+function statusPayload(id) {
+  // STUB compatível com a UI
+  return {
+    ok: true,
+    id,
+    connected: false,
+    connecting: false,
+    hasSock: false,
+    qr: false,
+    msisdn: null,
+    user: null,
+  };
+}
+router.get('/api/hub/inst/:id/status', (req, res) => {
+  const id = String(req.params.id || '').trim();
+  if (!getInstance(id)) return res.status(404).json({ ok: false, error: 'instance_not_found' });
+  return res.json(statusPayload(id));
+});
+// alias
+router.get('/api/hub/instances/:id/status', (req, res) => {
+  const id = String(req.params.id || '').trim();
+  if (!getInstance(id)) return res.status(404).json({ ok: false, error: 'instance_not_found' });
+  return res.json(statusPayload(id));
+});
+
+// QR (placeholder PNG para não quebrar a <img>)
+router.get('/api/hub/inst/:id/qr', (req, res) => {
+  const id = String(req.params.id || '').trim();
+  if (!getInstance(id)) return res.status(404).end();
+  res.set('Content-Type', 'image/png');
+  res.send(ONE_BY_ONE_PNG);
+});
+
+// CONNECT / DISCONNECT / CLEAR (stubs 202)
+function actionOk(id, action) {
+  return { ok: true, id, action, queued: true };
+}
+router.post('/api/hub/inst/:id/connect', (req, res) => {
+  const id = String(req.params.id || '').trim();
+  if (!getInstance(id)) return res.status(404).json({ ok: false, error: 'instance_not_found' });
+  return res.status(202).json(actionOk(id, 'connect'));
+});
+router.post('/api/hub/inst/:id/disconnect', (req, res) => {
+  const id = String(req.params.id || '').trim();
+  if (!getInstance(id)) return res.status(404).json({ ok: false, error: 'instance_not_found' });
+  return res.status(202).json(actionOk(id, 'disconnect'));
+});
+router.post('/api/hub/inst/:id/clear', (req, res) => {
+  const id = String(req.params.id || '').trim();
+  if (!getInstance(id)) return res.status(404).json({ ok: false, error: 'instance_not_found' });
+  return res.status(202).json(actionOk(id, 'clear'));
+});
+
+/* ==============================================================================================
+ * API: salvar rótulo da instância (dois caminhos compatíveis)
+ * ============================================================================================*/
 const saveLabelHandler = [
   express.json(),
   (req, res) => {
@@ -122,15 +185,14 @@ const saveLabelHandler = [
     return res.json({ ok: true, instance: { id, label } });
   }
 ];
-
 router.post('/api/instances/:id/label',  ...saveLabelHandler);
 router.post('/admin/api/instances/:id/label', ...saveLabelHandler);
 
-/* ---------------------------------------------------------------------------------------------
+/* ==============================================================================================
  * Página multi-abas (dois aliases: /admin/wa-multi e /wa-multi)
- * - Usa a UI clássica dentro de um iframe: /admin/whatsapp?inst=...
- * - Renomear aba usa /admin/api/instances/:id/label
- * -------------------------------------------------------------------------------------------*/
+ *   - Usa a UI clássica dentro de um iframe: /admin/whatsapp?inst=...
+ *   - Renomear aba usa /admin/api/instances/:id/label
+ * ============================================================================================*/
 router.get(['/admin/wa-multi', '/wa-multi'], async (req, res) => {
   // Tenta via HTTP (absolute) e cai para leitura direta se falhar
   let instances = [];
@@ -150,7 +212,7 @@ router.get(['/admin/wa-multi', '/wa-multi'], async (req, res) => {
   }));
 
   const tabs = withLabels.map((inst, i) =>
-    `<button class="tab ${i === 0 ? 'active' : ''}" data-inst="${inst.id}" data-label="${inst.label}">${inst.label}</button>`
+    `<button class="tab ${i === 0 ? 'active' : ''}" data-inst="${escHtml(inst.id)}" data-label="${escHtml(inst.label)}">${escHtml(inst.label)}</button>`
   ).join('');
 
   const first = withLabels[0]?.id || '';
