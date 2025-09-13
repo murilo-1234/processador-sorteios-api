@@ -22,6 +22,8 @@ const cron = require('node-cron')
 const WhatsAppClient = require('./services/whatsapp-client')
 const settings = require('./services/settings')
 const { runOnce } = require('./jobs/post-winner')
+const hubRoutes = require('./routes/api/hub');
+
 
 // SSE hub
 const { addClient: sseAddClient, broadcast: sseBroadcast } = require('./services/wa-sse')
@@ -122,11 +124,23 @@ class App {
     this.app.use(limiter)
     this.app.use(morgan('dev'))
     this.app.use(express.json())
+    this.app.use(hubRoutes);
     this.app.use(express.urlencoded({ extended: true }))
     this.app.use(express.static(path.join(__dirname, '../public')))
 
     const tp = process.env.TRUST_PROXY === '1' ? 1 : false
     this.app.set('trust proxy', tp)
+    
+    // Healthcheck para o Render
+this.app.get('/health', (req, res) => {
+  res.status(200).json({ ok: true, ts: Date.now() });
+});
+
+// Resposta da raiz (ajuda nos testes e evita 502)
+this.app.get('/', (req, res) => {
+  res.status(200).send('OK - staging');
+});
+
 
     // === PAINEL ADMIN (WhatsApp) ===
     try {
