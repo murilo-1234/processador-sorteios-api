@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <title>Hub – Admin (multi)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { --bg:#0f172a; --panel:#111827; --text:#e5e7eb; --muted:#9ca3af; --pill:#ef4444; --pill-active:#f97316; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+    header { padding:16px 20px; border-bottom:1px solid #1f2937; }
+    h1 { margin:0; font-size:18px; }
+    .muted { color: var(--muted); font-weight:400; }
+    .tabs { display:flex; gap:8px; padding:12px 20px; flex-wrap: wrap; border-bottom:1px solid #1f2937; }
+    .tab { background:var(--pill); color:white; border:0; padding:8px 12px; border-radius:999px; cursor:pointer; }
+    .tab.active { background:var(--pill-active); }
+    .tab.add { background:#374151; }
+    .wrap { padding:0; }
+    iframe { width:100%; height:calc(100vh - 130px); border:0; display:block; background:var(--panel); }
+    .help { padding:10px 20px; color:var(--muted); font-size:12px; }
+    a { color:#93c5fd; text-decoration:none; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Hub – Admin <span class="muted">(multi)</span></h1>
+    <div class="help">Dica: os botões abaixo são as “abas”. Clique para alternar entre os números.</div>
+  </header>
+
+  <nav class="tabs" id="tabs"></nav>
+
+  <div class="wrap">
+    <!-- Aqui mostramos a UI clássica de um número por vez -->
+    <iframe id="waFrame" title="WhatsApp admin"></iframe>
+  </div>
+
+  <script src="/admin-multi.js"></script>
+</body>
+</html>
