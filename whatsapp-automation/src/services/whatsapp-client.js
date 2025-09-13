@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const P = require('@whiskeysockets/baileys');
+const P = require('@whiskeysockets/baileys'); 
 
 const {
   makeWASocket,
