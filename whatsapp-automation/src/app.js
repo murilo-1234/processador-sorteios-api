@@ -480,7 +480,7 @@ this.app.get('/', (req, res) => {
         const { resultGroupJid, postGroupJids } = req.body || {}
         let list = Array.isArray(postGroupJids) ? postGroupJids : []
         if (!list.length && resultGroupJid) list = [String(resultGroupJid)]
-        list = Array.from(new Set(list.map(s => String(s).trim()).filter(Boolean)))
+        list = Array.from(new Set(list.map(s => s.trim()).filter(Boolean)))
         const out = settings.setPostGroups(list)
         res.json({ ok: true, settings: out, cleared: list.length === 0 })
       } catch (e) {
