@@ -310,7 +310,7 @@ function hasMedia(msg) {
     return !!(m.imageMessage || m.videoMessage || m.documentMessage || m.audioMessage || m.stickerMessage);
   } catch (_) { return false; }
 }
-function isGroup(jid)  { return String(jid || '').endsWith('@g.us'); }
+function isGroup(jid)  { return String(jid).endsWith('@g.us'); }
 function isStatus(jid) { return String(jid || '') === 'status@broadcast'; }
 function isFromMe(msg) { return !!msg?.key?.fromMe; }
 
@@ -462,4 +462,3 @@ function attachAssistant(appInstance) {
 }
 
 module.exports = { attachAssistant };
-
