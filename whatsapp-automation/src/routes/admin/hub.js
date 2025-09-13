@@ -22,7 +22,7 @@ function tryListInstancesFromRegistry() {
   try {
     // eslint-disable-next-line global-require, import/no-extraneous-dependencies
     const { listInstances } = require('../../services/instance-registry');
-    const arr = listInstances?.() || [];
+    const arr = (typeof listInstances === 'function' ? listInstances() : []) || [];
     // normaliza: { id, label? }
     return arr
       .map((i) => ({ id: i.id, label: i.label || i.id }))
@@ -320,18 +320,19 @@ router.get(['/wa-multi', '/admin/wa-multi'], (req, res) => {
 /* POST /admin/api/instances/:id/label                                */
 /* ------------------------------------------------------------------ */
 router.post(
-+  ['/api/instances/:id/label', '/admin/api/instances/:id/label'],
-+  express.json(),
-+  (req, res) => {
-  const id = String(req.params.id || '').trim();
-  const label = String(req.body?.label || '').trim();
-  if (!id) return res.status(400).json({ ok: false, error: 'missing id' });
+  ['/api/instances/:id/label', '/admin/api/instances/:id/label'],
+  express.json(),
+  (req, res) => {
+    const id = String(req.params.id || '').trim();
+    const label = String(req.body?.label || '').trim();
+    if (!id) return res.status(400).json({ ok: false, error: 'missing id' });
 
-  const labels = readLabels();
-  labels[id] = label || id;
-  writeLabels(labels);
+    const labels = readLabels();
+    labels[id] = label || id;
+    writeLabels(labels);
 
-  res.json({ ok: true, id, label: labels[id] });
-});
+    res.json({ ok: true, id, label: labels[id] });
+  }
+);
 
 module.exports = router;
