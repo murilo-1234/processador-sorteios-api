@@ -78,7 +78,7 @@ function escHtml(s = '') {
 /* /admin/hub - listagem simples                                       */
 /* ------------------------------------------------------------------ */
 
-router.get('/hub', (req, res) => {
+router.get(['/hub', '/admin/hub'], (req, res) => {
   const origin = `${req.protocol}://${req.get('host')}`; // https://… (sem /admin)
   const insts = mergeLabels(listInstances());
 
@@ -142,7 +142,7 @@ router.get('/hub', (req, res) => {
 /* /admin/wa-multi - UI com abas                                       */
 /* ------------------------------------------------------------------ */
 
-router.get('/wa-multi', (req, res) => {
+router.get(['/wa-multi', '/admin/wa-multi'], (req, res) => {
   const origin = `${req.protocol}://${req.get('host')}`; // https://… (sem /admin)
   const adminBase = `${origin}/admin`; // https://…/admin
   const insts = mergeLabels(listInstances());
@@ -319,7 +319,10 @@ router.get('/wa-multi', (req, res) => {
 /* API: salvar rótulo (rename)                                        */
 /* POST /admin/api/instances/:id/label                                */
 /* ------------------------------------------------------------------ */
-router.post('/api/instances/:id/label', express.json(), (req, res) => {
+router.post(
++  ['/api/instances/:id/label', '/admin/api/instances/:id/label'],
++  express.json(),
++  (req, res) => {
   const id = String(req.params.id || '').trim();
   const label = String(req.body?.label || '').trim();
   if (!id) return res.status(400).json({ ok: false, error: 'missing id' });
