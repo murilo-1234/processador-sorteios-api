@@ -23,6 +23,8 @@ const WhatsAppClient = require('./services/whatsapp-client')
 const settings = require('./services/settings')
 const { runOnce } = require('./jobs/post-winner')
 const hubRoutes = require('./routes/api/hub');
+const hubAdminRoutes = require('./routes/admin/hub');
+
 
 
 // SSE hub
@@ -125,6 +127,7 @@ class App {
     this.app.use(morgan('dev'))
     this.app.use(express.json())
     this.app.use(hubRoutes);
+    this.app.use(hubAdminRoutes);
     this.app.use(express.urlencoded({ extended: true }))
     this.app.use(express.static(path.join(__dirname, '../public')))
 
