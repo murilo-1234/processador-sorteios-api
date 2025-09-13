@@ -22,7 +22,7 @@ function tryListInstancesFromRegistry() {
   try {
     // eslint-disable-next-line global-require, import/no-extraneous-dependencies
     const { listInstances } = require('../../services/instance-registry');
-    const arr = (typeof listInstances === 'function' ? listInstances() : []) || [];
+    const arr = listInstances?.() || [];
     // normaliza: { id, label? }
     return arr
       .map((i) => ({ id: i.id, label: i.label || i.id }))
@@ -89,13 +89,13 @@ router.get(['/hub', '/admin/hub'], (req, res) => {
           <tr>
             <td style="font-family:monospace">${escHtml(it.id)}</td>
             <td>
-              <a href="${origin}/api/hub/inst/${encodeURIComponent(it.id)}/status" target="_blank">status</a> ·
-              <a href="${origin}/api/hub/inst/${encodeURIComponent(it.id)}/qr" target="_blank">qr</a> ·
-              <a href="#" onclick="post('${origin}/api/hub/inst/${encodeURIComponent(it.id)}/connect');return false;">conectar</a> ·
-              <a href="#" onclick="post('${origin}/api/hub/inst/${encodeURIComponent(it.id)}/disconnect');return false;">desconectar</a> ·
+              <a href="${origin}/api/hub/instances/${encodeURIComponent(it.id)}/status" target="_blank">status</a> ·
+              <a href="${origin}/api/hub/instances/${encodeURIComponent(it.id)}/qr" target="_blank">qr</a> ·
+              <a href="#" onclick="post('${origin}/api/hub/instances/${encodeURIComponent(it.id)}/connect');return false;">conectar</a> ·
+              <a href="#" onclick="post('${origin}/api/hub/instances/${encodeURIComponent(it.id)}/disconnect');return false;">desconectar</a> ·
               <a href="#" onclick="if(confirm('Limpar sessão de ${escHtml(
                 it.id
-              )}?')) post('${origin}/api/hub/inst/${encodeURIComponent(it.id)}/clear');return false;">limpar sessão</a> ·
+              )}?')) post('${origin}/api/hub/instances/${encodeURIComponent(it.id)}/clear');return false;">limpar sessão</a> ·
               <a href="${origin}/admin/whatsapp?inst=${encodeURIComponent(
                 it.id
               )}" target="_blank">UI clássica</a>
@@ -221,7 +221,8 @@ router.get(['/wa-multi', '/admin/wa-multi'], (req, res) => {
   const ADMIN  = ${JSON.stringify(adminBase)};   // https://…/admin
   const INSTS  = ${JSON.stringify(insts)};       // [{id,label},...]
 
-  const API = ORIGIN + '/api/hub';               // raiz da sua API do hub
+  // raiz da sua API do hub
+  const API = ORIGIN + '/api/hub';
 
   let current = INSTS.length ? INSTS[0].id : '';
 
@@ -276,7 +277,7 @@ router.get(['/wa-multi', '/admin/wa-multi'], (req, res) => {
     if(!current){ txt.value = 'Nenhuma instância selecionada'; return; }
     txt.value = 'Carregando status...';
     try{
-      const r = await fetch(API + '/inst/' + encodeURIComponent(current) + '/status');
+      const r = await fetch(API + '/instances/' + encodeURIComponent(current) + '/status');
       if(!r.ok) throw new Error(r.status);
       const j = await r.json();
       txt.value = JSON.stringify(j, null, 2);
@@ -288,7 +289,7 @@ router.get(['/wa-multi', '/admin/wa-multi'], (req, res) => {
     const box = document.getElementById('qr-area');
     if(!current){ box.textContent = 'Selecione uma instância'; return; }
     const ts = Date.now();
-    box.innerHTML = '<img alt="QR" src="' + (API + '/inst/' + encodeURIComponent(current) + '/qr?ts=' + ts) + '">';
+    box.innerHTML = '<img alt="QR" src="' + (API + '/instances/' + encodeURIComponent(current) + '/qr?ts=' + ts) + '">';
   }
 
   // Ações
@@ -299,7 +300,7 @@ router.get(['/wa-multi', '/admin/wa-multi'], (req, res) => {
   async function doAction(kind){
     if(!current) return;
     try{
-      const r = await fetch(API + '/inst/' + encodeURIComponent(current) + '/' + kind, { method:'POST' });
+      const r = await fetch(API + '/instances/' + encodeURIComponent(current) + '/' + kind, { method:'POST' });
       if(!r.ok) throw new Error(r.status);
       await render();
     }catch(e){
