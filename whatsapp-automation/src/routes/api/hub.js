@@ -80,7 +80,6 @@ router.post('/api/hub/disconnect', (req, res) => {
 // ====== Suporte a rótulos (nomes das abas) ======
 const fs = require('fs');
 const path = require('path');
-const express = require('express');
 
 const LABELS_FILE =
   process.env.WA_LABELS_FILE ||
