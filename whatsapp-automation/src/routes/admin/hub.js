@@ -165,20 +165,26 @@ router.get('/wa-multi', async (req, res) => {
   }
 
   // rename por duplo clique
-  document.addEventListener('dblclick', async (ev)=>{
-    const b = ev.target.closest('.tab');
-    if(!b) return;
-    const id = b.dataset.inst;
-    const novo = prompt('Novo nome para a aba:', b.textContent.trim());
-    if(novo == null) return;
-    const res = await fetch(base.replace(/\\/admin$/, '') + '/api/instances/' + id + '/label', {
-      method:'POST',
-      headers:{'content-type':'application/json'},
-      body: JSON.stringify({ label: novo })
-    });
-    const j = await res.json().catch(()=>({}));
-    if(j?.ok){ b.textContent = novo; } else { alert('Falha ao salvar rótulo'); }
+// Ouça só na barra de abas
+document.getElementById('tabs').addEventListener('dblclick', async (ev)=>{
+  const b = ev.target.closest('.tab');
+  if(!b) return;
+  const id = b.dataset.inst;
+  const novo = prompt('Novo nome para a aba:', b.textContent.trim());
+  if(novo == null) return;
+
+  // IMPORTANTE: rota vive sob /admin, então poste em /admin/...
+  const res = await fetch(base + '/api/instances/' + id + '/label', {
+    method:'POST',
+    headers:{'content-type':'application/json'},
+    body: JSON.stringify({ label: novo })
   });
+
+  const j = await res.json().catch(()=>({}));
+  if (j?.ok) b.textContent = novo;
+  else alert('Falha ao salvar rótulo');
+});
+
 
   document.getElementById('tabs').addEventListener('click', (ev)=>{
     const b = ev.target.closest('.tab');
