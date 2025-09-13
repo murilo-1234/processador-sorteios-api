@@ -105,95 +105,115 @@ router.get('/hub', (req, res) => {
   small{color:#666}
 </style>
 <script>
- async function post(url){
-   const res = await fetch(url,{method:'POST'});
-   if(res.ok){ alert('OK'); } else { alert('ERRO: '+res.status); }
- }
+  // Base ex.: https://app.onrender.com/admin
+  const base = ${JSON.stringify(base)};
+
+  // raiz da API do hub (sem /admin)
+  const apiRoot = base.replace(/\/admin$/, '') + '/api/hub';
+
+  // id atual (primeira aba por padrão)
+  let current = ${JSON.stringify(instances[0]?.id || '')};
+
+  // ==== util ====
+  async function postJSON(url, body) {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body || {})
+    });
+    return r.json().catch(() => ({}));
+  }
+
+  // ==== abas (clique e renomear) ====
+  const $tabs = document.getElementById('tabs');
+
+  // ativa aba
+  function setActive(id){
+    current = id;
+    document.querySelectorAll('#tabs .tab').forEach(b => {
+      b.classList.toggle('active', b.dataset.inst === id);
+    });
+    render();
+  }
+
+  // clique: troca aba
+  $tabs.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('button.tab');
+    if (!btn) return;
+    setActive(btn.dataset.inst);
+  });
+
+  // duplo clique: renomeia
+  $tabs.addEventListener('dblclick', async (ev) => {
+    const btn = ev.target.closest('button.tab');
+    if (!btn) return;
+    const id = btn.dataset.inst;
+    const atual = btn.textContent.trim();
+    const label = prompt('Novo nome para esta aba:', atual);
+    if (!label || label === atual) return;
+
+    // nossa rota de rename vive sob /admin
+    const res = await postJSON(`${base}/api/instances/${encodeURIComponent(id)}/label`, { label });
+    if (res && res.ok) btn.textContent = label;
+    else alert('Não consegui renomear: ' + (res?.error || 'erro'));
+  });
+
+  // ==== Status + QR ====
+  async function render() {
+    await renderStatus();
+    renderQR(); // só atualiza a imagem do QR
+  }
+
+  async function renderStatus() {
+    const txt = document.getElementById('status');
+    if (!current) { txt.value = 'Nenhuma instância selecionada'; return; }
+    txt.value = 'Carregando status...';
+    try {
+      const r = await fetch(`${apiRoot}/inst/${encodeURIComponent(current)}/status`);
+      if (!r.ok) throw new Error(r.status);
+      const j = await r.json();
+      txt.value = JSON.stringify(j, null, 2);
+    } catch (e) {
+      txt.value = 'Erro ao consultar status';
+    }
+  }
+
+  function renderQR() {
+    const $qr = document.getElementById('qr-area');
+    if (!current) { $qr.textContent = 'Selecione uma instância'; return; }
+    // o backend já expõe /api/hub/inst/:id/qr — mostramos como <img>
+    const ts = Date.now(); // evita cache
+    $qr.innerHTML = `<img alt="QR" style="max-width:100%;height:auto"
+                       src="${apiRoot}/inst/${encodeURIComponent(current)}/qr?ts=${ts}">`;
+  }
+
+  // ==== Ações (conectar / desconectar / limpar) ====
+  document.getElementById('btn-connect').onclick = () => doAction('connect');
+  document.getElementById('btn-disconnect').onclick = () => doAction('disconnect');
+  document.getElementById('btn-clear').onclick = () => doAction('clear');
+
+  async function doAction(action) {
+    if (!current) return;
+    try {
+      const r = await fetch(`${apiRoot}/inst/${encodeURIComponent(current)}/${action}`, { method: 'POST' });
+      if (!r.ok) throw new Error(r.status);
+      await render();
+    } catch (e) {
+      alert('Falha na ação: ' + action);
+    }
+  }
+
+  // botão "UI clássica": abre a tela antiga para a instância atual
+  document.getElementById('open-classic').onclick = () => {
+    if (!current) return;
+    window.open(base.replace(/\/admin$/, '') + '/admin/whatsapp?inst=' + encodeURIComponent(current), '_blank');
+  };
+
+  // seleciona a primeira aba
+  const first = document.querySelector('#tabs .tab');
+  if (first) setActive(first.dataset.inst);
 </script>
-</head>
-<body>
-  <h1>Hub – Admin <small>(listagem)</small></h1>
-  <p><a href="${origin}/admin/wa-multi">Abrir UI em abas (multi)</a></p>
-  <table>
-    <thead><tr><th>ID</th><th>Ações</th></tr></thead>
-    <tbody>${rows}</tbody>
-  </table>
-</body>
-</html>`);
-});
 
-/* ------------------------------------------------------------------ */
-/* /admin/wa-multi - UI em abas + rename rótulo                        */
-/* ------------------------------------------------------------------ */
-
-router.get('/admin/wa-multi', (req, res) => {
-  const origin = `${req.protocol}://${req.get('host')}`;        // ex.: https://app.onrender.com
-  const adminBase = `${origin}${req.baseUrl || '/admin'}`;      // ex.: https://app.onrender.com/admin
-
-  const insts = mergeLabels(listInstances());
-  const buttons = insts
-    .map(
-      (inst, i) => `
-      <button class="tab${i === 0 ? ' active' : ''}"
-              data-inst="${inst.id}"
-              title="Duplo clique para renomear">${inst.label}</button>`
-    )
-    .join('');
-
-  const html = `<!doctype html>
-<html lang="pt-br">
-<head>
-<meta charset="utf-8" />
-<title>Hub – Admin (multi)</title>
-<style>
-  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background:#0c1220; color:#e8eefc; margin:0; }
-  h1 { font-size:20px; font-weight:600; margin:16px 20px 12px; }
-  small { color:#98a2b3; }
-  .bar { display:flex; align-items:center; gap:8px; padding:8px 20px 14px; }
-  #tabs { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:0 20px 8px; }
-  button.tab { background:#ef4444; color:#fff; border:0; border-radius:20px; padding:6px 14px; cursor:pointer; }
-  button.tab.active { outline:2px solid #fca5a5; }
-  button.plus { background:#334155; color:#fff; border:0; border-radius:20px; padding:6px 12px; cursor:pointer; }
-  .wrap { display:grid; grid-template-columns:1fr 1fr; gap:16px; padding:16px 20px 28px; }
-  .card { background:#0f172a; border:1px solid #1e293b; border-radius:16px; padding:14px; }
-  .btn { background:#3b82f6; color:#fff; border:0; border-radius:8px; padding:8px 12px; cursor:pointer; }
-  .btn.gray { background:#334155; }
-  textarea { width:100%; min-height:240px; background:#0b1220; border:1px solid #1e293b; color:#e8eefc; border-radius:12px; padding:12px; }
-  .qr { display:flex; align-items:center; justify-content:center; height:320px; border:1px dashed #334155; border-radius:12px; color:#9aa4b2; }
-  a, a:visited { color:#60a5fa; }
-</style>
-</head>
-<body>
-  <h1>Hub – Admin <small>(multi)</small></h1>
-
-  <div class="bar">
-    <small>Os botões abaixo são as “abas”. Clique para alternar e dê <b>duplo clique</b> para renomear.</small>
-  </div>
-
-  <div id="tabs">${buttons}<button class="plus" id="open-classic">+</button></div>
-
-  <div class="wrap">
-    <div class="card">
-      <h3>Status</h3>
-      <div style="display:flex; gap:8px; margin-bottom:10px">
-        <button id="btn-connect" class="btn">Conectar</button>
-        <button id="btn-disconnect" class="btn gray">Desconectar</button>
-        <button id="btn-clear" class="btn gray">Limpar sessão</button>
-      </div>
-      <textarea id="status" readonly>{"ok": true}</textarea>
-    </div>
-
-    <div class="card">
-      <h3>QR Code</h3>
-      <div id="qr-area" class="qr">Aguardando geração do QR…</div>
-      <p style="color:#9aa4b2; font-size:12px; margin-top:10px">
-        iPhone: Ajustes → Dispositivos conectados → Conectar um dispositivo. Android:
-        “Conectar um dispositivo” no WhatsApp → escaneie o QR.
-      </p>
-    </div>
-  </div>
-
-  <script>
     // Injeção do servidor
     const ORIGIN = ${JSON.stringify(origin)};          // https://... (sem /admin)
     const ADMIN  = ${JSON.stringify(adminBase)};       // https://.../admin
