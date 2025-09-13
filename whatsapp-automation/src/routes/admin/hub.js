@@ -55,104 +55,56 @@ router.get('/admin/hub', (req, res) => {
    const res = await fetch(url,{method:'POST'});
    if(res.ok){ alert('OK: '+url); } else { alert('ERRO: '+res.status+' '+url); }
  }
-</script>
-</head>
-<body>
-  <h1>Hub – Admin <small>(staging)</small></h1>
-  <p>Rota do Admin conectada <span class="ok">✔</span></p>
+<script>
+  // Base da sua API
+  const base = ${JSON.stringify(base)};
 
-  <p><a href="${base}/api/hub/instances" target="_blank">Ver instâncias (JSON)</a> ·
-     <a href="${base}/health" target="_blank">Healthcheck</a></p>
+  // estado atual
+  let current = ${JSON.stringify(instances[0]?.id || '')};
 
-  <table>
-    <thead><tr><th>ID</th><th>Ações</th></tr></thead>
-    <tbody>${rows}</tbody>
-  </table>
-
-  <p><small>Use “UI clássica” para abrir a tela com QR e botões focada para o ID escolhido.</small></p>
-</body>
-</html>
-  `);
-});
-
-// Nova UI com abas por instância
-router.get('/admin/wa-multi', (req, res) => {
-  res.sendFile(path.join(__dirname, '../../../public/admin-multi.html'));
-});
-
-// ========= UI multi-abas =========
-router.get('/wa-multi', async (req, res) => {
-  const base = req.baseUrl?.replace(/\/+$/, '') || '/admin';
-
-  // Carrega instâncias + rótulos salvos
-  const fs = require('fs');
-  const path = require('path');
-  const LABELS_FILE =
-    process.env.WA_LABELS_FILE ||
-    path.join(process.env.WA_SESSION_BASE || '/data/wa-sessions', '..', 'wa-instance-labels.json');
-
-  function readLabels() {
-    try { return JSON.parse(fs.readFileSync(LABELS_FILE, 'utf8')); } catch { return {}; }
+  // utilitário: faz POST JSON
+  async function post(url, body) {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body || {})
+    });
+    return r.json();
   }
 
-  // liste suas instâncias de onde você já lista hoje:
-  const { listInstances } = require('../../services/instance-registry');
-  const instances = listInstances().map(x => ({ id: String(x.id), label: x.label || x.id }));
+  // ---- Renomear aba com duplo clique (delegation no #tabs) ----
+  const $tabs = document.getElementById('tabs');
+  $tabs.addEventListener('dblclick', async (ev) => {
+    const btn = ev.target.closest('button.tab');
+    if (!btn) return;
+    const id = btn.dataset.inst;
+    const atual = btn.textContent.trim();
+    const label = prompt('Novo nome para esta aba:', atual);
+    if (!label || label === atual) return;
 
-  // aplica rótulos persistidos
-  const labels = readLabels();
-  for (const it of instances) it.label = labels[it.id] || it.label;
+    try {
+      const res = await post(`${base}/api/hub/instances/${encodeURIComponent(id)}/label`, { label });
+      if (res && res.ok) {
+        btn.textContent = label;
+      } else {
+        alert('Não consegui renomear: ' + (res?.error || 'erro'));
+      }
+    } catch (e) {
+      alert('Erro de rede ao renomear: ' + e.message);
+    }
+  });
 
-  // HTML simplificado com abas e renomeio por duplo clique
-  const buttons = instances.map(inst => (
-    `<button class="tab" data-inst="${inst.id}">${inst.label}</button>`
-  )).join('\n');
+  // ---- (exemplo) quando clica numa aba, ativa aquela instância ----
+  $tabs.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('button.tab');
+    if (!btn) return;
+    document.querySelectorAll('#tabs .tab').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    current = btn.dataset.inst;
+    // aqui você pode disparar algum refresh de status/QR dessa instância…
+  });
+</script>
 
-  const html = `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8"/>
-  <title>Hub – Admin (multi)</title>
-  <style>
-    body{font-family:system-ui,Arial,sans-serif;background:#0e1320;color:#e8eefc;margin:0}
-    .bar{padding:16px;border-bottom:1px solid #1c2440}
-    .tab{background:#d9534f;border:none;border-radius:999px;color:#fff;padding:8px 12px;margin:0 8px 8px 0;cursor:pointer}
-    .tab.active{background:#c12e2a}
-    .plus{background:#243; color:#9cf; border-radius:999px; padding:8px 12px; border:1px solid #355}
-    .wrap{padding:24px}
-    .card{background:#0b1020;border:1px solid #1c2440;border-radius:12px;padding:24px;display:grid;grid-template-columns:1fr 1fr;gap:24px}
-    .box{background:#0a0f1e;border:1px solid #1c2440;border-radius:8px;padding:16px}
-    textarea{width:100%;height:280px;background:#0a0f1e;color:#e8eefc;border:1px solid #1c2440;border-radius:8px;padding:12px}
-    .btn{background:#2a6df1;border:none;color:#fff;border-radius:8px;padding:10px 14px;cursor:pointer;margin-right:8px}
-    .btn.gray{background:#30405a}
-    .qr{height:320px;display:flex;align-items:center;justify-content:center;border:1px dashed #3a4b70;border-radius:8px;color:#9bb3d6}
-  </style>
-</head>
-<body>
-  <div class="bar">
-    <small>Hub – Admin <b>(multi)</b></small>
-    <p>Os botões abaixo são as “abas”. Dê <b>duplo clique</b> para renomear.</p>
-    <div id="tabs">${buttons}<button class="plus" id="open-classic">+</button></div>
-  </div>
-  <div class="wrap">
-    <div class="card">
-      <div class="box">
-        <h3>Status</h3>
-        <div>
-          <button class="btn" id="btn-connect">Conectar</button>
-          <button class="btn gray" id="btn-disconnect">Desconectar</button>
-          <button class="btn gray" id="btn-clear">Limpar sessão</button>
-        </div>
-        <textarea id="status" readonly></textarea>
-      </div>
-      <div class="box">
-        <h3>QR Code</h3>
-        <div class="qr" id="qr-area">Aguardando geração do QR…</div>
-      </div>
-    </div>
-  </div>
-
-<script>
   const base = ${JSON.stringify(base)};
   let current = ${JSON.stringify(instances[0]?.id || '')};
 
