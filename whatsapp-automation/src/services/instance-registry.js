@@ -1,5 +1,5 @@
 // whatsapp-automation/src/services/instance-registry.js
-// Lê instâncias do ENV WA_INSTANCE_IDS (CSV) ou do arquivo /data/wa-instances.json.
+// Lê instâncias do ENV WA_INSTANCE_IDS (CSV) ou de um arquivo JSON.
 // Mantém em memória e expõe helpers simples.
 
 const fs = require('fs');
@@ -7,7 +7,7 @@ const path = require('path');
 
 const FILE_CANDIDATES = [
   path.resolve('/data/wa-instances.json'),
-  path.resolve(__dirname, '..', 'data', 'wa-instances.json'), // fallback se alguém colocar no repo por engano
+  path.resolve(process.cwd(), 'data', 'wa-instances.json'), // fallback no projeto
 ];
 
 let cache = [];
@@ -16,10 +16,13 @@ let lastSource = 'env';
 function parseFromEnv() {
   const csv = (process.env.WA_INSTANCE_IDS || '').trim();
   if (!csv) return [];
-  return csv.split(',').map((raw, i) => {
-    const id = raw.trim();
-    return id ? { id, label: `whatsapp ${i + 1}`, enabled: true } : null;
-  }).filter(Boolean);
+  return csv
+    .split(',')
+    .map((raw, i) => {
+      const id = raw.trim();
+      return id ? { id, label: i === 0 ? 'Celular 1' : `whatsapp ${i + 1}`, enabled: true } : null;
+    })
+    .filter(Boolean);
 }
 
 function readJsonIfExists(file) {
@@ -29,7 +32,7 @@ function readJsonIfExists(file) {
       const arr = JSON.parse(txt);
       if (Array.isArray(arr)) return arr;
     }
-  } catch (_) {/* ignore */}
+  } catch (_) { /* ignore */ }
   return null;
 }
 
