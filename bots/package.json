@@ -1,11 +1,11 @@
 {
-  "name": "service-b-bots",
+  "name": "whatsapp-automation",
   "version": "1.0.0",
   "private": true,
-  "scripts": { "start": "node index.js" },
+  "scripts": { "start": "node src/index.js" },
   "dependencies": {
+    "@whiskeysockets/baileys": "4.4.0",
     "express": "^4.19.2",
     "qrcode": "^1.5.3"
   }
 }
-
