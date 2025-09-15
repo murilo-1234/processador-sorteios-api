@@ -4,7 +4,7 @@
   "private": true,
   "scripts": { "start": "node src/index.js" },
   "dependencies": {
-    "@whiskeysockets/baileys": "4.4.0",
+    "@whiskeysockets/baileys": "^6.7.7",
     "express": "^4.19.2",
     "qrcode": "^1.5.3"
   }
