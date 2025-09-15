@@ -1,6 +1,7 @@
+// src/services/whatsapp-client.js
 const fs = require('fs');
 const path = require('path');
-const P = require('@whiskeysockets/baileys'); 
+const P = require('@whiskeysockets/baileys');
 
 const {
   makeWASocket,
@@ -26,6 +27,9 @@ class WhatsAppClient {
     this.currentRetry = 0;
     this.maxRetries = Number(process.env.WHATSAPP_RETRY_ATTEMPTS || 3);
     this.circuitBreaker = 'CLOSED';
+
+    // fila opcional (compat c/ dashboards que leem queueLength)
+    this.queueLength = 0;
   }
 
   async initialize() {
@@ -85,6 +89,16 @@ class WhatsAppClient {
     });
 
     await this.tryPairingIfConfigured().catch(() => {});
+  }
+
+  // ======== helpers de status (para dashboards) ========
+  getConnectionStatus() {
+    return {
+      isConnected: !!this.isConnected,
+      queueLength: Number(this.queueLength || 0),
+      circuitBreakerState: this.circuitBreaker || 'CLOSED',
+      user: this.user || null,
+    };
   }
 
   // tenta provocar a emissão de QR logo após reset/init
@@ -171,6 +185,7 @@ class WhatsAppClient {
     const groups = items.map((g) => ({
       jid: g.id,
       name: g.subject || g.name || 'Sem nome',
+      nome: g.subject || g.name || 'Sem nome', // alias p/ compat com rotas antigas
       participants: Array.isArray(g.participants) ? g.participants.length : (g.size || 0),
       isCommunity: !!g.community,
       announce: !!g.announce, // grupos somente avisos
@@ -185,10 +200,43 @@ class WhatsAppClient {
     return unique;
   }
 
+  // Alias de compatibilidade (admin usa getGroups)
+  async getGroups() {
+    return this.listGroups();
+  }
+
+  // ========= ENVIO DE MENSAGENS =========
   async sendToGroup(jid, text) {
     if (!this.isConnected) throw new Error('WhatsApp não está conectado');
     if (!jid) throw new Error('jid do grupo não informado');
     await this.sock.sendMessage(jid, { text: String(text) });
+  }
+
+  async sendTextMessage(jid, text, opts = {}) {
+    if (!this.isConnected) throw new Error('WhatsApp não está conectado');
+    return this.sock.sendMessage(jid, { text: String(text) }, opts);
+  }
+
+  async sendImageMessage(jid, fileOrPath, caption = '', opts = {}) {
+    if (!this.isConnected) throw new Error('WhatsApp não está conectado');
+    if (!jid) throw new Error('jid não informado');
+
+    let imageData = null;
+    if (Buffer.isBuffer(fileOrPath)) {
+      imageData = fileOrPath;
+    } else if (typeof fileOrPath === 'string') {
+      imageData = fs.readFileSync(fileOrPath);
+    } else if (fileOrPath && typeof fileOrPath === 'object' && fileOrPath.data) {
+      imageData = fileOrPath.data; // { data: Buffer }
+    }
+
+    if (!imageData) throw new Error('Arquivo de imagem inválido');
+
+    return this.sock.sendMessage(
+      jid,
+      { image: imageData, caption: caption || '' },
+      opts
+    );
   }
 }
 
