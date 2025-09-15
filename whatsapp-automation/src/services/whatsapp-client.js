@@ -1,20 +1,6 @@
+// whatsapp-automation/src/services/whatsapp-client.js
 const fs = require('fs');
 const path = require('path');
-
-// --- Carregamento compatível com CJS/ESM do @whiskeysockets/baileys ---
-const __loadBaileys = (async () => {
-  try {
-    // tenta CJS (quando disponível)
-    return require('@whiskeysockets/baileys');
-  } catch (e) {
-    // pacote 6.x é ESM: faz import dinâmico
-    if (e && e.code === 'ERR_REQUIRE_ESM') {
-      const m = await import('@whiskeysockets/baileys');
-      return m.default ?? m;
-    }
-    throw e;
-  }
-})();
 
 class WhatsAppClient {
   constructor() {
@@ -32,17 +18,21 @@ class WhatsAppClient {
     this.currentRetry = 0;
     this.maxRetries = Number(process.env.WHATSAPP_RETRY_ATTEMPTS || 3);
     this.circuitBreaker = 'CLOSED';
+
+    // módulo Baileys (carregado sob demanda para evitar ERR_REQUIRE_ESM)
+    this._baileys = null;
+  }
+
+  async _loadBaileys() {
+    if (!this._baileys) {
+      // importa ESM em runtime dentro do CJS
+      this._baileys = await import('@whiskeysockets/baileys');
+    }
+    return this._baileys;
   }
 
   async initialize() {
-    // garante diretório e RW
-    fs.mkdirSync(this.sessionPath, { recursive: true });
-    const probe = path.join(this.sessionPath, '.__rwtest');
-    fs.writeFileSync(probe, String(Date.now()));
-    fs.rmSync(probe, { force: true });
-
-    // carrega Baileys (compat CJS/ESM) e extrai símbolos
-    const B = await __loadBaileys;
+    const B = await this._loadBaileys();
     const {
       makeWASocket,
       Browsers,
@@ -50,6 +40,12 @@ class WhatsAppClient {
       fetchLatestBaileysVersion,
       DisconnectReason,
     } = B;
+
+    // garante diretório e RW
+    fs.mkdirSync(this.sessionPath, { recursive: true });
+    const probe = path.join(this.sessionPath, '.__rwtest');
+    fs.writeFileSync(probe, String(Date.now()));
+    fs.rmSync(probe, { force: true });
 
     const { state, saveCreds } = await useMultiFileAuthState(this.sessionPath);
     const { version } = await fetchLatestBaileysVersion();
@@ -60,7 +56,7 @@ class WhatsAppClient {
       browser: Browsers.appropriate('Chrome'),
       printQRInTerminal: false,
       markOnlineOnConnect: false,
-      // deixe true para garantir que o device puxe todos os chats/grupos
+      // manter histórico completo (quando suportado)
       syncFullHistory: true,
     });
 
@@ -174,13 +170,11 @@ class WhatsAppClient {
   // ========= GRUPOS =========
 
   /**
-   * Lista todos os grupos que a conta participa, incluindo
-   * os "de avisos" de Comunidades, quando retornados pela API.
+   * Lista todos os grupos que a conta participa.
    */
   async listGroups() {
     if (!this.sock) throw new Error('WhatsApp não inicializado');
 
-    // Busca no servidor (não apenas cache) — costuma incluir Comunidades/Anúncios
     const map = await this.sock.groupFetchAllParticipating();
     const items = Object.values(map || {});
 
@@ -189,14 +183,11 @@ class WhatsAppClient {
       name: g.subject || g.name || 'Sem nome',
       participants: Array.isArray(g.participants) ? g.participants.length : (g.size || 0),
       isCommunity: !!g.community,
-      announce: !!g.announce, // grupos somente avisos
+      announce: !!g.announce,
     }));
 
-    // remove duplicados por jid
     const seen = new Set();
     const unique = groups.filter((g) => (seen.has(g.jid) ? false : seen.add(g.jid)));
-
-    // ordena por nome
     unique.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
     return unique;
   }
