@@ -3,6 +3,7 @@
 /**
  * Script de migração do banco de dados
  * Cria todas as tabelas necessárias para o sistema
+ * (upgrade seguro: adiciona suporte a multi-instância e idempotência sem quebrar esquemas existentes)
  */
 
 const path = require('path');
@@ -14,6 +15,50 @@ if (!process.env.DATABASE_PATH) {
 }
 
 const database = require('../config/database');
+
+async function hasColumn(db, table, column) {
+  const cols = await db.all(`PRAGMA table_info(${table})`);
+  return cols?.some(c => c.name === column) || false;
+}
+
+async function ensureColumn(db, table, column, ddl) {
+  const exists = await hasColumn(db, table, column);
+  if (!exists) {
+    await db.run(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+    console.log(`  ➕ Coluna adicionada: ${table}.${column}`);
+  } else {
+    console.log(`  ✅ Coluna já existe: ${table}.${column}`);
+  }
+}
+
+async function ensureIndex(db, indexName, createSql) {
+  const idx = await db.all(`PRAGMA index_list(${createSql.match(/ON\s+([^\s(]+)/i)[1]})`);
+  const exists = idx?.some(i => i.name === indexName);
+  if (!exists) {
+    await db.run(createSql);
+    console.log(`  ➕ Índice criado: ${indexName}`);
+  } else {
+    console.log(`  ✅ Índice já existe: ${indexName}`);
+  }
+}
+
+async function ensureIdempotencyTable(db) {
+  await db.run(`
+    CREATE TABLE IF NOT EXISTS idempotency_keys (
+      key         TEXT PRIMARY KEY,
+      instance_id TEXT DEFAULT 'default',
+      created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+      expires_at  DATETIME,
+      status      TEXT,
+      meta        TEXT
+    )
+  `);
+  await db.run(`
+    CREATE INDEX IF NOT EXISTS idx_idem_instance_expires
+      ON idempotency_keys(instance_id, expires_at)
+  `);
+  console.log('  ✅ Tabela de idempotência verificada/criada');
+}
 
 async function runMigrations() {
   try {
@@ -144,7 +189,7 @@ async function runMigrations() {
 
 Você ganhou o {PREMIO}!
 
-🔗 Veja o resultado completo:
+🔗 Veja oresultado completo:
 {LINK_RESULTADO}
 
 📞 Fale comigo no WhatsApp: (48) 9 9178-4733
@@ -206,6 +251,23 @@ Você ganhou o {PREMIO}!
       END;
     `);
 
+    // Migração 5: Multi-instância + Idempotência (upgrade compatível)
+    console.log('📋 Executando migração 5: Multi-instância e Idempotência...');
+    // Adiciona colunas instance_id se não existirem
+    await ensureColumn(db, 'grupos_whatsapp', 'instance_id', `instance_id TEXT DEFAULT 'default'`);
+    await ensureColumn(db, 'envios_whatsapp', 'instance_id', `instance_id TEXT DEFAULT 'default'`);
+    await ensureColumn(db, 'sorteios_processados', 'instance_id', `instance_id TEXT DEFAULT 'default'`);
+
+    // Índices por instância (idempotentes)
+    await ensureIndex(db, 'idx_grupos_whatsapp_instance', `CREATE INDEX IF NOT EXISTS idx_grupos_whatsapp_instance ON grupos_whatsapp(instance_id)`);
+    await ensureIndex(db, 'ux_grupos_whatsapp_instance_jid', `CREATE UNIQUE INDEX IF NOT EXISTS ux_grupos_whatsapp_instance_jid ON grupos_whatsapp(instance_id, jid)`);
+    await ensureIndex(db, 'idx_envios_whatsapp_instance', `CREATE INDEX IF NOT EXISTS idx_envios_whatsapp_instance ON envios_whatsapp(instance_id)`);
+    await ensureIndex(db, 'idx_envios_whatsapp_idem_inst', `CREATE INDEX IF NOT EXISTS idx_envios_whatsapp_idem_inst ON envios_whatsapp(instance_id, idempotency_key)`);
+    await ensureIndex(db, 'idx_sorteios_processados_instance', `CREATE INDEX IF NOT EXISTS idx_sorteios_processados_instance ON sorteios_processados(instance_id)`);
+
+    // Tabela de idempotência
+    await ensureIdempotencyTable(db);
+
     // Verificar integridade
     console.log('🔍 Verificando integridade do banco...');
     
@@ -215,7 +277,7 @@ Você ganhou o {PREMIO}!
       ORDER BY name
     `);
     
-    console.log('📋 Tabelas criadas:');
+    console.log('📋 Tabelas criadas/validadas:');
     tables.forEach(table => {
       console.log(`  ✅ ${table.name}`);
     });
@@ -258,4 +320,3 @@ if (require.main === module) {
 }
 
 module.exports = { runMigrations };
-
