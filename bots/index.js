@@ -57,27 +57,24 @@ async function spawnInstance(id) {
   ensureDir(sessPath);
 
   const client = new WhatsAppClient();
-  client.sessionPath = sessPath;
 
-  // CAPTURA DE QR do Baileys para servir em /qr/:id
-  try {
-    // fallback genérico: alguns wrappers emitem 'qr' e/ou 'connection.update'
-    if (typeof client.on === 'function') {
-      client.on('qr', (qr) => qrStore.set(id, qr));
-      client.on('connection.update', (u) => {
-        if (u?.qr) qrStore.set(id, u.qr);
-        if (u?.connection === 'open') qrStore.delete(id);
-      });
-    }
-  } catch {}
+  // força sessão por instância ANTES de iniciar
+  client.sessionPath = sessPath;
 
   // inicializa; ele já tenta reconectar quando cair
   await client.initialize().catch(() => {});
 
-  // Baileys v6 direto (se exposto)
+  // CAPTURA DE QR do Baileys para servir em /qr/:id
   try {
     if (client.sock?.ev?.on) {
       client.sock.ev.on('connection.update', (u) => {
+        if (u?.qr) qrStore.set(id, u.qr);
+        if (u?.connection === 'open') qrStore.delete(id);
+      });
+    }
+    if (typeof client.on === 'function') {
+      client.on('qr', (qr) => qrStore.set(id, qr));
+      client.on('connection.update', (u) => {
         if (u?.qr) qrStore.set(id, u.qr);
         if (u?.connection === 'open') qrStore.delete(id);
       });
@@ -109,7 +106,7 @@ async function spawnInstance(id) {
 const app = express();
 app.use(express.json());
 
-// Health público para o Render
+// Health público (não passa por auth) para usar no Render
 app.get('/healthz', (req, res) => {
   res.json({
     ok: true,
@@ -144,7 +141,6 @@ app.get('/qr/:id', async (req, res) => {
   const it = instances.get(id);
   if (!it) return res.status(404).send('instância não encontrada');
 
-  // provoca novo ciclo de QR se não houver um em cache
   if (!qrStore.get(id)) {
     try { await it.client.initialize().catch(()=>{}); } catch {}
   }
