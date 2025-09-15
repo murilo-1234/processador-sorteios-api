@@ -12,8 +12,20 @@ const {
 } = P;
 
 class WhatsAppClient {
-  constructor() {
-    this.sessionPath = process.env.WHATSAPP_SESSION_PATH || '/tmp/whatsapp-session';
+  constructor(options = {}) {
+    // NOVO: Suporte multi-instância mantendo retrocompatibilidade TOTAL
+    this.instanceId = options.instanceId || 'default';
+    
+    // NOVO: Path de sessão baseado em instanceId
+    if (this.instanceId === 'default') {
+      // MANTÉM comportamento original EXATO para sistema existente
+      this.sessionPath = process.env.WHATSAPP_SESSION_PATH || '/tmp/whatsapp-session';
+    } else {
+      // NOVO comportamento apenas para Hub
+      const baseDir = process.env.WA_SESSION_BASE || './data/baileys';
+      this.sessionPath = path.join(baseDir, this.instanceId);
+    }
+    
     this.sock = null;
 
     // estado de conexão
@@ -30,6 +42,12 @@ class WhatsAppClient {
 
     // fila opcional (compat c/ dashboards que leem queueLength)
     this.queueLength = 0;
+    
+    // NOVO: Callbacks opcionais para eventos (usado pelo Hub)
+    this.onQRCode = options.onQRCode || null;
+    this.onConnected = options.onConnected || null;
+    this.onDisconnected = options.onDisconnected || null;
+    this.onMessage = options.onMessage || null;
   }
 
   async initialize() {
@@ -60,6 +78,10 @@ class WhatsAppClient {
       if (qr) {
         this.currentQRCode = qr;
         this.qrCodeGenerated = true;
+        // NOVO: Callback opcional para Hub
+        if (this.onQRCode) {
+          this.onQRCode(qr, this.instanceId);
+        }
       }
 
       if (connection === 'open') {
@@ -69,11 +91,19 @@ class WhatsAppClient {
         this.qrCodeGenerated = false;
         this.currentQRCode = null;
         this.currentPairingCode = null;
+        // NOVO: Callback opcional para Hub
+        if (this.onConnected) {
+          this.onConnected(this.instanceId, this.user);
+        }
       }
 
       if (connection === 'close') {
         this.isConnected = false;
         this.user = null;
+        // NOVO: Callback opcional para Hub
+        if (this.onDisconnected) {
+          this.onDisconnected(this.instanceId);
+        }
 
         const code =
           lastDisconnect?.error?.output?.statusCode ||
@@ -88,6 +118,24 @@ class WhatsAppClient {
       }
     });
 
+    // NOVO: Hook de mensagens para assistant-bot (apenas se configurado)
+    if (this.onMessage) {
+      this.sock.ev.on('messages.upsert', async (upsert) => {
+        const messages = upsert.messages || [];
+        for (const msg of messages) {
+          // Ignora mensagens próprias e de status
+          if (msg.key.fromMe || msg.key.participant) continue;
+          if (msg.key.remoteJid === 'status@broadcast') continue;
+          
+          try {
+            await this.onMessage(msg, this.instanceId);
+          } catch (error) {
+            console.error(`[${this.instanceId}] Error in message handler:`, error);
+          }
+        }
+      });
+    }
+
     await this.tryPairingIfConfigured().catch(() => {});
   }
 
@@ -98,6 +146,7 @@ class WhatsAppClient {
       queueLength: Number(this.queueLength || 0),
       circuitBreakerState: this.circuitBreaker || 'CLOSED',
       user: this.user || null,
+      instanceId: this.instanceId, // NOVO: identificação da instância
     };
   }
 
