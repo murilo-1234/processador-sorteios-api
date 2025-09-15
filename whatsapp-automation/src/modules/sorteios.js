@@ -1,6 +1,5 @@
 // src/modules/sorteios.js
-
-const path = require('path');
+const fs = require('fs');
 const logger = require('../config/logger');
 const database = require('../config/database');
 const DateUtils = require('../utils/date');
@@ -9,12 +8,7 @@ const ScraperService = require('../services/scraper');
 const ImageGeneratorService = require('../services/image-generator-simple');
 const metricsService = require('../services/metrics');
 
-// ===== Helpers de ENV/Parsing (sem interferir em outros módulos) =====
-function envOn(v, def = false) {
-  const s = String(v ?? '').trim().toLowerCase();
-  if (!s) return def;
-  return s === '1' || s === 'true' || s === 'yes' || s === 'on';
-}
+// ===== Helpers de JID / parsing de números (compat com app.js) =====
 function phoneToJid(v) {
   if (!v) return null;
   const s = String(v).trim();
@@ -26,92 +20,17 @@ function phoneToJid(v) {
 function parsePhonesToJids(value) {
   if (!value) return [];
   return String(value)
-    .split(/[,\s;]+/)
-    .map(s => s.trim())
+    .split(/[,\s;]+/) // vírgula, espaço ou ponto-e-vírgula
+    .map((s) => s.trim())
     .filter(Boolean)
-    .map(v => (v.includes('@') ? v : phoneToJid(v)))
+    .map((v) => (v.includes('@') ? v : phoneToJid(v)))
     .filter(Boolean);
 }
-const POST_DELAY_MS = Math.max(0, Number(process.env.WA_POST_DELAY_MS || 30_000));
-const POST_JITTER_MS = Math.max(0, Number(process.env.WA_POST_JITTER_MS || 1_200));
-const WA_POST_TO = [...new Set(parsePhonesToJids(process.env.WA_POST_TO))];
-const WA_POST_TO_FORCE = envOn(process.env.WA_POST_TO_FORCE, false);
 
-// ===== Adapter de envio tolerante (prefere Admin, cai no fallback) =====
-async function getAdminSock() {
-  const tryPaths = [
-    // app.js usa '../admin-wa-bundle.js' a partir de src/app.js
-    path.resolve(__dirname, '..', '..', 'admin-wa-bundle.js'),
-    path.resolve(__dirname, '..', 'admin-wa-bundle.js'),
-  ];
-  for (const p of tryPaths) {
-    try {
-      const mod = require(p);
-      if (mod && typeof mod.getStatus === 'function' && typeof mod.getSock === 'function') {
-        const st = await mod.getStatus().catch(() => null);
-        if (st?.connected) return mod.getSock();
-      }
-    } catch (_) {}
-  }
-  return null;
-}
-function getFallbackClientUnsafe() {
-  // Mantém compatibilidade com código antigo que tentava acessar ../app.locals
-  try {
-    const appMod = require('../app');
-    // suportar variações: app.locals.whatsappClient OU locals.whatsappClient
-    return (
-      appMod?.locals?.whatsappClient ||
-      appMod?.app?.locals?.whatsappClient ||
-      appMod?.whatsappClient ||
-      null
-    );
-  } catch (_) {
-    return null;
-  }
-}
-async function resolveSendAdapter() {
-  // 1) Admin conectado?
-  const adminSock = await getAdminSock();
-  if (adminSock) {
-    return {
-      mode: 'admin',
-      isConnected: true,
-      async sendImage(jid, imagePath, caption) {
-        return adminSock.sendMessage(jid, { image: { url: imagePath }, caption });
-      },
-      async sendText(jid, text) {
-        return adminSock.sendMessage(jid, { text });
-      },
-    };
-  }
-
-  // 2) Fallback (cliente interno), se exposto pela app
-  const waClient = getFallbackClientUnsafe();
-  if (waClient?.isConnected) {
-    // mantém chamada antiga se existir; caso não, usa sock direto
-    const canUseLegacy = typeof waClient.sendImageMessage === 'function';
-    const sock = waClient.sock;
-    return {
-      mode: 'client',
-      isConnected: true,
-      async sendImage(jid, imagePath, caption) {
-        if (canUseLegacy) {
-          return waClient.sendImageMessage(jid, imagePath, caption, { quoted: null });
-        }
-        if (!sock) throw new Error('Sock indisponível no cliente fallback');
-        return sock.sendMessage(jid, { image: { url: imagePath }, caption });
-      },
-      async sendText(jid, text) {
-        if (waClient.sendToGroup) return waClient.sendToGroup(jid, text);
-        if (!sock) throw new Error('Sock indisponível no cliente fallback');
-        return sock.sendMessage(jid, { text });
-      },
-    };
-  }
-
-  return { mode: 'none', isConnected: false };
-}
+const SEND_DELAY_MS = Math.max(0, Number(process.env.WA_SEND_DELAY_MS || 30000));
+const MAX_TARGETS = Math.max(0, Number(process.env.WA_MAX_TARGETS || 0)); // 0 = sem limite
+const ENV_POST_TO = (process.env.WA_POST_TO || '').trim(); // lista de JIDs/telefones (override de grupos)
+const POST_TO_JIDS = parsePhonesToJids(ENV_POST_TO);
 
 class SorteiosModule {
   constructor() {
@@ -203,18 +122,14 @@ class SorteiosModule {
       // 4. Preparar mensagem
       const mensagem = await this.prepararMensagem(dadosCompletos);
 
-      // 5. Enviar para grupos/destinos
-      const resultadoEnvio = await this.enviarParaDestinos(dadosCompletos, imagePath, mensagem);
+      // 5. Enviar para grupos/targets
+      const resultadoEnvio = await this.enviarParaGrupos(dadosCompletos, imagePath, mensagem);
 
       // 6. Registrar como processado no banco local
       await this.registrarComoProcessado(dadosCompletos);
 
       // 7. Marcar como postado na planilha Google Sheets
-      try {
-        await this.googleSheets.marcarComoPostado(codigo, new Date());
-      } catch (e) {
-        logger.warn(`⚠️ Falha ao marcar como postado no Sheets (${codigo}):`, e?.message || e);
-      }
+      await this.googleSheets.marcarComoPostado(codigo, new Date());
 
       logger.info(`✅ Sorteio elegível ${codigo} processado com sucesso`);
 
@@ -311,8 +226,8 @@ class SorteiosModule {
       // 4. Preparar mensagem
       const mensagem = await this.prepararMensagem(dadosCompletos);
 
-      // 5. Enviar para grupos/destinos
-      const resultadoEnvio = await this.enviarParaDestinos(dadosCompletos, imagePath, mensagem);
+      // 5. Enviar para grupos/targets
+      const resultadoEnvio = await this.enviarParaGrupos(dadosCompletos, imagePath, mensagem);
 
       // 6. Registrar como processado
       await this.registrarComoProcessado(dadosCompletos);
@@ -338,12 +253,22 @@ class SorteiosModule {
   async verificarSeJaProcessado(codigo) {
     const db = await database.getConnection();
 
+    await db.run(`
+      CREATE TABLE IF NOT EXISTS sorteios_processados (
+        codigo_sorteio TEXT PRIMARY KEY,
+        data_sorteio TEXT,
+        nome_premio TEXT,
+        ganhador TEXT,
+        processed_at TEXT
+      )
+    `);
+
     const resultado = await db.get(
       `
-      SELECT codigo_sorteio 
-      FROM sorteios_processados 
-      WHERE codigo_sorteio = ? 
-      AND date(processed_at) = date('now')
+      SELECT codigo_sorteio
+      FROM sorteios_processados
+      WHERE codigo_sorteio = ?
+        AND date(processed_at) = date('now')
     `,
       [codigo]
     );
@@ -357,9 +282,19 @@ class SorteiosModule {
   async registrarComoProcessado(dadosSorteio) {
     const db = await database.getConnection();
 
+    await db.run(`
+      CREATE TABLE IF NOT EXISTS sorteios_processados (
+        codigo_sorteio TEXT PRIMARY KEY,
+        data_sorteio TEXT,
+        nome_premio TEXT,
+        ganhador TEXT,
+        processed_at TEXT
+      )
+    `);
+
     await db.run(
       `
-      INSERT OR REPLACE INTO sorteios_processados 
+      INSERT OR REPLACE INTO sorteios_processados
       (codigo_sorteio, data_sorteio, nome_premio, ganhador, processed_at)
       VALUES (?, ?, ?, ?, datetime('now', 'utc'))
     `,
@@ -419,10 +354,18 @@ ${dadosSorteio.urlCompleta || dadosSorteio.urlResultado || ''}
   async obterTextosBase() {
     const db = await database.getConnection();
 
+    await db.run(`
+      CREATE TABLE IF NOT EXISTS textos_sorteios (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        texto_template TEXT NOT NULL,
+        ativo INTEGER DEFAULT 1
+      )
+    `);
+
     const textos = await db.all(
       `
-      SELECT * FROM textos_sorteios 
-      WHERE ativo = 1 
+      SELECT * FROM textos_sorteios
+      WHERE ativo = 1
       ORDER BY id
     `
     );
@@ -436,10 +379,19 @@ ${dadosSorteio.urlCompleta || dadosSorteio.urlResultado || ''}
   async obterCupomAtual() {
     const db = await database.getConnection();
 
+    await db.run(`
+      CREATE TABLE IF NOT EXISTS cupons_atuais (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cupom1 TEXT,
+        cupom2 TEXT,
+        atualizado_em TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
     const cupom = await db.get(
       `
-      SELECT cupom1 FROM cupons_atuais 
-      ORDER BY atualizado_em DESC 
+      SELECT cupom1 FROM cupons_atuais
+      ORDER BY atualizado_em DESC
       LIMIT 1
     `
     );
@@ -448,80 +400,155 @@ ${dadosSorteio.urlCompleta || dadosSorteio.urlResultado || ''}
   }
 
   /**
-   * Enviar para destinos (grupos ativos OU WA_POST_TO)
-   * - Mantém compatibilidade com o fluxo antigo (grupos do banco)
-   * - Adiciona fallback via EV WA_POST_TO (JIDs ou telefones)
+   * Retorna lista de destinos (override por WA_POST_TO; senão usa grupos ativos)
    */
-  async enviarParaDestinos(dadosSorteio, imagePath, mensagem) {
-    try {
-      // 1) Selecionar destinos
-      let destinos = [];
-      if (!WA_POST_TO_FORCE) {
-        destinos = await this.obterGruposAtivos();
-      }
-      if ((WA_POST_TO_FORCE || destinos.length === 0) && WA_POST_TO.length) {
-        // Fallback/Override por EV
-        destinos = WA_POST_TO.map(jid => ({ jid, nome: `destino:${jid}` }));
-      }
+  async getPostTargets() {
+    if (POST_TO_JIDS.length) {
+      // Lista direta da ENV
+      const uniq = [...new Set(POST_TO_JIDS)];
+      return uniq.map((jid, i) => ({ jid, nome: `destino ${i + 1}` }));
+    }
+    // fallback: grupos ativos do banco
+    const gruposAtivos = await this.obterGruposAtivos();
+    return gruposAtivos.map((g) => ({ jid: g.jid, nome: g.nome }));
+  }
 
-      if (destinos.length === 0) {
-        logger.warn('⚠️ Nenhum destino encontrado (grupos ativos vazios e WA_POST_TO não definido)');
+  /**
+   * Enviar para grupos/destinos
+   */
+  async enviarParaGrupos(dadosSorteio, imagePath, mensagem) {
+    try {
+      // 1) destinos
+      let destinos = await this.getPostTargets();
+      if (!destinos.length) {
+        logger.warn('⚠️ Nenhum destino/grupo ativo encontrado');
         return { sucessos: [], erros: [] };
+      }
+      if (MAX_TARGETS > 0 && destinos.length > MAX_TARGETS) {
+        destinos = destinos.slice(0, MAX_TARGETS);
       }
 
       logger.info(`📤 Enviando para ${destinos.length} destino(s)...`);
 
-      // 2) Resolver interface de envio
-      const sender = await resolveSendAdapter();
-      if (!sender.isConnected) {
-        throw new Error('Nenhuma sessão WhatsApp conectada (admin e fallback indisponíveis)');
+      // 2) obter transporte: preferir admin sock; fallback: cliente interno; compat: cliente no app
+      const { sock, whatsappClient } = await this._resolveTransport();
+
+      if (!sock && !whatsappClient) {
+        throw new Error('Não há sessão do WhatsApp disponível para envio');
       }
 
-      // 3) Enviar um-a-um com idempotência local
+      // 3) loop de envios
       const sucessos = [];
       const erros = [];
+
       for (const dest of destinos) {
         const { jid, nome } = dest;
-
-        // Cria chave de idempotência (por sorteio+destino+data)
-        const idemKey = `${dadosSorteio.codigo}-${jid}-${DateUtils.getHojeBrasil()}`;
+        let idempotencyKey = `${dadosSorteio.codigo}-${jid}-${DateUtils.getHojeBrasil()}`;
 
         try {
-          const jaEnviado = await this.verificarSeJaEnviado(idemKey);
+          // Verificar se já foi enviado
+          const jaEnviado = await this.verificarSeJaEnviado(idempotencyKey);
           if (jaEnviado) {
-            logger.info(`ℹ️ Mensagem já enviada para ${nome} (${jid}) — ignorando`);
+            logger.info(`ℹ️ Mensagem já enviada para destino ${nome}`);
             continue;
           }
 
-          await this.registrarTentativaEnvio(idemKey, dadosSorteio.codigo, jid);
+          // Registrar tentativa de envio
+          await this.registrarTentativaEnvio(idempotencyKey, dadosSorteio.codigo, jid);
 
-          const r = await sender.sendImage(jid, imagePath, mensagem);
-          const msgId = r?.key?.id || null;
+          // Enviar
+          const result = await this._sendOne({ sock, whatsappClient, jid, imagePath, mensagem });
 
-          await this.atualizarStatusEnvio(idemKey, 'sent', msgId);
+          // Atualizar status como enviado
+          const messageId =
+            result?.key?.id ||
+            result?.messageID ||
+            result?.id ||
+            null;
+          await this.atualizarStatusEnvio(idempotencyKey, 'sent', messageId);
 
-          sucessos.push({ grupo: nome, jid, messageId: msgId });
+          sucessos.push({ grupo: nome, jid, messageId });
           metricsService.recordMessageSent(nome, dadosSorteio.codigo);
           logger.info(`✅ Enviado para: ${nome}`);
 
-          // Pausa entre envios (com jitter opcional)
-          const jitter = Math.floor(Math.random() * POST_JITTER_MS);
-          await this.sleep(POST_DELAY_MS + jitter);
+          // Pausa entre envios
+          if (SEND_DELAY_MS > 0) await this.sleep(SEND_DELAY_MS);
         } catch (error) {
-          await this.atualizarStatusEnvio(idemKey, 'failed_perm', null, error?.message || String(error));
-
-          erros.push({ grupo: nome, jid, erro: error?.message || String(error) });
-          metricsService.recordMessageFailed(nome, error?.name || 'unknown', dadosSorteio.codigo);
+          await this.atualizarStatusEnvio(idempotencyKey, 'failed_perm', null, error.message);
+          erros.push({ grupo: nome, jid, erro: error.message });
+          metricsService.recordMessageFailed(nome, error.name || 'unknown', dadosSorteio.codigo);
           logger.error(`❌ Erro ao enviar para ${nome}:`, error);
         }
       }
 
       logger.info(`📊 Envio concluído: ${sucessos.length} sucessos, ${erros.length} erros`);
+
       return { sucessos, erros };
     } catch (error) {
-      logger.error('❌ Erro no envio para destinos:', error);
+      logger.error('❌ Erro ao enviar para grupos/destinos:', error);
       throw error;
     }
+  }
+
+  /**
+   * Resolver transporte de envio (tolerante)
+   * - Tenta admin bundle (/admin-wa-bundle.js)
+   * - Tenta app.locals.whatsappClient (compat)
+   * - Tenta cliente interno exposto em ../services/whatsapp-client, se houver singleton
+   */
+  async _resolveTransport() {
+    // 1) Admin bundle (preferido)
+    try {
+      const admin = require('../admin-wa-bundle.js');
+      if (admin?.getStatus && admin?.getSock) {
+        const st = await admin.getStatus();
+        if (st?.connected) {
+          return { sock: admin.getSock(), whatsappClient: null };
+        }
+      }
+    } catch (_) {}
+
+    // 2) App.locals.whatsappClient (compat com projeto existente)
+    try {
+      const appMaybe = require('../app');
+      const wc = appMaybe?.locals?.whatsappClient;
+      if (wc?.isConnected && wc?.sock) {
+        return { sock: wc.sock, whatsappClient: wc };
+      }
+      if (wc?.isConnected && typeof wc.sendImageMessage === 'function') {
+        return { sock: null, whatsappClient: wc };
+      }
+    } catch (_) {}
+
+    // 3) Outro singleton opcional
+    try {
+      const singleton = require('../services/whatsapp-singleton');
+      if (singleton?.sock) return { sock: singleton.sock, whatsappClient: singleton };
+    } catch (_) {}
+
+    return { sock: null, whatsappClient: null };
+  }
+
+  /**
+   * Envio unitário com compatibilidade
+   */
+  async _sendOne({ sock, whatsappClient, jid, imagePath, mensagem }) {
+    // Preferir método do cliente (se existir)
+    if (whatsappClient && typeof whatsappClient.sendImageMessage === 'function') {
+      return whatsappClient.sendImageMessage(jid, imagePath, mensagem, { quoted: null });
+    }
+
+    // Fallback: enviar direto pelo Baileys
+    if (sock) {
+      const exists = imagePath && fs.existsSync(imagePath);
+      if (exists) {
+        return sock.sendMessage(jid, { image: { url: imagePath }, caption: mensagem });
+      }
+      // Se imagem não existir por algum motivo, manda texto para não travar operação
+      return sock.sendMessage(jid, { text: mensagem });
+    }
+
+    throw new Error('Transporte de WhatsApp indisponível');
   }
 
   /**
@@ -530,10 +557,20 @@ ${dadosSorteio.urlCompleta || dadosSorteio.urlResultado || ''}
   async obterGruposAtivos() {
     const db = await database.getConnection();
 
+    await db.run(`
+      CREATE TABLE IF NOT EXISTS grupos_whatsapp (
+        jid TEXT PRIMARY KEY,
+        nome TEXT,
+        ativo_sorteios INTEGER DEFAULT 1,
+        enabled INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
     const grupos = await db.all(
       `
-      SELECT jid, nome 
-      FROM grupos_whatsapp 
+      SELECT jid, nome
+      FROM grupos_whatsapp
       WHERE ativo_sorteios = 1 AND enabled = 1
       ORDER BY nome
     `
@@ -548,9 +585,24 @@ ${dadosSorteio.urlCompleta || dadosSorteio.urlResultado || ''}
   async verificarSeJaEnviado(idempotencyKey) {
     const db = await database.getConnection();
 
+    await db.run(`
+      CREATE TABLE IF NOT EXISTS envios_whatsapp (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        idempotency_key TEXT UNIQUE,
+        codigo_sorteio TEXT,
+        grupo_jid TEXT,
+        status TEXT DEFAULT 'pending',
+        tentativas INTEGER DEFAULT 0,
+        message_key_id TEXT,
+        ultimo_erro TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        enviado_em TEXT
+      )
+    `);
+
     const resultado = await db.get(
       `
-      SELECT id FROM envios_whatsapp 
+      SELECT id FROM envios_whatsapp
       WHERE idempotency_key = ? AND status IN ('sent', 'delivered')
     `,
       [idempotencyKey]
@@ -565,13 +617,38 @@ ${dadosSorteio.urlCompleta || dadosSorteio.urlResultado || ''}
   async registrarTentativaEnvio(idempotencyKey, codigoSorteio, grupoJid) {
     const db = await database.getConnection();
 
+    await db.run(`
+      CREATE TABLE IF NOT EXISTS envios_whatsapp (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        idempotency_key TEXT UNIQUE,
+        codigo_sorteio TEXT,
+        grupo_jid TEXT,
+        status TEXT DEFAULT 'pending',
+        tentativas INTEGER DEFAULT 0,
+        message_key_id TEXT,
+        ultimo_erro TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        enviado_em TEXT
+      )
+    `);
+
     await db.run(
       `
-      INSERT OR IGNORE INTO envios_whatsapp 
+      INSERT OR IGNORE INTO envios_whatsapp
       (idempotency_key, codigo_sorteio, grupo_jid, status, tentativas)
       VALUES (?, ?, ?, 'pending', 0)
     `,
       [idempotencyKey, codigoSorteio, grupoJid]
+    );
+
+    // incrementa tentativas a cada registro de tentativa
+    await db.run(
+      `
+      UPDATE envios_whatsapp
+      SET tentativas = COALESCE(tentativas, 0) + 1
+      WHERE idempotency_key = ?
+    `,
+      [idempotencyKey]
     );
   }
 
@@ -583,8 +660,8 @@ ${dadosSorteio.urlCompleta || dadosSorteio.urlResultado || ''}
 
     await db.run(
       `
-      UPDATE envios_whatsapp 
-      SET status = ?, message_key_id = ?, ultimo_erro = ?, 
+      UPDATE envios_whatsapp
+      SET status = ?, message_key_id = ?, ultimo_erro = ?,
           enviado_em = CASE WHEN ? = 'sent' THEN datetime('now', 'utc') ELSE enviado_em END
       WHERE idempotency_key = ?
     `,
@@ -608,6 +685,8 @@ ${dadosSorteio.urlCompleta || dadosSorteio.urlResultado || ''}
         data: DateUtils.getHojeBrasil(),
         premio: dadosScraping.premio,
         urlResultado: dadosScraping.urlCompleta,
+        urlCompleta: dadosScraping.urlCompleta,
+        ganhador: dadosScraping.ganhador || dadosScraping.nome || '',
       };
 
       // 3. Processar
@@ -627,27 +706,48 @@ ${dadosSorteio.urlCompleta || dadosSorteio.urlResultado || ''}
   async obterEstatisticas() {
     const db = await database.getConnection();
 
-    const stats = await db.get(
-      `
-      SELECT 
+    await db.run(`
+      CREATE TABLE IF NOT EXISTS sorteios_processados (
+        codigo_sorteio TEXT PRIMARY KEY,
+        data_sorteio TEXT,
+        nome_premio TEXT,
+        ganhador TEXT,
+        processed_at TEXT
+      )
+    `);
+
+    await db.run(`
+      CREATE TABLE IF NOT EXISTS envios_whatsapp (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        idempotency_key TEXT UNIQUE,
+        codigo_sorteio TEXT,
+        grupo_jid TEXT,
+        status TEXT DEFAULT 'pending',
+        tentativas INTEGER DEFAULT 0,
+        message_key_id TEXT,
+        ultimo_erro TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        enviado_em TEXT
+      )
+    `);
+
+    const stats = await db.get(`
+      SELECT
         COUNT(*) as total_processados,
         COUNT(CASE WHEN date(processed_at) = date('now') THEN 1 END) as hoje,
         COUNT(CASE WHEN date(processed_at) = date('now', '-1 day') THEN 1 END) as ontem,
         COUNT(CASE WHEN date(processed_at) >= date('now', '-7 days') THEN 1 END) as ultima_semana
       FROM sorteios_processados
-    `
-    );
+    `);
 
-    const envios = await db.get(
-      `
-      SELECT 
+    const envios = await db.get(`
+      SELECT
         COUNT(*) as total_envios,
         COUNT(CASE WHEN status = 'sent' THEN 1 END) as enviados,
         COUNT(CASE WHEN status LIKE 'failed%' THEN 1 END) as falhados
       FROM envios_whatsapp
       WHERE date(created_at) >= date('now', '-7 days')
-    `
-    );
+    `);
 
     return {
       sorteios: stats,
@@ -660,7 +760,7 @@ ${dadosSorteio.urlCompleta || dadosSorteio.urlResultado || ''}
    * Sleep helper
    */
   sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }
 
