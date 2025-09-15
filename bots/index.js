@@ -50,6 +50,7 @@ function basicAuth(req, res, next) {
 const instances = new Map(); // id -> { id, client, sessPath }
 const qrStore = new Map();   // id -> último QR recebido
 
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 function ensureDir(p) { fs.mkdirSync(p, { recursive: true }); }
 
 async function spawnInstance(id) {
@@ -57,11 +58,8 @@ async function spawnInstance(id) {
   ensureDir(sessPath);
 
   const client = new WhatsAppClient();
-
-  // força sessão por instância ANTES de iniciar
   client.sessionPath = sessPath;
 
-  // inicializa; ele já tenta reconectar quando cair
   await client.initialize().catch(() => {});
 
   // CAPTURA DE QR do Baileys para servir em /qr/:id
@@ -81,7 +79,6 @@ async function spawnInstance(id) {
     }
   } catch {}
 
-  // anexa atendente (mesmas regras do 1whatsapp)
   if (attachAssistant && ASSISTANT_ENABLED) {
     try { attachAssistant({ whatsappClient: client }); } catch {}
   }
@@ -105,8 +102,9 @@ async function spawnInstance(id) {
 // ---------- App web ----------
 const app = express();
 app.use(express.json());
+if (String(process.env.TRUST_PROXY || '0') === '1') app.set('trust proxy', 1);
 
-// Health público (não passa por auth) para usar no Render
+// Health público
 app.get('/healthz', (req, res) => {
   res.json({
     ok: true,
@@ -135,24 +133,28 @@ app.get('/api/instances', basicAuth, (req, res) => {
   res.json({ ok: true, at: now, instances: list });
 });
 
-/**
- * QR em SVG
- * - Força a geração (forceQRGeneration) para evitar race condition.
- * - Lê do cache (qrStore) OU direto do cliente (getQRCode()).
- */
+// QR em SVG (força geração + long-poll)
 app.get('/qr/:id', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   const id = req.params.id;
   const it = instances.get(id);
   if (!it) return res.status(404).send('instância não encontrada');
 
   try {
-    // provoca um novo ciclo de QR caso o primeiro tenha sido “perdido”
-    await it.client.forceQRGeneration().catch(() => {});
-    const qr = qrStore.get(id) || it.client.getQRCode();
+    // chuta o handshake para nascer QR
+    await it.client.forceQRGeneration?.().catch(()=>{});
+
+    // espera até 25s por um QR (em memória)
+    let qr = qrStore.get(id) || it.client.getQRCode?.() || null;
+    for (let i = 0; i < 50 && !qr; i++) {
+      await sleep(500);
+      qr = qrStore.get(id) || it.client.getQRCode?.() || null;
+    }
+
     if (!qr) return res.status(404).send('QR ainda não disponível');
 
-    const svg = await QRCode.toString(qr, { type: 'svg', margin: 1, width: 256 });
-    res.setHeader('Content-Type', 'image/svg+xml');
+    const svg = await QRCode.toString(qr, { type: 'svg', margin: 1, width: 264 });
+    res.type('image/svg+xml');
     return res.send(svg);
   } catch (e) {
     return res.status(500).send(String(e?.message || e));
