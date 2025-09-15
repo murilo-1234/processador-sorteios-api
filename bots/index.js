@@ -135,19 +135,22 @@ app.get('/api/instances', basicAuth, (req, res) => {
   res.json({ ok: true, at: now, instances: list });
 });
 
-// QR em SVG a partir do cache + tentativa de reacender emissão
+/**
+ * QR em SVG
+ * - Força a geração (forceQRGeneration) para evitar race condition.
+ * - Lê do cache (qrStore) OU direto do cliente (getQRCode()).
+ */
 app.get('/qr/:id', async (req, res) => {
   const id = req.params.id;
   const it = instances.get(id);
   if (!it) return res.status(404).send('instância não encontrada');
 
-  if (!qrStore.get(id)) {
-    try { await it.client.initialize().catch(()=>{}); } catch {}
-  }
-
-  const qr = qrStore.get(id);
-  if (!qr) return res.status(404).send('QR ainda não disponível');
   try {
+    // provoca um novo ciclo de QR caso o primeiro tenha sido “perdido”
+    await it.client.forceQRGeneration().catch(() => {});
+    const qr = qrStore.get(id) || it.client.getQRCode();
+    if (!qr) return res.status(404).send('QR ainda não disponível');
+
     const svg = await QRCode.toString(qr, { type: 'svg', margin: 1, width: 256 });
     res.setHeader('Content-Type', 'image/svg+xml');
     return res.send(svg);
