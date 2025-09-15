@@ -126,6 +126,15 @@ class WhatsAppClient {
     return this.currentPairingCode || null;
   }
 
+  // exposto para a página /admin calcular o badge de status
+  getConnectionStatus() {
+    return {
+      isConnected: !!this.isConnected,
+      user: this.user,
+      currentRetry: this.currentRetry,
+    };
+  }
+
   async tryPairingIfConfigured() {
     const phone = (process.env.WHATSAPP_PHONE_NUMBER || '').trim();
     if (!phone) return false;
