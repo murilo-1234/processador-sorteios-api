@@ -243,7 +243,7 @@ app.get(['/','/admin'], basicAuth, async (req, res) => {
       alert(JSON.stringify(j,null,2));
       location.reload();
     }
-    setInterval(()=>location.reload(), 15000);
+    setInterval(()=>location.reload(), 5000);
   </script>
   </head><body>
     <h1>WhatsApp Bots – Multi-instância</h1>
