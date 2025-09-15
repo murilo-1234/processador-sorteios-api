@@ -1,14 +1,20 @@
 const fs = require('fs');
 const path = require('path');
-const P = require('@whiskeysockets/baileys');
 
-const {
-  makeWASocket,
-  Browsers,
-  useMultiFileAuthState,
-  fetchLatestBaileysVersion,
-  DisconnectReason,
-} = P;
+// --- Carregamento compatível com CJS/ESM do @whiskeysockets/baileys ---
+const __loadBaileys = (async () => {
+  try {
+    // tenta CJS (quando disponível)
+    return require('@whiskeysockets/baileys');
+  } catch (e) {
+    // pacote 6.x é ESM: faz import dinâmico
+    if (e && e.code === 'ERR_REQUIRE_ESM') {
+      const m = await import('@whiskeysockets/baileys');
+      return m.default ?? m;
+    }
+    throw e;
+  }
+})();
 
 class WhatsAppClient {
   constructor() {
@@ -34,6 +40,16 @@ class WhatsAppClient {
     const probe = path.join(this.sessionPath, '.__rwtest');
     fs.writeFileSync(probe, String(Date.now()));
     fs.rmSync(probe, { force: true });
+
+    // carrega Baileys (compat CJS/ESM) e extrai símbolos
+    const B = await __loadBaileys;
+    const {
+      makeWASocket,
+      Browsers,
+      useMultiFileAuthState,
+      fetchLatestBaileysVersion,
+      DisconnectReason,
+    } = B;
 
     const { state, saveCreds } = await useMultiFileAuthState(this.sessionPath);
     const { version } = await fetchLatestBaileysVersion();
