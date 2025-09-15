@@ -22,6 +22,7 @@ const cron = require('node-cron')
 const WhatsAppClient = require('./services/whatsapp-client')
 const settings = require('./services/settings')
 const { runOnce } = require('./jobs/post-winner')
+const { runOnce: runPromoOnce } = require('./jobs/post-promo') // << NOVO
 
 // SSE hub
 const { addClient: sseAddClient, broadcast: sseBroadcast } = require('./services/wa-sse')
@@ -731,7 +732,7 @@ class App {
       console.warn('[socket-watcher] não iniciado:', e?.message || e)
     }
 
-    // Cron: só roda se houver sessão conectada
+    // Cron: só roda se houver sessão conectada (POST WINNER)
     cron.schedule('*/1 * * * *', async () => {
       try {
         let canRun = false
@@ -753,6 +754,31 @@ class App {
         }
       } catch (e) {
         console.error('cron runOnce error:', e?.message || e)
+      }
+    })
+
+    // Cron: Divulgação 48h antes e no dia (09:00) — usa ENV PROMO_CRON ou padrão */10
+    const promoCron = process.env.PROMO_CRON || '*/10 * * * *'
+    cron.schedule(promoCron, async () => {
+      try {
+        let canRun = false
+        try {
+          if (this.waAdmin && typeof this.waAdmin.getStatus === 'function') {
+            const st = await this.waAdmin.getStatus()
+            canRun = !!st.connected
+          }
+        } catch (_) {}
+
+        if (!canRun && this.isFallbackEnabled) {
+          const wa = this.getClient({ create: false })
+          canRun = !!(wa?.isConnected)
+        }
+
+        if (canRun) {
+          await runPromoOnce(this.app)
+        }
+      } catch (e) {
+        console.error('[promo] cron error:', e?.message || e)
       }
     })
   }
