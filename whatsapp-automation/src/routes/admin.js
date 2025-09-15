@@ -1,3 +1,4 @@
+// src/routes/admin.js
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -7,10 +8,99 @@ const SorteiosModule = require('../modules/sorteios');
 
 const router = express.Router();
 
+/* ========================= Helpers ========================= */
+
+async function ensureCoreTables(db) {
+  await db.run(`
+    CREATE TABLE IF NOT EXISTS grupos_whatsapp (
+      jid TEXT PRIMARY KEY,
+      nome TEXT,
+      ativo_sorteios INTEGER DEFAULT 1,
+      enabled INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await db.run(`
+    CREATE TABLE IF NOT EXISTS textos_sorteios (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      texto_template TEXT NOT NULL,
+      ativo INTEGER DEFAULT 1
+    )
+  `);
+  await db.run(`
+    CREATE TABLE IF NOT EXISTS cupons_atuais (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cupom1 TEXT,
+      cupom2 TEXT,
+      atualizado_em TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+}
+
+async function getWAStatus(app) {
+  // Preferir admin bundle se presente (app.locals.waAdmin)
+  try {
+    const waAdmin = app?.locals?.waAdmin;
+    if (waAdmin && typeof waAdmin.getStatus === 'function') {
+      const st = await waAdmin.getStatus();
+      if (st && typeof st === 'object') {
+        return {
+          isConnected: !!st.connected,
+          connecting: !!st.connecting,
+          queueLength: st.queueLength || 0,
+          circuitBreakerState: st.circuitBreakerState || 'CLOSED',
+          msisdn: st.msisdn || null,
+          user: st.user || null,
+          via: 'admin',
+        };
+      }
+    }
+  } catch (_) {}
+
+  // Fallback: cliente interno
+  try {
+    const wc = app?.locals?.whatsappClient;
+    if (wc?.getConnectionStatus) {
+      const st = wc.getConnectionStatus() || {};
+      return {
+        isConnected: !!st.isConnected || !!wc.isConnected,
+        connecting: !!st.connecting || (!st.isConnected && !!wc.sock),
+        queueLength: st.queueLength || 0,
+        circuitBreakerState: st.circuitBreakerState || 'CLOSED',
+        msisdn: (st?.user?.id || wc.user?.id || '').replace('@s.whatsapp.net', '') || null,
+        user: st.user || wc.user || null,
+        via: 'client',
+      };
+    }
+    if (wc) {
+      return {
+        isConnected: !!wc.isConnected,
+        connecting: !wc.isConnected && !!wc.sock,
+        queueLength: 0,
+        circuitBreakerState: wc.circuitBreaker || 'CLOSED',
+        msisdn: (wc.user?.id || '').replace('@s.whatsapp.net', '') || null,
+        user: wc.user || null,
+        via: 'client',
+      };
+    }
+  } catch (_) {}
+
+  return {
+    isConnected: false,
+    connecting: false,
+    queueLength: 0,
+    circuitBreakerState: 'CLOSED',
+    msisdn: null,
+    user: null,
+    via: 'none',
+  };
+}
+
+/* ==================== Middleware Auth ====================== */
 // Middleware de autenticação
 const authenticateAdmin = async (req, res, next) => {
   try {
-    const token = req.session.adminToken || req.headers.authorization?.replace('Bearer ', '');
+    const token = (req.session && req.session.adminToken) || req.headers.authorization?.replace('Bearer ', '');
     
     if (!token) {
       // Se for requisição AJAX, retornar JSON
@@ -25,7 +115,7 @@ const authenticateAdmin = async (req, res, next) => {
     
     // Verificar se token não expirou
     if (decoded.exp && Date.now() >= decoded.exp * 1000) {
-      req.session.destroy();
+      if (req.session) req.session.destroy();
       if (req.xhr || req.headers.accept?.includes('application/json')) {
         return res.status(401).json({ error: 'Sessão expirada' });
       }
@@ -37,7 +127,7 @@ const authenticateAdmin = async (req, res, next) => {
     
   } catch (error) {
     logger.error('❌ Erro na autenticação admin:', error);
-    req.session.destroy();
+    if (req.session) req.session.destroy();
     
     if (req.xhr || req.headers.accept?.includes('application/json')) {
       return res.status(401).json({ error: 'Token inválido' });
@@ -46,8 +136,9 @@ const authenticateAdmin = async (req, res, next) => {
   }
 };
 
+/* ========================= Views =========================== */
 // Página de login
-router.get('/login', (req, res) => {
+router.get('/login', (_req, res) => {
   res.send(`
     <!DOCTYPE html>
     <html lang="pt-BR">
@@ -174,10 +265,11 @@ router.get('/login', (req, res) => {
   `);
 });
 
+/* ========================= Auth API ======================== */
 // Autenticação
 router.post('/auth/login', async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { username, password } = req.body || {};
     
     // Credenciais padrão
     const adminUsername = process.env.ADMIN_USERNAME || 'admin';
@@ -185,7 +277,7 @@ router.post('/auth/login', async (req, res) => {
     
     // Validar usuário e senha
     if (username !== adminUsername || password !== adminPassword) {
-      logger.audit('admin_login_failed', `Tentativa de login falhada: ${username}`, username, req.ip);
+      logger.audit && logger.audit('admin_login_failed', `Tentativa de login falhada: ${username}`, username, req.ip);
       return res.status(401).json({ error: 'Usuário ou senha incorretos' });
     }
     
@@ -201,9 +293,9 @@ router.post('/auth/login', async (req, res) => {
     );
     
     // Salvar token na sessão
-    req.session.adminToken = token;
+    if (req.session) req.session.adminToken = token;
     
-    logger.audit('admin_login_success', `Login realizado com sucesso: ${username}`, username, req.ip);
+    logger.audit && logger.audit('admin_login_success', `Login realizado com sucesso: ${username}`, username, req.ip);
     
     res.json({ 
       success: true, 
@@ -220,19 +312,17 @@ router.post('/auth/login', async (req, res) => {
 
 // Logout
 router.post('/auth/logout', (req, res) => {
-  req.session.destroy();
+  if (req.session) req.session.destroy();
   res.json({ success: true });
 });
 
+/* ========================= Dashboard ======================= */
 // Dashboard principal
 router.get('/dashboard', authenticateAdmin, async (req, res) => {
   try {
-    const whatsappClient = req.app.locals.whatsappClient;
+    const whatsappStatus = await getWAStatus(req.app);
     const jobScheduler = req.app.locals.jobScheduler;
-    
-    const whatsappStatus = whatsappClient?.getConnectionStatus() || {};
-    const jobsStatus = jobScheduler?.getJobsStatus() || {};
-    
+    const jobsStatus = jobScheduler?.getJobsStatus ? jobScheduler.getJobsStatus() : {};
     res.send(await generateDashboardHTML(whatsappStatus, jobsStatus));
   } catch (error) {
     logger.error('❌ Erro ao carregar dashboard:', error);
@@ -243,13 +333,12 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
 // API: Status do sistema
 router.get('/api/status', authenticateAdmin, async (req, res) => {
   try {
-    const whatsappClient = req.app.locals.whatsappClient;
     const jobScheduler = req.app.locals.jobScheduler;
     const sorteiosModule = new SorteiosModule();
     
     const status = {
-      whatsapp: whatsappClient?.getConnectionStatus() || {},
-      jobs: jobScheduler?.getJobsStatus() || {},
+      whatsapp: await getWAStatus(req.app),
+      jobs: jobScheduler?.getJobsStatus ? jobScheduler.getJobsStatus() : {},
       sorteios: await sorteiosModule.obterEstatisticas(),
       timestamp: new Date().toISOString()
     };
@@ -261,10 +350,12 @@ router.get('/api/status', authenticateAdmin, async (req, res) => {
   }
 });
 
+/* ======================= Grupos WhatsApp =================== */
 // API: Grupos WhatsApp
-router.get('/api/grupos', authenticateAdmin, async (req, res) => {
+router.get('/api/grupos', authenticateAdmin, async (_req, res) => {
   try {
     const db = await database.getConnection();
+    await ensureCoreTables(db);
     const grupos = await db.all(`
       SELECT jid, nome, ativo_sorteios, enabled, created_at 
       FROM grupos_whatsapp 
@@ -282,16 +373,18 @@ router.get('/api/grupos', authenticateAdmin, async (req, res) => {
 router.put('/api/grupos/:jid', authenticateAdmin, async (req, res) => {
   try {
     const { jid } = req.params;
-    const { ativo_sorteios, enabled } = req.body;
+    const { ativo_sorteios, enabled } = req.body || {};
     
     const db = await database.getConnection();
+    await ensureCoreTables(db);
     await db.run(`
       UPDATE grupos_whatsapp 
-      SET ativo_sorteios = ?, enabled = ?
+      SET ativo_sorteios = COALESCE(?, ativo_sorteios),
+          enabled = COALESCE(?, enabled)
       WHERE jid = ?
-    `, [ativo_sorteios ? 1 : 0, enabled ? 1 : 0, jid]);
+    `, [ativo_sorteios !== undefined ? (ativo_sorteios ? 1 : 0) : null, enabled !== undefined ? (enabled ? 1 : 0) : null, jid]);
     
-    logger.audit('grupo_updated', `Grupo ${jid} atualizado`, 'admin', req.ip);
+    logger.audit && logger.audit('grupo_updated', `Grupo ${jid} atualizado`, 'admin', req.ip);
     res.json({ success: true });
   } catch (error) {
     logger.error('❌ Erro ao atualizar grupo:', error);
@@ -302,44 +395,76 @@ router.put('/api/grupos/:jid', authenticateAdmin, async (req, res) => {
 // API: Sincronizar grupos do WhatsApp
 router.post('/api/grupos/sync', authenticateAdmin, async (req, res) => {
   try {
-    const whatsappClient = req.app.locals.whatsappClient;
-    
-    if (!whatsappClient || !whatsappClient.isConnected) {
-      return res.status(400).json({ error: 'WhatsApp não está conectado' });
+    const app = req.app;
+    const db = await database.getConnection();
+    await ensureCoreTables(db);
+
+    // Tenta via waAdmin primeiro
+    let grupos = [];
+    let via = 'unknown';
+
+    try {
+      const waAdmin = app?.locals?.waAdmin;
+      if (waAdmin?.getStatus && waAdmin?.getSock) {
+        const st = await waAdmin.getStatus();
+        if (st?.connected) {
+          const sock = waAdmin.getSock();
+          const mp = await sock.groupFetchAllParticipating();
+          grupos = Object.values(mp).map((g) => ({ jid: g.id, nome: g.subject || g.name || 'Sem nome' }));
+          via = 'admin';
+        }
+      }
+    } catch (_) {}
+
+    // Fallback para cliente interno
+    if (!grupos.length) {
+      const whatsappClient = app?.locals?.whatsappClient;
+      if (!whatsappClient || !whatsappClient.isConnected) {
+        return res.status(400).json({ error: 'WhatsApp não está conectado' });
+      }
+      if (typeof whatsappClient.getGroups === 'function') {
+        grupos = await whatsappClient.getGroups();
+        via = 'client:getGroups';
+      } else if (typeof whatsappClient.listGroups === 'function') {
+        grupos = await whatsappClient.listGroups();
+        via = 'client:listGroups';
+      } else {
+        return res.status(500).json({ error: 'Cliente WhatsApp não suporta listagem de grupos' });
+      }
     }
     
-    const grupos = await whatsappClient.getGroups();
-    const db = await database.getConnection();
-    
     let novosGrupos = 0;
-    
     for (const grupo of grupos) {
-      const existe = await db.get('SELECT jid FROM grupos_whatsapp WHERE jid = ?', [grupo.jid]);
+      const jid = grupo.jid || grupo.id;
+      const nome = grupo.nome || grupo.name || grupo.subject || 'Sem nome';
+      const existe = await db.get('SELECT jid FROM grupos_whatsapp WHERE jid = ?', [jid]);
       
       if (!existe) {
         await db.run(`
           INSERT INTO grupos_whatsapp (jid, nome, ativo_sorteios, enabled)
           VALUES (?, ?, 0, 1)
-        `, [grupo.jid, grupo.nome]);
+        `, [jid, nome]);
         novosGrupos++;
       } else {
         // Atualizar nome se mudou
-        await db.run('UPDATE grupos_whatsapp SET nome = ? WHERE jid = ?', [grupo.nome, grupo.jid]);
+        await db.run('UPDATE grupos_whatsapp SET nome = ? WHERE jid = ?', [nome, jid]);
       }
     }
     
-    logger.audit('grupos_sync', `${novosGrupos} novos grupos sincronizados`, 'admin', req.ip);
-    res.json({ success: true, novosGrupos, totalGrupos: grupos.length });
+    logger.audit && logger.audit('grupos_sync', `${novosGrupos} novos grupos sincronizados`, 'admin', req.ip);
+    res.json({ success: true, novosGrupos, totalGrupos: grupos.length, via });
   } catch (error) {
     logger.error('❌ Erro ao sincronizar grupos:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
+/* ======================= Textos de sorteios ================= */
 // API: Textos de sorteios
-router.get('/api/textos', authenticateAdmin, async (req, res) => {
+router.get('/api/textos', authenticateAdmin, async (_req, res) => {
   try {
     const db = await database.getConnection();
+    await ensureCoreTables(db);
     const textos = await db.all(`
       SELECT * FROM textos_sorteios 
       ORDER BY id
@@ -355,8 +480,9 @@ router.get('/api/textos', authenticateAdmin, async (req, res) => {
 // API: Criar/Atualizar texto
 router.post('/api/textos', authenticateAdmin, async (req, res) => {
   try {
-    const { id, texto_template, ativo } = req.body;
+    const { id, texto_template, ativo } = req.body || {};
     const db = await database.getConnection();
+    await ensureCoreTables(db);
     
     if (id) {
       // Atualizar
@@ -373,7 +499,7 @@ router.post('/api/textos', authenticateAdmin, async (req, res) => {
       `, [texto_template, ativo ? 1 : 0]);
     }
     
-    logger.audit('texto_updated', `Texto ${id ? 'atualizado' : 'criado'}`, 'admin', req.ip);
+    logger.audit && logger.audit('texto_updated', `Texto ${id ? 'atualizado' : 'criado'}`, 'admin', req.ip);
     res.json({ success: true });
   } catch (error) {
     logger.error('❌ Erro ao salvar texto:', error);
@@ -386,10 +512,11 @@ router.delete('/api/textos/:id', authenticateAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const db = await database.getConnection();
+    await ensureCoreTables(db);
     
     await db.run('DELETE FROM textos_sorteios WHERE id = ?', [id]);
     
-    logger.audit('texto_deleted', `Texto ${id} deletado`, 'admin', req.ip);
+    logger.audit && logger.audit('texto_deleted', `Texto ${id} deletado`, 'admin', req.ip);
     res.json({ success: true });
   } catch (error) {
     logger.error('❌ Erro ao deletar texto:', error);
@@ -397,10 +524,12 @@ router.delete('/api/textos/:id', authenticateAdmin, async (req, res) => {
   }
 });
 
+/* ============================ Cupons ======================= */
 // API: Cupons
-router.get('/api/cupons', authenticateAdmin, async (req, res) => {
+router.get('/api/cupons', authenticateAdmin, async (_req, res) => {
   try {
     const db = await database.getConnection();
+    await ensureCoreTables(db);
     const cupom = await db.get(`
       SELECT * FROM cupons_atuais 
       ORDER BY atualizado_em DESC 
@@ -417,15 +546,16 @@ router.get('/api/cupons', authenticateAdmin, async (req, res) => {
 // API: Atualizar cupons
 router.post('/api/cupons', authenticateAdmin, async (req, res) => {
   try {
-    const { cupom1, cupom2 } = req.body;
+    const { cupom1, cupom2 } = req.body || {};
     const db = await database.getConnection();
+    await ensureCoreTables(db);
     
     await db.run(`
       INSERT INTO cupons_atuais (cupom1, cupom2)
       VALUES (?, ?)
     `, [cupom1, cupom2]);
     
-    logger.audit('cupons_updated', 'Cupons atualizados', 'admin', req.ip);
+    logger.audit && logger.audit('cupons_updated', 'Cupons atualizados', 'admin', req.ip);
     res.json({ success: true });
   } catch (error) {
     logger.error('❌ Erro ao atualizar cupons:', error);
@@ -433,19 +563,20 @@ router.post('/api/cupons', authenticateAdmin, async (req, res) => {
   }
 });
 
+/* ============================ Jobs ========================= */
 // API: Executar job manualmente
 router.post('/api/jobs/:name/run', authenticateAdmin, async (req, res) => {
   try {
     const { name } = req.params;
     const jobScheduler = req.app.locals.jobScheduler;
     
-    if (!jobScheduler) {
+    if (!jobScheduler || typeof jobScheduler.runJobNow !== 'function') {
       return res.status(400).json({ error: 'Agendador não disponível' });
     }
     
     await jobScheduler.runJobNow(name);
     
-    logger.audit('job_manual_run', `Job ${name} executado manualmente`, 'admin', req.ip);
+    logger.audit && logger.audit('job_manual_run', `Job ${name} executado manualmente`, 'admin', req.ip);
     res.json({ success: true });
   } catch (error) {
     logger.error(`❌ Erro ao executar job ${req.params.name}:`, error);
@@ -453,15 +584,16 @@ router.post('/api/jobs/:name/run', authenticateAdmin, async (req, res) => {
   }
 });
 
+/* ========================= Sorteios ======================== */
 // API: Processar sorteio manual
 router.post('/api/sorteios/processar', authenticateAdmin, async (req, res) => {
   try {
-    const { codigo } = req.body;
+    const { codigo } = req.body || {};
     const sorteiosModule = new SorteiosModule();
     
     const resultado = await sorteiosModule.processarSorteioManual(codigo);
     
-    logger.audit('sorteio_manual', `Sorteio ${codigo} processado manualmente`, 'admin', req.ip);
+    logger.audit && logger.audit('sorteio_manual', `Sorteio ${codigo} processado manualmente`, 'admin', req.ip);
     res.json(resultado);
   } catch (error) {
     logger.error('❌ Erro ao processar sorteio manual:', error);
@@ -469,6 +601,7 @@ router.post('/api/sorteios/processar', authenticateAdmin, async (req, res) => {
   }
 });
 
+/* ====================== Admin Dashboard ==================== */
 // Função para gerar HTML do dashboard
 async function generateDashboardHTML(whatsappStatus, jobsStatus) {
   return `
@@ -611,6 +744,10 @@ async function generateDashboardHTML(whatsappStatus, jobsStatus) {
                 align-items: center;
                 gap: 0.5rem;
             }
+            .badge { padding: .2rem .5rem; border-radius: 4px; font-size: .75rem; }
+            .badge.ok { background:#d4edda;color:#155724; }
+            .badge.warn { background:#fff3cd;color:#856404; }
+            code { background:#f1f3f5; padding:.1rem .25rem; border-radius:4px; }
         </style>
     </head>
     <body>
@@ -631,10 +768,12 @@ async function generateDashboardHTML(whatsappStatus, jobsStatus) {
                 <div class="grid">
                     <div class="card">
                         <h3>📱 Status WhatsApp</h3>
-                        <p>Conexão: <span class="status ${whatsappStatus.isConnected ? 'connected' : 'disconnected'}">${whatsappStatus.isConnected ? 'Conectado' : 'Desconectado'}</span></p>
-                        <p>Fila de mensagens: ${whatsappStatus.queueLength || 0}</p>
-                        <p>Circuit Breaker: ${whatsappStatus.circuitBreakerState || 'N/A'}</p>
+                        <p>Conexão: <span id="wa-conn" class="status ${whatsappStatus.isConnected ? 'connected' : 'disconnected'}">${whatsappStatus.isConnected ? 'Conectado' : 'Desconectado'}</span></p>
+                        <p>Via: <span id="wa-via" class="badge ${whatsappStatus.via === 'admin' ? 'ok':'warn'}">${whatsappStatus.via || 'n/a'}</span></p>
+                        <p>Fila de mensagens: <span id="wa-queue">${whatsappStatus.queueLength || 0}</span></p>
+                        <p>Circuit Breaker: <span id="wa-cb">${whatsappStatus.circuitBreakerState || 'N/A'}</span></p>
                         ${!whatsappStatus.isConnected ? '<button class="btn" onclick="clearWhatsAppSession()">Limpar Sessão</button>' : ''}
+                        ${!whatsappStatus.isConnected ? '<button class="btn danger" style="margin-left:.5rem" onclick="resetWhatsApp()">Reset WhatsApp</button>' : ''}
                     </div>
 
                     <div class="card">
@@ -666,7 +805,7 @@ async function generateDashboardHTML(whatsappStatus, jobsStatus) {
                 </div>
             </div>
 
-            <!-- Outras seções serão carregadas dinamicamente -->
+            <!-- Outras seções -->
             <div id="grupos-section" style="display: none;">
                 <div class="card">
                     <h3>👥 Gestão de Grupos</h3>
@@ -734,21 +873,193 @@ async function generateDashboardHTML(whatsappStatus, jobsStatus) {
         </div>
 
         <script>
-            // JavaScript será adicionado na próxima parte devido ao limite de caracteres
+            function showSection(id) {
+              for (const el of ['dashboard','grupos','textos','configuracoes']) {
+                const sec = document.getElementById(el+'-section');
+                if (sec) sec.style.display = (el === id) ? 'block' : 'none';
+              }
+              return false;
+            }
+
+            async function logout() {
+              try { await fetch('/admin/auth/logout', { method: 'POST' }); } catch(_) {}
+              location.href = '/admin/login';
+            }
+
+            async function refreshStats() {
+              try {
+                const r = await fetch('/admin/api/status');
+                const j = await r.json();
+                const s = j?.sorteios?.sorteios || {};
+                const e = j?.sorteios?.envios || {};
+                document.getElementById('stats').innerHTML =
+                  '<div>Total processados: <strong>' + (s.total_processados||0) + '</strong></div>' +
+                  '<div>Hoje: <strong>' + (s.hoje||0) + '</strong> — Ontem: <strong>' + (s.ontem||0) + '</strong></div>' +
+                  '<div>Última semana: <strong>' + (s.ultima_semana||0) + '</strong></div>' +
+                  '<div>Envios (7d): total ' + (e.total_envios||0) + ', enviados ' + (e.enviados||0) + ', falhados ' + (e.falhados||0) + '</div>';
+                // Atualiza status rápidos
+                const ok = !!j?.whatsapp?.isConnected;
+                document.getElementById('wa-conn').className = 'status ' + (ok ? 'connected' : 'disconnected');
+                document.getElementById('wa-conn').textContent = ok ? 'Conectado' : 'Desconectado';
+                if (j?.whatsapp?.via) {
+                  const viaEl = document.getElementById('wa-via');
+                  viaEl.textContent = j.whatsapp.via;
+                  viaEl.className = 'badge ' + (j.whatsapp.via === 'admin' ? 'ok' : 'warn');
+                }
+                if (typeof j?.whatsapp?.queueLength === 'number') document.getElementById('wa-queue').textContent = j.whatsapp.queueLength;
+                if (j?.whatsapp?.circuitBreakerState) document.getElementById('wa-cb').textContent = j.whatsapp.circuitBreakerState;
+              } catch(_) { /* noop */ }
+            }
+            refreshStats();
+            setInterval(refreshStats, 30000);
+
+            async function runJob(name) {
+              try {
+                const r = await fetch('/admin/api/jobs/' + encodeURIComponent(name) + '/run', { method: 'POST' });
+                if (r.ok) alert('Job executado com sucesso.');
+                else alert('Falha ao executar job.');
+              } catch (_) { alert('Erro ao executar job.'); }
+            }
+
+            async function processarSorteioManual() {
+              const codigo = document.getElementById('codigoSorteio').value.trim();
+              if (!codigo) return alert('Informe o código do sorteio.');
+              document.getElementById('resultado-manual').textContent = 'Processando...';
+              try {
+                const r = await fetch('/admin/api/sorteios/processar', {
+                  method: 'POST',
+                  headers: {'Content-Type':'application/json'},
+                  body: JSON.stringify({ codigo })
+                });
+                const j = await r.json();
+                document.getElementById('resultado-manual').textContent = r.ok ? JSON.stringify(j, null, 2) : (j.error || 'Erro');
+              } catch (e) {
+                document.getElementById('resultado-manual').textContent = 'Erro: ' + (e?.message||e);
+              }
+            }
+
+            async function clearWhatsAppSession() {
+              if (!confirm('Tem certeza que deseja limpar a sessão do WhatsApp? Isso irá desconectar e exigir nova autenticação.')) return;
+              try {
+                const r = await fetch('/api/whatsapp/clear-session', { method:'POST', headers:{'Content-Type':'application/json'} });
+                const j = await r.json().catch(()=>({}));
+                alert(r.ok && j.success ? 'Sessão limpa com sucesso! Novo QR será gerado.' : ('Erro: ' + (j.error||'Falha')));
+                setTimeout(refreshStats, 3000);
+              } catch (_) { alert('Erro ao limpar sessão'); }
+            }
+
+            async function resetWhatsApp() {
+              if (!confirm('Deseja resetar o WhatsApp (limpar sessão e gerar novo QR)?')) return;
+              try {
+                const r = await fetch('/api/reset-whatsapp');
+                const j = await r.json().catch(()=>({}));
+                alert(j?.message || (j?.success ? 'Reset solicitado.' : 'Falha no reset.'));
+                setTimeout(refreshStats, 3000);
+              } catch (_) { alert('Erro ao resetar WhatsApp'); }
+            }
+
+            function showTextoModal(item) {
+              document.getElementById('texto-id').value = item?.id || '';
+              document.getElementById('texto-template').value = item?.texto_template || '';
+              document.getElementById('texto-ativo').checked = !!(item?.ativo || 0);
+              document.getElementById('texto-modal').style.display = 'block';
+            }
+            function closeModal(){ document.getElementById('texto-modal').style.display = 'none'; }
+
+            async function loadTextos() {
+              const r = await fetch('/admin/api/textos');
+              const list = await r.json();
+              const box = document.getElementById('textos-list');
+              if (!Array.isArray(list) || !list.length) { box.innerHTML = '<p>Nenhum texto cadastrado.</p>'; return; }
+              box.innerHTML = list.map(t => (
+                '<div style="border:1px solid #e9ecef; padding:10px; border-radius:6px; margin:.5rem 0;">' +
+                '<div style="font-weight:600; margin-bottom:.25rem;">#'+t.id+'</div>' +
+                '<div style="white-space:pre-wrap;">'+(t.texto_template||'')+'</div>' +
+                '<div style="margin-top:.5rem; display:flex; gap:.5rem; align-items:center;">' +
+                  '<span class="badge '+(t.ativo? 'ok':'warn')+'">'+(t.ativo? 'Ativo':'Inativo')+'</span>' +
+                  '<button class="btn" onclick=\'showTextoModal('+JSON.stringify(t)+')\'>Editar</button>' +
+                  '<button class="btn danger" onclick="deleteTexto('+t.id+')">Excluir</button>' +
+                '</div></div>'
+              )).join('');
+            }
+            loadTextos();
+
+            document.getElementById('texto-form').addEventListener('submit', async (e) => {
+              e.preventDefault();
+              const id = document.getElementById('texto-id').value || null;
+              const texto_template = document.getElementById('texto-template').value;
+              const ativo = document.getElementById('texto-ativo').checked;
+              const r = await fetch('/admin/api/textos', {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({ id, texto_template, ativo })
+              });
+              if (r.ok) { closeModal(); loadTextos(); alert('Salvo!'); } else { alert('Erro ao salvar'); }
+            });
+
+            async function deleteTexto(id) {
+              if (!confirm('Excluir texto #' + id + '?')) return;
+              const r = await fetch('/admin/api/textos/'+id, { method:'DELETE' });
+              if (r.ok) { loadTextos(); alert('Excluído!'); } else { alert('Erro ao excluir'); }
+            }
+
+            async function salvarCupons() {
+              const cupom1 = document.getElementById('cupom1').value.trim();
+              const cupom2 = document.getElementById('cupom2').value.trim();
+              const r = await fetch('/admin/api/cupons', {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({ cupom1, cupom2 })
+              });
+              alert(r.ok ? 'Salvo!' : 'Erro ao salvar cupons');
+            }
+
+            async function syncGroups() {
+              const r = await fetch('/admin/api/grupos/sync', { method:'POST' });
+              if (r.ok) { alert('Grupos sincronizados.'); loadGroups(); }
+              else { const j = await r.json().catch(()=>null); alert('Erro: ' + (j?.error||'Falha')); }
+            }
+
+            async function loadGroups() {
+              const r = await fetch('/admin/api/grupos');
+              const list = await r.json();
+              const tb = document.querySelector('#grupos-table tbody');
+              tb.innerHTML = (Array.isArray(list) ? list : []).map(g => (
+                '<tr>' +
+                  '<td>'+ (g.nome||g.jid) +'</td>' +
+                  '<td><input type="checkbox" '+ (g.ativo_sorteios? 'checked':'') +' onchange="toggleGrupo(\''+g.jid+'\', this)"></td>' +
+                  '<td><input type="checkbox" '+ (g.enabled? 'checked':'') +' onchange="toggleEnabled(\''+g.jid+'\', this)"></td>' +
+                  '<td><code style="font-size:.8rem;">'+g.jid+'</code></td>' +
+                '</tr>'
+              )).join('');
+            }
+            loadGroups();
+
+            async function toggleGrupo(jid, el) {
+              await fetch('/admin/api/grupos/'+encodeURIComponent(jid), {
+                method:'PUT', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({ ativo_sorteios: el.checked, enabled: undefined })
+              }).catch(()=>{ el.checked = !el.checked; });
+            }
+            async function toggleEnabled(jid, el) {
+              await fetch('/admin/api/grupos/'+encodeURIComponent(jid), {
+                method:'PUT', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({ ativo_sorteios: undefined, enabled: el.checked })
+              }).catch(()=>{ el.checked = !el.checked; });
+            }
         </script>
     </body>
     </html>
   `;
 }
 
+/* =================== Public Dashboard (NO AUTH) ============ */
 // Dashboard Público (SEM AUTENTICAÇÃO)
 router.get('/public', async (req, res) => {
   try {
     const whatsappClient = req.app.locals.whatsappClient;
     const jobScheduler = req.app.locals.jobScheduler;
     
-    const whatsappStatus = whatsappClient?.getConnectionStatus() || {};
-    const jobsStatus = jobScheduler?.getJobsStatus() || {};
+    const whatsappStatus = whatsappClient?.getConnectionStatus?.() || {};
+    const jobsStatus = jobScheduler?.getJobsStatus?.() || {};
     
     res.send(await generatePublicDashboardHTML(whatsappStatus, jobsStatus));
   } catch (error) {
@@ -1259,7 +1570,6 @@ async function generatePublicDashboardHTML(whatsappStatus, jobsStatus) {
                     }
                     
                     // Aqui você implementaria a chamada para API real
-                    // await fetch(\`/admin/api/grupos/\${grupoId}/toggle\`, { method: 'POST', ... });
                     
                     showAlert(\`Grupo \${ativo ? 'ativado' : 'desativado'} com sucesso\`, 'success');
                     
@@ -1334,48 +1644,6 @@ async function generatePublicDashboardHTML(whatsappStatus, jobsStatus) {
                 }
             }
             
-            // Limpar sessão WhatsApp
-            async function limparSessaoWhatsApp() {
-                try {
-                    // Confirmar ação
-                    if (!confirm('Tem certeza que deseja limpar a sessão do WhatsApp? Isso irá desconectar e exigir nova autenticação.')) {
-                        return;
-                    }
-                    
-                    showLoading(true);
-                    showAlert('Limpando sessão WhatsApp...', 'info');
-                    
-                    const response = await fetch('/api/whatsapp/clear-session', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        }
-                    });
-                    
-                    const data = await response.json();
-                    
-                    if (response.ok && data.success) {
-                        showAlert('Sessão limpa com sucesso! Novo QR Code será gerado.', 'success');
-                        
-                        // Aguardar um pouco e atualizar status
-                        setTimeout(() => {
-                            atualizarStatus();
-                            showAlert('Acesse /qr para escanear o novo QR Code', 'info');
-                        }, 3000);
-                        
-                    } else {
-                        showAlert('Erro ao limpar sessão: ' + (data.error || 'Erro desconhecido'), 'error');
-                    }
-                    
-                    showLoading(false);
-                    
-                } catch (error) {
-                    console.error('Erro ao limpar sessão:', error);
-                    showAlert('Erro ao limpar sessão WhatsApp', 'error');
-                    showLoading(false);
-                }
-            }
-            
             // Reset simples do WhatsApp
             async function resetWhatsAppSimples() {
                 try {
@@ -1387,16 +1655,12 @@ async function generatePublicDashboardHTML(whatsappStatus, jobsStatus) {
                     showLoading(true);
                     showAlert('Resetando WhatsApp...', 'info');
                     
-                    const response = await fetch('/api/reset-whatsapp', {
-                        method: 'GET'
-                    });
-                    
+                    const response = await fetch('/api/reset-whatsapp', { method: 'GET' });
                     const data = await response.json();
                     
                     if (response.ok && data.success) {
                         showAlert(data.message, 'success');
                         
-                        // Aguardar e atualizar status
                         setTimeout(() => {
                             atualizarStatus();
                             if (data.action === 'qr_ready') {
@@ -1422,10 +1686,9 @@ async function generatePublicDashboardHTML(whatsappStatus, jobsStatus) {
   `;
 }
 
-// Rota principal /admin - redireciona para dashboard
-router.get('/', authenticateAdmin, (req, res) => {
+/* ======================== Default redirect ================= */
+router.get('/', authenticateAdmin, (_req, res) => {
   res.redirect('/admin/dashboard');
 });
 
 module.exports = router;
-
