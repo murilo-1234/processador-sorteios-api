@@ -111,6 +111,11 @@ async function getCouponTextCTA() {
   return String(process.env.DEFAULT_COUPON || '').trim();
 }
 
+function isCanceledFlag(v) {
+  const s = String(v || '').trim().toLowerCase();
+  return s === 'cancelado' || s === 'cancelada' || s === 'cancel';
+}
+
 async function runOnce(app, opts = {}) {
   const dryRun = !!opts.dryRun || String(app?.locals?.reqDry || '').trim() === '1';
   const st = settings.get();
@@ -172,6 +177,8 @@ async function runOnce(app, opts = {}) {
 
     const p1Posted = String(row[H_P1] || '').toLowerCase() === 'postado';
     const p2Posted = String(row[H_P2] || '').toLowerCase() === 'postado';
+    const p1Canceled = isCanceledFlag(row[H_P1]);
+    const p2Canceled = isCanceledFlag(row[H_P2]);
 
     let spDate;
     try {
@@ -189,7 +196,7 @@ async function runOnce(app, opts = {}) {
     const p2At = toUtcFromLocal(dayLocal);
 
     // Promo 1 — 48h antes
-    if (!p1Posted && now >= p1At) {
+    if (!p1Posted && !p1Canceled && now >= p1At) {
       const caption = mergeText(choose(beforeTexts), { PRODUTO: product, COUPON: couponText });
 
       try {
@@ -222,7 +229,7 @@ async function runOnce(app, opts = {}) {
     }
 
     // Promo 2 — no dia
-    if (!p2Posted && now >= p2At) {
+    if (!p2Posted && !p2Canceled && now >= p2At) {
       const caption = mergeText(choose(dayTexts), { PRODUTO: product, COUPON: couponText });
 
       try {
