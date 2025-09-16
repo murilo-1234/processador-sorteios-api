@@ -29,8 +29,6 @@ const DEBUG_JOB = String(process.env.DEBUG_JOB || '').trim() === '1';
 
 const PROMO_BEFORE_DAYS = Number(process.env.PROMO_BEFORE_DAYS || 2);
 const PROMO_POST_HOUR  = Number(process.env.PROMO_POST_HOUR || 9);
-// Janela para evitar reenvio muito depois do horário (ex.: reexecuções)
-const PROMO_MAX_AGE_HOURS = Number(process.env.PROMO_MAX_AGE_HOURS || 26);
 
 const BAILEYS_LINK_PREVIEW_OFF = String(process.env.BAILEYS_LINK_PREVIEW_OFF || '1') === '1';
 
@@ -128,11 +126,7 @@ function hasResultForRow(row, hdrs) {
   const status = val(hdrs.H_STATUS);
   const ended = ['finalizado','encerrado','concluido','concluído','ok','feito','postado','resultado','divulgado'].includes(status);
 
-  // Também considera se já houve WA_POST (resultado postado)
-  const waPost = val(hdrs.H_WA_POST);
-  const hasWaPost = waPost === 'postado';
-
-  return (!!winner || !!resultUrl || !!resultAt || ended || hasWaPost);
+  return (!!winner || !!resultUrl || !!resultAt || ended);
 }
 
 // --- helpers para idempotência por grupo (CSV ou JSON na célula) ---
@@ -148,7 +142,6 @@ function parseGroups(val) {
   );
 }
 function groupsToCell(set) {
-  // salva como CSV simples (compatível com edição manual)
   return Array.from(set).join(',');
 }
 function isSuperset(setA, setB) {
@@ -172,10 +165,15 @@ async function runOnce(app, opts = {}) {
 
   const { headers, items, spreadsheetId, tab, sheets } = await getRows();
 
+  // ===== Cabeçalhos obrigatórios =====
+  const H_ID   = findHeader(headers, ['id','codigo','código']);
+  const H_HORA = findHeader(headers, ['horario','hora','horário','time']);
+  const H_PLAN = findHeader(headers, ['url_planilha','planilha','url_da_planilha','sheet_url','url_plan']);
+
   const H_PROD = findHeader(headers, ['nome_do_produto','produto','nome','produto_nome']);
   const H_DATA = findHeader(headers, ['data','date']);
   const H_IMG  = findHeader(headers, [
-    'url_imagem_sorteio', 'imagem_sorteio', 'url_imagem_processada', 'url_imagem', 'imagem', 'image_url'
+    'url_imagem_processada', 'url_imagem_sorteio', 'imagem_sorteio', 'url_imagem', 'imagem', 'image_url'
   ]);
 
   // Campos de controle das promoções
@@ -192,17 +190,16 @@ async function runOnce(app, opts = {}) {
   const H_RESULT_URL = findHeader(headers, ['resultado_url','url_resultado','link_resultado','url_result','resultado']);
   const H_RESULT_AT  = findHeader(headers, ['resultado_at','result_at','data_resultado','resultado_data']);
   const H_STATUS     = findHeader(headers, ['status','situacao','situação','state']);
-  const H_WA_POST    = findHeader(headers, ['wa_post']);
 
-  if (!H_PROD || !H_DATA || !H_IMG) {
+  if (!H_ID || !H_DATA || !H_HORA || !H_PROD || !H_IMG || !H_PLAN) {
     throw new Error(
-      `Cabeçalhos obrigatórios faltando. Encontrados: ${JSON.stringify(headers)}. ` +
-      `Obrigatórios (alguma das opções): produto | data | imagem.`
+      `Cabeçalhos faltando. Encontrados: ${JSON.stringify(headers)}. ` +
+      `Obrigatórios: id | data | (horario/hora) | produto | url_imagem_processada | url_planilha.`
     );
   }
 
   const now = new Date();
-  const todayLocalDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate()); // meia-noite local (data puro)
+  const todayLocalDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const couponText = await getCouponTextCTA();
 
   let sent = 0;
@@ -215,21 +212,31 @@ async function runOnce(app, opts = {}) {
     return { ok: false, reason: 'wa_disconnected' };
   }
 
-  const hdrs = { H_WINNER, H_RESULT_URL, H_RESULT_AT, H_STATUS, H_WA_POST };
-
-  // helper: janela de execução
-  const inWindow = (ts) => now >= ts && (now - ts) <= PROMO_MAX_AGE_HOURS * 3600000;
+  const hdrs = { H_WINNER, H_RESULT_URL, H_RESULT_AT, H_STATUS };
 
   for (let i = 0; i < items.length; i++) {
     const row = items[i];
     const rowIndex1 = i + 2;
 
+    // ====== coleta de campos ======
+    const id      = coerceStr(row[H_ID]);
     const product = coerceStr(row[H_PROD]);
     const dateStr = coerceStr(row[H_DATA]); // dd/MM/yyyy
+    const horaStr = coerceStr(row[H_HORA]);
     const imgUrl  = coerceStr(row[H_IMG]);
+    const planUrl = coerceStr(row[H_PLAN]);
 
-    if (!product || !dateStr || !imgUrl) {
-      skipped.push({ row: rowIndex1, reason: 'faltando produto/data/img' });
+    // ====== validação de obrigatórios ======
+    const missing = [];
+    if (!id)      missing.push('id');
+    if (!dateStr) missing.push('data');
+    if (!horaStr) missing.push('hora');
+    if (!product) missing.push('produto');
+    if (!imgUrl)  missing.push('url_imagem_processada');
+    if (!planUrl) missing.push('url_planilha');
+
+    if (missing.length) {
+      skipped.push({ row: rowIndex1, reason: 'faltando_campos', missing });
       continue;
     }
 
@@ -247,7 +254,7 @@ async function runOnce(app, opts = {}) {
       continue;
     }
 
-    // ✅ Somente sorteios futuros (data da planilha >= hoje) e sem resultado ainda.
+    // ✅ somente futuros e sem resultado ainda
     if (spDate < todayLocalDateOnly) {
       skipped.push({ row: rowIndex1, reason: 'past_draw' });
       continue;
@@ -263,10 +270,9 @@ async function runOnce(app, opts = {}) {
     const p1At = toUtcFromLocal(beforeLocal);
     const p2At = toUtcFromLocal(dayLocal);
 
-    // ======== PROMO 1 — 48h antes (com idempotência por grupo) ========
-    if (!p1Canceled && inWindow(p1At)) {
+    // ======== PROMO 1 — 48h antes (idempotência por grupo) ========
+    if (!p1Canceled && now >= p1At) {
       const alreadyP1 = parseGroups(row[H_P1G]);
-      // se já cobriu todos os grupos, marque como Postado e pule
       if (isSuperset(alreadyP1, targetSet)) {
         if (!p1Posted && !dryRun) {
           await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P1, 'Postado');
@@ -296,7 +302,6 @@ async function runOnce(app, opts = {}) {
               const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
               await sock.sendMessage(jid, payload, opts);
 
-              // marca imediatamente este grupo
               alreadyP1.add(jid);
               await updateCellByHeader(
                 sheets, spreadsheetId, tab, headers, rowIndex1, H_P1G, groupsToCell(alreadyP1)
@@ -305,7 +310,6 @@ async function runOnce(app, opts = {}) {
               sent++;
             }
 
-            // se terminou de cobrir todos os grupos, marca como Postado
             if (anySent && isSuperset(alreadyP1, targetSet)) {
               const ts = new Date().toISOString();
               await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P1, 'Postado');
@@ -318,8 +322,8 @@ async function runOnce(app, opts = {}) {
       }
     }
 
-    // ======== PROMO 2 — no dia (com idempotência por grupo) ========
-    if (!p2Canceled && inWindow(p2At)) {
+    // ======== PROMO 2 — no dia (idempotência por grupo) ========
+    if (!p2Canceled && now >= p2At) {
       const alreadyP2 = parseGroups(row[H_P2G]);
       if (isSuperset(alreadyP2, targetSet)) {
         if (!p2Posted && !dryRun) {
@@ -338,7 +342,7 @@ async function runOnce(app, opts = {}) {
             payload = { text: `${caption}\n\n${imgUrl}` };
           }
 
-        if (dryRun) {
+          if (dryRun) {
             dlog('DRY-RUN P2 =>', { row: rowIndex1, caption: caption.slice(0, 80) + '...' });
           } else {
             let anySent = false;
@@ -350,7 +354,6 @@ async function runOnce(app, opts = {}) {
               const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
               await sock.sendMessage(jid, payload, opts);
 
-              // marca imediatamente este grupo
               alreadyP2.add(jid);
               await updateCellByHeader(
                 sheets, spreadsheetId, tab, headers, rowIndex1, H_P2G, groupsToCell(alreadyP2)
