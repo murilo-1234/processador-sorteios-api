@@ -43,6 +43,9 @@ const TZ = process.env.TZ || 'America/Sao_Paulo';
 const DELAY_MIN = Number(process.env.POST_DELAY_MINUTES ?? 10);
 const DEBUG_JOB = String(process.env.DEBUG_JOB || '').trim() === '1';
 
+// Janela de segurança para não varrer histórico
+const MAX_AGE_H = Number(process.env.POST_MAX_AGE_HOURS || 48);
+
 // === Flags ===
 const DISABLE_LINK_PREVIEW = String(process.env.DISABLE_LINK_PREVIEW || '1') === '1';
 const SEND_RESULT_URL_SEPARATE = false; // NUNCA enviar link em mensagem separada
@@ -236,6 +239,7 @@ function parseCsvSet(csv) {
 function setToCsv(set) {
   return Array.from(set).join(',');
 }
+
 /**
  * Executa o job 1x.
  * @param {*} app  express app com locals.whatsappClient/waAdmin
@@ -329,6 +333,14 @@ async function runOnce(app, opts = {}) {
 
     const utcDate = toUtcFromSheet(spDate);
     const readyAt = new Date(utcDate.getTime() + DELAY_MIN * 60000);
+
+    // ✅ Janela de segurança: ignora linhas muito antigas
+    const tooOld = (now - utcDate) > MAX_AGE_H * 60 * 60 * 1000;
+    if (tooOld) {
+      skipped.push({ row: rowIndex1, id, reason: 'older_than_window' });
+      return;
+    }
+
     if (now < readyAt) {
       skipped.push({ row: rowIndex1, id, reason: 'ainda_nao_chegou', readyAt: readyAt.toISOString() });
       return;
