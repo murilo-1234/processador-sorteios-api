@@ -129,18 +129,40 @@ function hasResultForRow(row, hdrs) {
   return (!!winner || !!resultUrl || !!resultAt || ended);
 }
 
+// --- helpers para idempotência por grupo (CSV ou JSON na célula) ---
+function parseGroups(val) {
+  const s = safeStr(val).trim();
+  if (!s) return new Set();
+  try {
+    const arr = JSON.parse(s);
+    if (Array.isArray(arr)) return new Set(arr.map((x) => String(x).trim()).filter(Boolean));
+  } catch {}
+  return new Set(
+    s.split(',').map((x) => x.trim()).filter(Boolean)
+  );
+}
+function groupsToCell(set) {
+  // salva como CSV simples (compatível com edição manual)
+  return Array.from(set).join(',');
+}
+function isSuperset(setA, setB) {
+  for (const v of setB) if (!setA.has(v)) return false;
+  return true;
+}
+
 async function runOnce(app, opts = {}) {
   const dryRun = !!opts.dryRun || String(app?.locals?.reqDry || '').trim() === '1';
   const st = settings.get();
 
   const targetJids = Array.isArray(st.postGroupJids) && st.postGroupJids.length
-    ? st.postGroupJids.filter(Boolean).map(String)
-    : (st.resultGroupJid ? [String(st.resultGroupJid)] : []);
+    ? st.postGroupJids.filter(Boolean).map((x) => String(x).trim())
+    : (st.resultGroupJid ? [String(st.resultGroupJid).trim()] : []);
 
   if (!targetJids.length) {
     dlog('skip: sem grupos-alvo configurados em /admin/groups');
     return { ok: false, reason: 'no_target_groups' };
   }
+  const targetSet = new Set(targetJids);
 
   const { headers, items, spreadsheetId, tab, sheets } = await getRows();
 
@@ -153,8 +175,11 @@ async function runOnce(app, opts = {}) {
   // Campos de controle das promoções
   const H_P1   = findHeader(headers, ['wa_promo1','wa_promocao1','promo1','wa_promo_1']) || 'WA_PROMO1';
   const H_P1AT = findHeader(headers, ['wa_promo1_at','wa_promocao1_at','promo1_at'])     || 'WA_PROMO1_AT';
+  const H_P1G  = findHeader(headers, ['wa_promo1_groups','wa_promocao1_groups','promo1_groups']) || 'WA_PROMO1_GROUPS';
+
   const H_P2   = findHeader(headers, ['wa_promo2','wa_promocao2','promo2','wa_promo_2']) || 'WA_PROMO2';
   const H_P2AT = findHeader(headers, ['wa_promo2_at','wa_promocao2_at','promo2_at'])     || 'WA_PROMO2_AT';
+  const H_P2G  = findHeader(headers, ['wa_promo2_groups','wa_promocao2_groups','promo2_groups']) || 'WA_PROMO2_GROUPS';
 
   // Sinais de resultado/encerramento do sorteio
   const H_WINNER     = findHeader(headers, ['ganhador','ganhadora','vencedor','winner','nome_ganhador']);
@@ -228,69 +253,111 @@ async function runOnce(app, opts = {}) {
     const p1At = toUtcFromLocal(beforeLocal);
     const p2At = toUtcFromLocal(dayLocal);
 
-    // Promo 1 — 48h antes
-    if (!p1Posted && !p1Canceled && now >= p1At) {
-      const caption = mergeText(choose(beforeTexts), { PRODUTO: product, COUPON: couponText });
-
-      try {
-        let payload;
-        try {
-          const buf = await downloadToBuffer(imgUrl);
-          payload = { image: buf, caption };
-        } catch {
-          payload = { text: `${caption}\n\n${imgUrl}` };
+    // ======== PROMO 1 — 48h antes (com idempotência por grupo) ========
+    if (!p1Canceled && now >= p1At) {
+      const alreadyP1 = parseGroups(row[H_P1G]);
+      // se já cobriu todos os grupos, marque como Postado e pule
+      if (isSuperset(alreadyP1, targetSet)) {
+        if (!p1Posted && !dryRun) {
+          await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P1, 'Postado');
+          await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P1AT, new Date().toISOString());
         }
+      } else {
+        const caption = mergeText(choose(beforeTexts), { PRODUTO: product, COUPON: couponText });
 
-        if (dryRun) {
-          dlog('DRY-RUN P1 =>', { row: rowIndex1, caption: caption.slice(0, 80) + '...' });
-        } else {
-          for (const rawJid of targetJids) {
-            const jid = String(rawJid || '').trim();
-            if (!jid.endsWith('@g.us')) continue;
-            const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
-            await sock.sendMessage(jid, payload, opts);
+        try {
+          let payload;
+          try {
+            const buf = await downloadToBuffer(imgUrl);
+            payload = { image: buf, caption };
+          } catch {
+            payload = { text: `${caption}\n\n${imgUrl}` };
           }
 
-          const ts = new Date().toISOString();
-          await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P1, 'Postado');
-          await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P1AT, ts);
-          sent++;
+          if (dryRun) {
+            dlog('DRY-RUN P1 =>', { row: rowIndex1, caption: caption.slice(0, 80) + '...' });
+          } else {
+            let anySent = false;
+            for (const rawJid of targetJids) {
+              const jid = String(rawJid || '').trim();
+              if (!jid.endsWith('@g.us')) continue;
+              if (alreadyP1.has(jid)) { dlog('skip P1 já enviado', { jid, row: rowIndex1 }); continue; }
+
+              const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
+              await sock.sendMessage(jid, payload, opts);
+
+              // marca imediatamente este grupo
+              alreadyP1.add(jid);
+              await updateCellByHeader(
+                sheets, spreadsheetId, tab, headers, rowIndex1, H_P1G, groupsToCell(alreadyP1)
+              );
+              anySent = true;
+              sent++;
+            }
+
+            // se terminou de cobrir todos os grupos, marca como Postado
+            if (anySent && isSuperset(alreadyP1, targetSet)) {
+              const ts = new Date().toISOString();
+              await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P1, 'Postado');
+              await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P1AT, ts);
+            }
+          }
+        } catch (e) {
+          errors.push({ row: rowIndex1, stage: 'send-promo1', error: e?.message || String(e) });
         }
-      } catch (e) {
-        errors.push({ row: rowIndex1, stage: 'send-promo1', error: e?.message || String(e) });
       }
     }
 
-    // Promo 2 — no dia
-    if (!p2Posted && !p2Canceled && now >= p2At) {
-      const caption = mergeText(choose(dayTexts), { PRODUTO: product, COUPON: couponText });
-
-      try {
-        let payload;
-        try {
-          const buf = await downloadToBuffer(imgUrl);
-          payload = { image: buf, caption };
-        } catch {
-          payload = { text: `${caption}\n\n${imgUrl}` };
+    // ======== PROMO 2 — no dia (com idempotência por grupo) ========
+    if (!p2Canceled && now >= p2At) {
+      const alreadyP2 = parseGroups(row[H_P2G]);
+      if (isSuperset(alreadyP2, targetSet)) {
+        if (!p2Posted && !dryRun) {
+          await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P2, 'Postado');
+          await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P2AT, new Date().toISOString());
         }
+      } else {
+        const caption = mergeText(choose(dayTexts), { PRODUTO: product, COUPON: couponText });
 
-        if (dryRun) {
-          dlog('DRY-RUN P2 =>', { row: rowIndex1, caption: caption.slice(0, 80) + '...' });
-        } else {
-          for (const rawJid of targetJids) {
-            const jid = String(rawJid || '').trim();
-            if (!jid.endsWith('@g.us')) continue;
-            const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
-            await sock.sendMessage(jid, payload, opts);
+        try {
+          let payload;
+          try {
+            const buf = await downloadToBuffer(imgUrl);
+            payload = { image: buf, caption };
+          } catch {
+            payload = { text: `${caption}\n\n${imgUrl}` };
           }
 
-          const ts = new Date().toISOString();
-          await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P2, 'Postado');
-          await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P2AT, ts);
-          sent++;
+          if (dryRun) {
+            dlog('DRY-RUN P2 =>', { row: rowIndex1, caption: caption.slice(0, 80) + '...' });
+          } else {
+            let anySent = false;
+            for (const rawJid of targetJids) {
+              const jid = String(rawJid || '').trim();
+              if (!jid.endsWith('@g.us')) continue;
+              if (alreadyP2.has(jid)) { dlog('skip P2 já enviado', { jid, row: rowIndex1 }); continue; }
+
+              const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
+              await sock.sendMessage(jid, payload, opts);
+
+              // marca imediatamente este grupo
+              alreadyP2.add(jid);
+              await updateCellByHeader(
+                sheets, spreadsheetId, tab, headers, rowIndex1, H_P2G, groupsToCell(alreadyP2)
+              );
+              anySent = true;
+              sent++;
+            }
+
+            if (anySent && isSuperset(alreadyP2, targetSet)) {
+              const ts = new Date().toISOString();
+              await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P2, 'Postado');
+              await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P2AT, ts);
+            }
+          }
+        } catch (e) {
+          errors.push({ row: rowIndex1, stage: 'send-promo2', error: e?.message || String(e) });
         }
-      } catch (e) {
-        errors.push({ row: rowIndex1, stage: 'send-promo2', error: e?.message || String(e) });
       }
     }
   }
