@@ -20,7 +20,8 @@ if (typeof zonedTimeToUtcSafe !== 'function') {
 
 const settings = require('../services/settings');
 const { getRows, updateCellByHeader } = require('../services/sheets');
-const { fetchFirstCoupon } = require('../services/coupons');
+const { fetchFirstCoupon } = require('../services/coupons'); // mantido por compat.
+const couponsSvc = require('../services/coupons');            // novo: para top2
 const { beforeTexts, dayTexts } = require('../services/promo-texts');
 
 const TZ = process.env.TZ || 'America/Sao_Paulo';
@@ -85,6 +86,31 @@ async function getPreferredSock(app) {
   return waClient?.sock || null;
 }
 
+// === NOVO: mesma regra do post-winner para o texto de cupom ===
+async function getCouponTextCTA() {
+  try {
+    let list = [];
+    if (typeof couponsSvc.fetchTopCoupons === 'function') {
+      list = await couponsSvc.fetchTopCoupons(2);
+    } else if (typeof couponsSvc.fetchCoupons === 'function') {
+      list = await couponsSvc.fetchCoupons();
+    } else if (typeof couponsSvc.fetchAllCoupons === 'function') {
+      list = await couponsSvc.fetchAllCoupons();
+    }
+    list = Array.isArray(list) ? list.filter(Boolean).map(String) : [];
+    const uniq = [...new Set(list)].slice(0, 2);
+    if (uniq.length >= 2) return `${uniq[0]} ou ${uniq[1]}`;
+    if (uniq.length === 1) return uniq[0];
+  } catch {}
+  try {
+    if (typeof fetchFirstCoupon === 'function') {
+      const one = await fetchFirstCoupon();
+      if (one) return String(one);
+    }
+  } catch {}
+  return String(process.env.DEFAULT_COUPON || '').trim();
+}
+
 async function runOnce(app, opts = {}) {
   const dryRun = !!opts.dryRun || String(app?.locals?.reqDry || '').trim() === '1';
   const st = settings.get();
@@ -119,7 +145,7 @@ async function runOnce(app, opts = {}) {
   }
 
   const now = new Date();
-  const coupon = await fetchFirstCoupon().catch(() => '');
+  const couponText = await getCouponTextCTA(); // << usa top2/DEFAULT como no winner
 
   let sent = 0;
   const errors = [];
@@ -162,9 +188,9 @@ async function runOnce(app, opts = {}) {
     const p1At = toUtcFromLocal(beforeLocal);
     const p2At = toUtcFromLocal(dayLocal);
 
-    // Promo 1 — 48h antes, 09:00
+    // Promo 1 — 48h antes
     if (!p1Posted && now >= p1At) {
-      const caption = mergeText(choose(beforeTexts), { PRODUTO: product, COUPON: coupon });
+      const caption = mergeText(choose(beforeTexts), { PRODUTO: product, COUPON: couponText });
 
       try {
         let payload;
@@ -195,9 +221,9 @@ async function runOnce(app, opts = {}) {
       }
     }
 
-    // Promo 2 — no dia, 09:00
+    // Promo 2 — no dia
     if (!p2Posted && now >= p2At) {
-      const caption = mergeText(choose(dayTexts), { PRODUTO: product, COUPON: coupon });
+      const caption = mergeText(choose(dayTexts), { PRODUTO: product, COUPON: couponText });
 
       try {
         let payload;
