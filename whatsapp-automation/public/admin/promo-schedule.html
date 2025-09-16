@@ -6,82 +6,130 @@
   <title>Agenda de Postagens (Promo)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; color:#111827; }
+    :root{
+      --text:#111827; --muted:#6b7280; --line:#e5e7eb; --bg:#fff; --bg2:#f9fafb;
+      --pill-posted:#dcfce7; --pill-canceled:#fee2e2; --pill-due:#fef9c3; --pill-up:#e0e7ff;
+      --tab:#e5e7eb; --tab-active:#111827; --tab-bg:#f3f4f6;
+    }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; color:var(--text); }
     h1 { font-size: 1.5rem; margin: 0 0 16px; }
-    .toolbar { margin-bottom: 16px; display:flex; gap:8px; align-items:center; }
-    table { width: 100%; border-collapse: collapse; }
-    th, td { padding: 10px 12px; border-bottom: 1px solid #e5e7eb; text-align: left; font-size: 14px; }
-    th { background: #f9fafb; font-weight: 600; }
-    .pill { padding: 2px 8px; border-radius: 999px; font-size: 12px; display:inline-block; }
-    .posted { background:#dcfce7; }
-    .canceled { background:#fee2e2; }
-    .due { background:#fef9c3; }
-    .upcoming { background:#e0e7ff; }
+    .toolbar { margin-bottom: 12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .small { color:var(--muted); font-size:12px; }
     button { padding: 6px 10px; border-radius: 8px; border: 1px solid #d1d5db; background:#fff; cursor:pointer; }
     button:hover { background:#f9fafb; }
-    button[disabled] { opacity: 0.5; cursor: not-allowed; }
-    .small { color:#6b7280; font-size:12px; }
+    button[disabled] { opacity: .5; cursor: not-allowed; }
+
+    .tabs { display:flex; gap:8px; margin: 8px 0 16px; }
+    .tab { padding:8px 12px; border-radius: 999px; border:1px solid var(--tab); background:var(--tab-bg); color:#374151; }
+    .tab.active { background:#fff; color:var(--tab-active); border-color:#9ca3af; font-weight:600; }
+
+    .tabpanel { display:none; }
+    .tabpanel.active { display:block; }
+
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; font-size: 14px; }
+    th { background: var(--bg2); font-weight: 600; }
+
+    .pill { padding: 2px 8px; border-radius: 999px; font-size: 12px; display:inline-block; }
+    .posted { background:var(--pill-posted); }
+    .canceled { background:var(--pill-canceled); }
+    .due { background:var(--pill-due); }
+    .upcoming { background:var(--pill-up); }
+
+    .count { font-weight:600; }
   </style>
 </head>
 <body>
   <h1>Agenda de Postagens – Promo</h1>
+
   <div class="toolbar">
     <button id="reloadBtn">Recarregar</button>
     <span id="summary" class="small"></span>
   </div>
-  <table>
-    <thead>
-      <tr>
-        <th>#</th>
-        <th>Tipo</th>
-        <th>Produto</th>
-        <th>Data (planilha)</th>
-        <th>Quando (local)</th>
-        <th>Status</th>
-        <th>Ações</th>
-      </tr>
-    </thead>
-    <tbody id="tbody"></tbody>
-  </table>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="scheduled">Agendados <span class="count" id="countScheduled">(0)</span></button>
+    <button class="tab" data-tab="posted">Postados <span class="count" id="countPosted">(0)</span></button>
+  </div>
+
+  <!-- ABA: AGENDADOS -->
+  <div id="tab-scheduled" class="tabpanel active">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Tipo</th>
+          <th>Produto</th>
+          <th>Data (planilha)</th>
+          <th>Quando (local)</th>
+          <th>Status</th>
+          <th>Ações</th>
+        </tr>
+      </thead>
+      <tbody id="tbodyScheduled"></tbody>
+    </table>
+  </div>
+
+  <!-- ABA: POSTADOS -->
+  <div id="tab-posted" class="tabpanel">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Tipo</th>
+          <th>Produto</th>
+          <th>Data (planilha)</th>
+          <th>Quando (local)</th>
+          <th>Status</th>
+          <th>Ações</th>
+        </tr>
+      </thead>
+      <tbody id="tbodyPosted"></tbody>
+    </table>
+  </div>
 
   <script>
-    const tbody = document.getElementById('tbody');
     const summary = document.getElementById('summary');
     const reloadBtn = document.getElementById('reloadBtn');
+    const tbodyScheduled = document.getElementById('tbodyScheduled');
+    const tbodyPosted = document.getElementById('tbodyPosted');
+    const countScheduled = document.getElementById('countScheduled');
+    const countPosted = document.getElementById('countPosted');
+
+    // abas
+    document.querySelectorAll('.tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.tabpanel').forEach(p => p.classList.remove('active'));
+        btn.classList.add('active');
+        const key = btn.getAttribute('data-tab');
+        document.getElementById('tab-' + key).classList.add('active');
+      });
+    });
 
     reloadBtn.addEventListener('click', load);
 
     function pill(status) {
-      const cls = status === 'posted' ? 'posted' :
-                  status === 'canceled' ? 'canceled' :
-                  status === 'due' ? 'due' : 'upcoming';
-      const label = { posted: 'Postado', canceled: 'Cancelado', due:'Vencido (deve postar)', upcoming:'Agendado' }[status] || status;
+      const cls = status === 'posted' ? 'posted'
+                : status === 'canceled' ? 'canceled'
+                : status === 'due' ? 'due' : 'upcoming';
+      const label = { posted:'Postado', canceled:'Cancelado', due:'Vencido (deve postar)', upcoming:'Agendado' }[status] || status;
       return `<span class="pill ${cls}">${label}</span>`;
     }
 
-    async function load() {
-      tbody.innerHTML = `<tr><td colspan="7">Carregando…</td></tr>`;
-      try {
-        const r = await fetch('/api/promo/schedule');
-        const j = await r.json();
-        if (!j.ok) throw new Error(j.error || 'Erro');
-        const items = j.items || [];
-        summary.textContent = `${items.length} entradas`;
-        render(items);
-      } catch (e) {
-        tbody.innerHTML = `<tr><td colspan="7">Erro: ${e.message}</td></tr>`;
-      }
+    function escapeHtml(s) {
+      return String(s || '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
     }
 
-    function render(items) {
-      if (!items.length) {
-        tbody.innerHTML = `<tr><td colspan="7">Sem entradas.</td></tr>`;
+    function render(items, targetTbody, canCancelAlways = false) {
+      if (!Array.isArray(items) || !items.length) {
+        targetTbody.innerHTML = `<tr><td colspan="7">Sem entradas.</td></tr>`;
         return;
       }
-      tbody.innerHTML = items.map((it, i) => {
+      targetTbody.innerHTML = items.map(it => {
         const dt = new Date(it.atLocalISO);
         const dateFmt = isNaN(dt) ? '-' : dt.toLocaleString('pt-BR', { hour12:false });
-        const canCancel = !!it.canCancel && (it.status === 'upcoming' || it.status === 'due');
+        const canCancel = canCancelAlways || (!!it.canCancel && (it.status === 'upcoming' || it.status === 'due'));
         return `
           <tr>
             <td>${it.row}</td>
@@ -96,6 +144,29 @@
           </tr>
         `;
       }).join('');
+    }
+
+    async function load() {
+      tbodyScheduled.innerHTML = `<tr><td colspan="7">Carregando…</td></tr>`;
+      tbodyPosted.innerHTML = `<tr><td colspan="7">Carregando…</td></tr>`;
+      try {
+        const r = await fetch('/api/promo/schedule');
+        const j = await r.json();
+        if (!j.ok) throw new Error(j.error || 'Erro');
+
+        const scheduled = j.scheduled || [];
+        const posted = j.posted || [];
+
+        summary.textContent = `${scheduled.length + posted.length} entradas (somando as duas abas)`;
+        countScheduled.textContent = `(${scheduled.length})`;
+        countPosted.textContent = `(${posted.length})`;
+
+        render(scheduled, tbodyScheduled);
+        render(posted, tbodyPosted, false); // cancelar fica desabilitado por padrão nos postados
+      } catch (e) {
+        tbodyScheduled.innerHTML = `<tr><td colspan="7">Erro: ${e.message}</td></tr>`;
+        tbodyPosted.innerHTML = `<tr><td colspan="7">Erro: ${e.message}</td></tr>`;
+      }
     }
 
     async function cancel(row, which) {
@@ -114,9 +185,8 @@
       }
     }
 
-    function escapeHtml(s) {
-      return String(s || '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-    }
+    // expõe cancel no escopo global (para o onclick do template)
+    window.cancel = cancel;
 
     load();
   </script>
