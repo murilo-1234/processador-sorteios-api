@@ -1,0 +1,124 @@
+<!-- public/admin/promo-schedule.html -->
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>Agenda de Postagens (Promo)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; color:#111827; }
+    h1 { font-size: 1.5rem; margin: 0 0 16px; }
+    .toolbar { margin-bottom: 16px; display:flex; gap:8px; align-items:center; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px 12px; border-bottom: 1px solid #e5e7eb; text-align: left; font-size: 14px; }
+    th { background: #f9fafb; font-weight: 600; }
+    .pill { padding: 2px 8px; border-radius: 999px; font-size: 12px; display:inline-block; }
+    .posted { background:#dcfce7; }
+    .canceled { background:#fee2e2; }
+    .due { background:#fef9c3; }
+    .upcoming { background:#e0e7ff; }
+    button { padding: 6px 10px; border-radius: 8px; border: 1px solid #d1d5db; background:#fff; cursor:pointer; }
+    button:hover { background:#f9fafb; }
+    button[disabled] { opacity: 0.5; cursor: not-allowed; }
+    .small { color:#6b7280; font-size:12px; }
+  </style>
+</head>
+<body>
+  <h1>Agenda de Postagens – Promo</h1>
+  <div class="toolbar">
+    <button id="reloadBtn">Recarregar</button>
+    <span id="summary" class="small"></span>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Tipo</th>
+        <th>Produto</th>
+        <th>Data (planilha)</th>
+        <th>Quando (local)</th>
+        <th>Status</th>
+        <th>Ações</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+
+  <script>
+    const tbody = document.getElementById('tbody');
+    const summary = document.getElementById('summary');
+    const reloadBtn = document.getElementById('reloadBtn');
+
+    reloadBtn.addEventListener('click', load);
+
+    function pill(status) {
+      const cls = status === 'posted' ? 'posted' :
+                  status === 'canceled' ? 'canceled' :
+                  status === 'due' ? 'due' : 'upcoming';
+      const label = { posted: 'Postado', canceled: 'Cancelado', due:'Vencido (deve postar)', upcoming:'Agendado' }[status] || status;
+      return `<span class="pill ${cls}">${label}</span>`;
+    }
+
+    async function load() {
+      tbody.innerHTML = `<tr><td colspan="7">Carregando…</td></tr>`;
+      try {
+        const r = await fetch('/api/promo/schedule');
+        const j = await r.json();
+        if (!j.ok) throw new Error(j.error || 'Erro');
+        const items = j.items || [];
+        summary.textContent = `${items.length} entradas`;
+        render(items);
+      } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="7">Erro: ${e.message}</td></tr>`;
+      }
+    }
+
+    function render(items) {
+      if (!items.length) {
+        tbody.innerHTML = `<tr><td colspan="7">Sem entradas.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = items.map((it, i) => {
+        const dt = new Date(it.atLocalISO);
+        const dateFmt = isNaN(dt) ? '-' : dt.toLocaleString('pt-BR', { hour12:false });
+        const canCancel = !!it.canCancel && (it.status === 'upcoming' || it.status === 'due');
+        return `
+          <tr>
+            <td>${it.row}</td>
+            <td>${it.kind === 'promo1' ? 'Divulgação (antes)' : 'Divulgação (no dia)'}</td>
+            <td>${escapeHtml(it.product || '')}</td>
+            <td>${escapeHtml(it.dateStr || '')}</td>
+            <td>${dateFmt}</td>
+            <td>${pill(it.status)}</td>
+            <td>
+              <button ${canCancel ? '' : 'disabled'} onclick="cancel(${it.row}, '${it.kind === 'promo1' ? 'p1' : 'p2'}')">✕ Cancelar</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    async function cancel(row, which) {
+      if (!confirm('Confirmar cancelamento desta postagem agendada?')) return;
+      try {
+        const r = await fetch('/api/promo/cancel', {
+          method: 'POST',
+          headers: { 'Content-Type':'application/json' },
+          body: JSON.stringify({ row, which })
+        });
+        const j = await r.json();
+        if (!j.ok) throw new Error(j.error || 'Falha ao cancelar');
+        await load();
+      } catch (e) {
+        alert('Erro: ' + e.message);
+      }
+    }
+
+    function escapeHtml(s) {
+      return String(s || '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+    }
+
+    load();
+  </script>
+</body>
+</html>
