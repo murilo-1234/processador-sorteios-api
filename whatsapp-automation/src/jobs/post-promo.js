@@ -4,6 +4,7 @@
 const axios = require('axios');
 const { parse } = require('date-fns');
 
+// ========== TZ utils (iguais ao post-winner) ==========
 let zonedTimeToUtcSafe;
 try {
   const tz = require('date-fns-tz');
@@ -17,6 +18,24 @@ if (typeof zonedTimeToUtcSafe !== 'function') {
     return new Date(d.getTime() + Math.abs(TZ_OFFSET_MINUTES) * 60 * 1000);
   };
 }
+const TZ = process.env.TZ || 'America/Sao_Paulo';
+function safeStr(v){ try{ return v==null? '' : String(v);}catch{ return '';} }
+function localLooksLikeConfiguredTZ() {
+  try {
+    const tzEnv = safeStr(process.env.TZ).toLowerCase();
+    const offsetCfg = Math.abs(Number(process.env.TZ_OFFSET_MINUTES || -180));
+    const offsetLocal = Math.abs(new Date().getTimezoneOffset());
+    if (tzEnv.includes('sao_paulo') || tzEnv.includes('são_paulo')) return true;
+    if (offsetCfg && offsetCfg === offsetLocal) return true;
+  } catch {}
+  return false;
+}
+function toUtcFromLocal(d) {
+  // Se o processo já está no fuso “certo”, não reconverte
+  if (localLooksLikeConfiguredTZ()) return d;
+  return zonedTimeToUtcSafe(d, TZ);
+}
+// ======================================================
 
 const settings = require('../services/settings');
 const { getRows, updateCellByHeader } = require('../services/sheets');
@@ -24,16 +43,12 @@ const { fetchFirstCoupon } = require('../services/coupons'); // compat
 const couponsSvc = require('../services/coupons');            // para top2
 const { beforeTexts, dayTexts } = require('../services/promo-texts');
 
-const TZ = process.env.TZ || 'America/Sao_Paulo';
 const DEBUG_JOB = String(process.env.DEBUG_JOB || '').trim() === '1';
-
 const PROMO_BEFORE_DAYS = Number(process.env.PROMO_BEFORE_DAYS || 2);
 const PROMO_POST_HOUR  = Number(process.env.PROMO_POST_HOUR || 9);
-
 const BAILEYS_LINK_PREVIEW_OFF = String(process.env.BAILEYS_LINK_PREVIEW_OFF || '1') === '1';
 
 const dlog = (...a) => { if (DEBUG_JOB) console.log('[PROMO]', ...a); };
-const safeStr = (v) => { try { return v == null ? '' : String(v); } catch { return ''; } };
 const coerceStr = (v) => { try { return String(v ?? '').trim(); } catch { return ''; } };
 
 function findHeader(headers, candidates) {
@@ -44,27 +59,21 @@ function findHeader(headers, candidates) {
   }
   return null;
 }
-
 function mkLocalDateAtHour(spDateOnly /*Date*/, hour = 9) {
   const yyyy = spDateOnly.getFullYear();
   const mm   = spDateOnly.getMonth();
   const dd   = spDateOnly.getDate();
   return new Date(yyyy, mm, dd, hour, 0, 0);
 }
-
-function toUtcFromLocal(d) { return zonedTimeToUtcSafe(d, TZ); }
-
 function choose(list) {
   if (!Array.isArray(list) || !list.length) return '';
   return list[Math.floor(Math.random() * list.length)];
 }
-
 function mergeText(tpl, vars) {
   return safeStr(tpl)
     .replaceAll('{{PRODUTO}}', safeStr(vars.PRODUTO))
     .replaceAll('{{COUPON}}',  safeStr(vars.COUPON));
 }
-
 async function downloadToBuffer(url) {
   const { data } = await axios.get(url, {
     responseType: 'arraybuffer',
@@ -73,7 +82,6 @@ async function downloadToBuffer(url) {
   });
   return Buffer.from(data);
 }
-
 async function getPreferredSock(app) {
   try {
     const waAdmin = app?.locals?.waAdmin || app?.waAdmin;
@@ -86,7 +94,7 @@ async function getPreferredSock(app) {
   return waClient?.sock || null;
 }
 
-// === Cupom (mesma regra do post-winner): top2; fallback 1º; fallback ENV ===
+// === Cupom (mesma regra do post-winner) ===
 async function getCouponTextCTA() {
   try {
     let list = [];
@@ -115,21 +123,17 @@ function isCanceledFlag(v) {
   const s = String(v || '').trim().toLowerCase();
   return s === 'cancelado' || s === 'cancelada' || s === 'cancel';
 }
-
-// Detecta se a linha já tem resultado de sorteio (ganhador/resultado/status).
 function hasResultForRow(row, hdrs) {
   const val = (h) => safeStr(h ? row[h] : '').trim().toLowerCase();
-
   const winner = val(hdrs.H_WINNER);
   const resultUrl = safeStr(hdrs.H_RESULT_URL ? row[hdrs.H_RESULT_URL] : '').trim();
   const resultAt = safeStr(hdrs.H_RESULT_AT ? row[hdrs.H_RESULT_AT] : '').trim();
   const status = val(hdrs.H_STATUS);
   const ended = ['finalizado','encerrado','concluido','concluído','ok','feito','postado','resultado','divulgado'].includes(status);
-
   return (!!winner || !!resultUrl || !!resultAt || ended);
 }
 
-// --- helpers para idempotência por grupo (CSV ou JSON na célula) ---
+// --- idempotência por grupo ---
 function parseGroups(val) {
   const s = safeStr(val).trim();
   if (!s) return new Set();
@@ -137,17 +141,10 @@ function parseGroups(val) {
     const arr = JSON.parse(s);
     if (Array.isArray(arr)) return new Set(arr.map((x) => String(x).trim()).filter(Boolean));
   } catch {}
-  return new Set(
-    s.split(',').map((x) => x.trim()).filter(Boolean)
-  );
+  return new Set(s.split(',').map((x) => x.trim()).filter(Boolean));
 }
-function groupsToCell(set) {
-  return Array.from(set).join(',');
-}
-function isSuperset(setA, setB) {
-  for (const v of setB) if (!setA.has(v)) return false;
-  return true;
-}
+function groupsToCell(set) { return Array.from(set).join(','); }
+function isSuperset(setA, setB) { for (const v of setB) if (!setA.has(v)) return false; return true; }
 
 async function runOnce(app, opts = {}) {
   const dryRun = !!opts.dryRun || String(app?.locals?.reqDry || '').trim() === '1';
@@ -165,7 +162,7 @@ async function runOnce(app, opts = {}) {
 
   const { headers, items, spreadsheetId, tab, sheets } = await getRows();
 
-  // ===== Cabeçalhos obrigatórios =====
+  // Obrigatórios
   const H_ID   = findHeader(headers, ['id','codigo','código']);
   const H_HORA = findHeader(headers, ['horario','hora','horário','time']);
   const H_PLAN = findHeader(headers, ['url_planilha','planilha','url_da_planilha','sheet_url','url_plan']);
@@ -173,10 +170,10 @@ async function runOnce(app, opts = {}) {
   const H_PROD = findHeader(headers, ['nome_do_produto','produto','nome','produto_nome']);
   const H_DATA = findHeader(headers, ['data','date']);
   const H_IMG  = findHeader(headers, [
-    'url_imagem_processada', 'url_imagem_sorteio', 'imagem_sorteio', 'url_imagem', 'imagem', 'image_url'
+    'url_imagem_processada','url_imagem_sorteio','imagem_sorteio','url_imagem','imagem','image_url'
   ]);
 
-  // Campos de controle das promoções
+  // Controle promo
   const H_P1   = findHeader(headers, ['wa_promo1','wa_promocao1','promo1','wa_promo_1']) || 'WA_PROMO1';
   const H_P1AT = findHeader(headers, ['wa_promo1_at','wa_promocao1_at','promo1_at'])     || 'WA_PROMO1_AT';
   const H_P1G  = findHeader(headers, ['wa_promo1_groups','wa_promocao1_groups','promo1_groups']) || 'WA_PROMO1_GROUPS';
@@ -185,7 +182,7 @@ async function runOnce(app, opts = {}) {
   const H_P2AT = findHeader(headers, ['wa_promo2_at','wa_promocao2_at','promo2_at'])     || 'WA_PROMO2_AT';
   const H_P2G  = findHeader(headers, ['wa_promo2_groups','wa_promocao2_groups','promo2_groups']) || 'WA_PROMO2_GROUPS';
 
-  // Sinais de resultado/encerramento do sorteio
+  // Resultado
   const H_WINNER     = findHeader(headers, ['ganhador','ganhadora','vencedor','winner','nome_ganhador']);
   const H_RESULT_URL = findHeader(headers, ['resultado_url','url_resultado','link_resultado','url_result','resultado']);
   const H_RESULT_AT  = findHeader(headers, ['resultado_at','result_at','data_resultado','resultado_data']);
@@ -218,7 +215,6 @@ async function runOnce(app, opts = {}) {
     const row = items[i];
     const rowIndex1 = i + 2;
 
-    // ====== coleta de campos ======
     const id      = coerceStr(row[H_ID]);
     const product = coerceStr(row[H_PROD]);
     const dateStr = coerceStr(row[H_DATA]); // dd/MM/yyyy
@@ -226,7 +222,7 @@ async function runOnce(app, opts = {}) {
     const imgUrl  = coerceStr(row[H_IMG]);
     const planUrl = coerceStr(row[H_PLAN]);
 
-    // ====== validação de obrigatórios ======
+    // validação obrigatórios
     const missing = [];
     if (!id)      missing.push('id');
     if (!dateStr) missing.push('data');
@@ -235,42 +231,33 @@ async function runOnce(app, opts = {}) {
     if (!imgUrl)  missing.push('url_imagem_processada');
     if (!planUrl) missing.push('url_planilha');
 
-    if (missing.length) {
-      skipped.push({ row: rowIndex1, reason: 'faltando_campos', missing });
-      continue;
-    }
+    if (missing.length) { skipped.push({ row: rowIndex1, id, reason: 'faltando_campos', missing }); continue; }
 
-    const p1Posted = String(row[H_P1] || '').toLowerCase() === 'postado';
-    const p2Posted = String(row[H_P2] || '').toLowerCase() === 'postado';
-    const p1Canceled = isCanceledFlag(row[H_P1]);
-    const p2Canceled = isCanceledFlag(row[H_P2]);
-
+    // parse data da planilha
     let spDate;
     try {
       spDate = parse(dateStr, 'dd/MM/yyyy', new Date());
       if (isNaN(spDate?.getTime?.())) throw new Error('data inválida');
     } catch {
-      skipped.push({ row: rowIndex1, reason: 'parseDateFail', raw: dateStr });
+      skipped.push({ row: rowIndex1, id, reason: 'parseDateFail', raw: dateStr });
       continue;
     }
 
-    // ✅ somente futuros e sem resultado ainda
-    if (spDate < todayLocalDateOnly) {
-      skipped.push({ row: rowIndex1, reason: 'past_draw' });
-      continue;
-    }
-    if (hasResultForRow(row, hdrs)) {
-      skipped.push({ row: rowIndex1, reason: 'has_result' });
-      continue;
-    }
+    // somente futuros e sem resultado
+    if (spDate < todayLocalDateOnly) { skipped.push({ row: rowIndex1, id, reason: 'past_draw' }); continue; }
+    if (hasResultForRow(row, hdrs))  { skipped.push({ row: rowIndex1, id, reason: 'has_result' }); continue; }
+
+    const p1Posted   = String(row[H_P1] || '').toLowerCase() === 'postado';
+    const p2Posted   = String(row[H_P2] || '').toLowerCase() === 'postado';
+    const p1Canceled = isCanceledFlag(row[H_P1]);
+    const p2Canceled = isCanceledFlag(row[H_P2]);
 
     const dayLocal    = mkLocalDateAtHour(spDate, PROMO_POST_HOUR);
     const beforeLocal = new Date(dayLocal.getTime() - PROMO_BEFORE_DAYS * 24 * 60 * 60 * 1000);
-
     const p1At = toUtcFromLocal(beforeLocal);
     const p2At = toUtcFromLocal(dayLocal);
 
-    // ======== PROMO 1 — 48h antes (idempotência por grupo) ========
+    // ===== Promo 1 — 48h antes =====
     if (!p1Canceled && now >= p1At) {
       const alreadyP1 = parseGroups(row[H_P1G]);
       if (isSuperset(alreadyP1, targetSet)) {
@@ -280,7 +267,6 @@ async function runOnce(app, opts = {}) {
         }
       } else {
         const caption = mergeText(choose(beforeTexts), { PRODUTO: product, COUPON: couponText });
-
         try {
           let payload;
           try {
@@ -291,25 +277,22 @@ async function runOnce(app, opts = {}) {
           }
 
           if (dryRun) {
-            dlog('DRY-RUN P1 =>', { row: rowIndex1, caption: caption.slice(0, 80) + '...' });
+            dlog('DRY-RUN P1 =>', { row: rowIndex1, id, at: p1At.toISOString() });
           } else {
             let anySent = false;
             for (const rawJid of targetJids) {
               const jid = String(rawJid || '').trim();
               if (!jid.endsWith('@g.us')) continue;
-              if (alreadyP1.has(jid)) { dlog('skip P1 já enviado', { jid, row: rowIndex1 }); continue; }
+              if (alreadyP1.has(jid)) { dlog('skip P1 já enviado', { jid, row: rowIndex1, id }); continue; }
 
               const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
               await sock.sendMessage(jid, payload, opts);
 
               alreadyP1.add(jid);
-              await updateCellByHeader(
-                sheets, spreadsheetId, tab, headers, rowIndex1, H_P1G, groupsToCell(alreadyP1)
-              );
+              await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P1G, groupsToCell(alreadyP1));
               anySent = true;
               sent++;
             }
-
             if (anySent && isSuperset(alreadyP1, targetSet)) {
               const ts = new Date().toISOString();
               await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P1, 'Postado');
@@ -317,12 +300,14 @@ async function runOnce(app, opts = {}) {
             }
           }
         } catch (e) {
-          errors.push({ row: rowIndex1, stage: 'send-promo1', error: e?.message || String(e) });
+          errors.push({ row: rowIndex1, id, stage: 'send-promo1', error: e?.message || String(e) });
         }
       }
+    } else {
+      dlog('aguardando P1', { id, row: rowIndex1, now: now.toISOString(), p1At: p1At.toISOString() });
     }
 
-    // ======== PROMO 2 — no dia (idempotência por grupo) ========
+    // ===== Promo 2 — no dia =====
     if (!p2Canceled && now >= p2At) {
       const alreadyP2 = parseGroups(row[H_P2G]);
       if (isSuperset(alreadyP2, targetSet)) {
@@ -332,7 +317,6 @@ async function runOnce(app, opts = {}) {
         }
       } else {
         const caption = mergeText(choose(dayTexts), { PRODUTO: product, COUPON: couponText });
-
         try {
           let payload;
           try {
@@ -343,25 +327,22 @@ async function runOnce(app, opts = {}) {
           }
 
           if (dryRun) {
-            dlog('DRY-RUN P2 =>', { row: rowIndex1, caption: caption.slice(0, 80) + '...' });
+            dlog('DRY-RUN P2 =>', { row: rowIndex1, id, at: p2At.toISOString() });
           } else {
             let anySent = false;
             for (const rawJid of targetJids) {
               const jid = String(rawJid || '').trim();
               if (!jid.endsWith('@g.us')) continue;
-              if (alreadyP2.has(jid)) { dlog('skip P2 já enviado', { jid, row: rowIndex1 }); continue; }
+              if (alreadyP2.has(jid)) { dlog('skip P2 já enviado', { jid, row: rowIndex1, id }); continue; }
 
               const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
               await sock.sendMessage(jid, payload, opts);
 
               alreadyP2.add(jid);
-              await updateCellByHeader(
-                sheets, spreadsheetId, tab, headers, rowIndex1, H_P2G, groupsToCell(alreadyP2)
-              );
+              await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P2G, groupsToCell(alreadyP2));
               anySent = true;
               sent++;
             }
-
             if (anySent && isSuperset(alreadyP2, targetSet)) {
               const ts = new Date().toISOString();
               await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P2, 'Postado');
@@ -369,9 +350,11 @@ async function runOnce(app, opts = {}) {
             }
           }
         } catch (e) {
-          errors.push({ row: rowIndex1, stage: 'send-promo2', error: e?.message || String(e) });
+          errors.push({ row: rowIndex1, id, stage: 'send-promo2', error: e?.message || String(e) });
         }
       }
+    } else {
+      dlog('aguardando P2', { id, row: rowIndex1, now: now.toISOString(), p2At: p2At.toISOString() });
     }
   }
 
