@@ -62,13 +62,30 @@ async function computeHeaders() {
   const H_P2   = findHeader(headers, ['wa_promo2','wa_promocao2','promo2','wa_promo_2'], 'WA_PROMO2');
   const H_P2AT = findHeader(headers, ['wa_promo2_at','wa_promocao2_at','promo2_at'], 'WA_PROMO2_AT');
 
-  return { headers, items, spreadsheetId, tab, sheets, H_PROD, H_DATA, H_IMG, H_P1, H_P1AT, H_P2, H_P2AT };
+  // campos de resultado/encerramento
+  const H_WINNER     = findHeader(headers, ['ganhador','ganhadora','vencedor','winner','nome_ganhador']);
+  const H_RESULT_URL = findHeader(headers, ['resultado_url','url_resultado','link_resultado','url_result','resultado']);
+  const H_RESULT_AT  = findHeader(headers, ['resultado_at','result_at','data_resultado','resultado_data']);
+  const H_STATUS     = findHeader(headers, ['status','situacao','situação','state']);
+
+  return { headers, items, spreadsheetId, tab, sheets, H_PROD, H_DATA, H_IMG, H_P1, H_P1AT, H_P2, H_P2AT, H_WINNER, H_RESULT_URL, H_RESULT_AT, H_STATUS };
+}
+
+function hasResultRow(row, H_WINNER, H_RESULT_URL, H_RESULT_AT, H_STATUS) {
+  const winner = safe(row[H_WINNER]).trim();
+  const rurl   = safe(row[H_RESULT_URL]).trim();
+  const rat    = safe(row[H_RESULT_AT]).trim();
+  const st     = lower(row[H_STATUS]);
+  const ended  = ['finalizado','encerrado','concluido','concluído','ok','feito','postado','resultado','divulgado'].includes(st);
+  return (!!winner || !!rurl || !!rat || ended);
 }
 
 async function listScheduled() {
-  const { headers, items, H_PROD, H_DATA, H_IMG, H_P1, H_P2 } = await computeHeaders();
-  const out = [];
+  const { headers, items, H_PROD, H_DATA, H_IMG, H_P1, H_P2, H_WINNER, H_RESULT_URL, H_RESULT_AT, H_STATUS } = await computeHeaders();
+  const scheduled = [];
+  const posted = [];
   const now = new Date();
+  const todayLocalDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
   for (let i = 0; i < items.length; i++) {
     const row = items[i];
@@ -94,32 +111,38 @@ async function listScheduled() {
     const p1Val = row[H_P1];
     const p2Val = row[H_P2];
 
+    const hasResult = hasResultRow(row, H_WINNER, H_RESULT_URL, H_RESULT_AT, H_STATUS);
+
     const base = { row: rowIndex1, product, dateStr, imgUrl };
 
-    // entrada P1
-    out.push({
-      ...base,
-      kind: 'promo1',
-      atLocalISO: asISO(beforeLocal),
-      atUtcISO: asISO(p1At),
-      status: isPosted(p1Val) ? 'posted' : isCanceled(p1Val) ? 'canceled' : (now >= p1At ? 'due' : 'upcoming'),
-      canCancel: !isPosted(p1Val) && !isCanceled(p1Val)
-    });
+    // P1
+    {
+      const st = isPosted(p1Val) ? 'posted' : isCanceled(p1Val) ? 'canceled' : (now >= p1At ? 'due' : 'upcoming');
+      const entry = { ...base, kind:'promo1', atLocalISO: asISO(beforeLocal), atUtcISO: asISO(p1At), status: st, canCancel: !isPosted(p1Val) && !isCanceled(p1Val) };
+      if (st === 'posted') posted.push(entry);
+      else {
+        // Somente agenda se sorteio é futuro (data >= hoje) e sem resultado
+        if (spDate >= todayLocalDateOnly && !hasResult) scheduled.push(entry);
+      }
+    }
 
-    // entrada P2
-    out.push({
-      ...base,
-      kind: 'promo2',
-      atLocalISO: asISO(dayLocal),
-      atUtcISO: asISO(p2At),
-      status: isPosted(p2Val) ? 'posted' : isCanceled(p2Val) ? 'canceled' : (now >= p2At ? 'due' : 'upcoming'),
-      canCancel: !isPosted(p2Val) && !isCanceled(p2Val)
-    });
+    // P2
+    {
+      const st = isPosted(p2Val) ? 'posted' : isCanceled(p2Val) ? 'canceled' : (now >= p2At ? 'due' : 'upcoming');
+      const entry = { ...base, kind:'promo2', atLocalISO: asISO(dayLocal), atUtcISO: asISO(p2At), status: st, canCancel: !isPosted(p2Val) && !isCanceled(p2Val) };
+      if (st === 'posted') posted.push(entry);
+      else {
+        if (spDate >= todayLocalDateOnly && !hasResult) scheduled.push(entry);
+      }
+    }
   }
 
   // ordena por data/hora local
-  out.sort((a, b) => new Date(a.atLocalISO) - new Date(b.atLocalISO));
-  return out;
+  const sorter = (a, b) => new Date(a.atLocalISO) - new Date(b.atLocalISO);
+  scheduled.sort(sorter);
+  posted.sort(sorter);
+
+  return { scheduled, posted };
 }
 
 async function cancelScheduled(rowIndex1, which) {
