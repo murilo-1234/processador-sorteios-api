@@ -510,20 +510,12 @@ class App {
       }
     })
 
-    // ===== ALERTAS =====
-    this.app.post('/api/alerts/test', async (_req, res) => {
-      if (!this.alertCfg.enabled) {
-        return res.status(400).json({ ok:false, error:'Defina ALERT_WA_PHONES/ALERT_WA_PHONE (ou ALERT_WA_JID[S]) para habilitar alertas.' })
-      }
-      const ok = await this.sendAlert('🔔 Teste de alerta: sistema de sorteios online ✅')
-      res.json({ ok, to: this.alertCfg.adminJids })
-    })
-
-    // ===== PROMO SCHEDULE (lista/cancelar) — leve e isolado =====
+    // ===== PROMO SCHEDULE (lista/cancelar) =====
     this.app.get('/api/promo/schedule', async (_req, res) => {
       try {
-        const items = await promoSchedule.listScheduled()
-        res.json({ ok: true, items })
+        const data = await promoSchedule.listScheduled()
+        // devolve separado para a página poder exibir em abas
+        res.json({ ok: true, ...data })
       } catch (e) {
         res.status(500).json({ ok: false, error: e?.message || String(e) })
       }
@@ -680,6 +672,7 @@ class App {
             return
           }
           if (!st.data?.connected) {
+            const sess = await hasSavedSession()
             if (sess.ok) {
               console.log('[WA-ADMIN] autostart: sessão encontrada; POST /admin/wa/connect…')
               const r = await this.callAdminConnect(baseUrl)
