@@ -23,6 +23,7 @@ const WhatsAppClient = require('./services/whatsapp-client')
 const settings = require('./services/settings')
 const { runOnce } = require('./jobs/post-winner')
 const { runOnce: runPromoOnce } = require('./jobs/post-promo') // << NOVO
+const promoSchedule = require('./services/promo-schedule')     // << NOVO
 
 // SSE hub
 const { addClient: sseAddClient, broadcast: sseBroadcast } = require('./services/wa-sse')
@@ -516,6 +517,26 @@ class App {
       }
       const ok = await this.sendAlert('🔔 Teste de alerta: sistema de sorteios online ✅')
       res.json({ ok, to: this.alertCfg.adminJids })
+    })
+
+    // ===== PROMO SCHEDULE (lista/cancelar) — leve e isolado =====
+    this.app.get('/api/promo/schedule', async (_req, res) => {
+      try {
+        const items = await promoSchedule.listScheduled()
+        res.json({ ok: true, items })
+      } catch (e) {
+        res.status(500).json({ ok: false, error: e?.message || String(e) })
+      }
+    })
+
+    this.app.post('/api/promo/cancel', async (req, res) => {
+      try {
+        const { row, which } = req.body || {}
+        const out = await promoSchedule.cancelScheduled(row, which)
+        res.json({ ok: true, result: out })
+      } catch (e) {
+        res.status(400).json({ ok: false, error: e?.message || String(e) })
+      }
     })
 
     // job manual (POST)
