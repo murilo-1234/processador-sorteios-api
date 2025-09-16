@@ -25,7 +25,6 @@ if (typeof zonedTimeToUtcSafe !== 'function') {
 const settings = require('../services/settings');
 const { getRows, updateCellByHeader } = require('../services/sheets');
 const { fetchResultInfo } = require('../services/result');
-// 🔽 mantém compat e permite pegar 2 cupons quando houver
 const { fetchFirstCoupon, fetchTopCoupons } = require('../services/coupons');
 const { generatePoster } = require('../services/media');
 const { makeOverlayVideo } = require('../services/video');
@@ -45,7 +44,7 @@ const DELAY_MIN = Number(process.env.POST_DELAY_MINUTES ?? 10);
 const DEBUG_JOB = String(process.env.DEBUG_JOB || '').trim() === '1';
 
 // === Flags ===
-const DISABLE_LINK_PREVIEW = String(process.env.DISABLE_LINK_PREVIEW || '1') === '1'; // mantido por compat
+const DISABLE_LINK_PREVIEW = String(process.env.DISABLE_LINK_PREVIEW || '1') === '1';
 const SEND_RESULT_URL_SEPARATE = false; // NUNCA enviar link em mensagem separada
 const BAILEYS_LINK_PREVIEW_OFF = String(process.env.BAILEYS_LINK_PREVIEW_OFF || '1') === '1';
 
@@ -88,12 +87,10 @@ function mergeText(tpl, vars) {
   const blockFull    = buildWinnerBlock(name, dt, ch, true);
   const blockNoLabel = buildWinnerBlock(name, dt, ch, false);
 
-  // 1) Se o template tiver {{WINNER_BLOCK}}, usa o bloco completo
   if (s.includes('{{WINNER_BLOCK}}')) {
     s = s.replaceAll('{{WINNER_BLOCK}}', blockFull);
   }
 
-  // 2) Se houver "Ganhador(a): {{WINNER}}", substitui TODO o trecho por "Ganhador(a): Nome\n(meta...)"
   const reLabelName = /(Ganhador(?:\(a\))?:\s*){{WINNER}}/gi;
   if (reLabelName.test(s)) {
     s = s.replace(reLabelName, (_m, label) => {
@@ -102,11 +99,9 @@ function mergeText(tpl, vars) {
       return rest ? `${firstLine}\n${rest}` : firstLine;
     });
   } else if (s.includes('{{WINNER}}')) {
-    // 3) Caso contrário, {{WINNER}} vira o bloco completo
     s = s.replaceAll('{{WINNER}}', blockFull);
   }
 
-  // Demais variáveis
   s = s
     .replaceAll('{{RESULT_URL}}', safeStr(vars.RESULT_URL))
     .replaceAll('{{COUPON}}', safeStr(vars.COUPON));
@@ -181,7 +176,6 @@ function stripLeadingAvatarLetter(name = '') {
 function parseWinnerDetailed(winnerStr = '') {
   const raw = String(winnerStr || '').replace(/\s+/g, ' ').trim();
 
-  // nome = tudo antes do primeiro " 20YY-"
   const dtMatch = raw.match(/\s(20\d{2}-\d{2}-\d{2})\s(\d{2}:\d{2}:\d{2})/);
   let name = raw;
   if (dtMatch) name = raw.slice(0, dtMatch.index).trim();
@@ -206,7 +200,7 @@ function winnerLooksReady(info) {
   if (/ser[áa]\s+anunciado/i.test(raw)) return false; // "será anunciado"
   const { name, metaDateTime } = parseWinnerDetailed(raw);
   if (!name || name.length < 3) return false;
-  if (!metaDateTime) return false; // sem data de entrada -> ainda não consolidou
+  if (!metaDateTime) return false;
   return true;
 }
 
@@ -233,6 +227,15 @@ function ensureLinkInsideCaption(caption, resultUrl) {
   return `${join}Link resultado👇\n${url}`;
 }
 
+// ---- helpers para idempotência por grupo ----
+function parseCsvSet(csv) {
+  const s = String(csv || '');
+  if (!s.trim()) return new Set();
+  return new Set(s.split(',').map(x => x.trim()).filter(Boolean));
+}
+function setToCsv(set) {
+  return Array.from(set).join(',');
+}
 /**
  * Executa o job 1x.
  * @param {*} app  express app com locals.whatsappClient/waAdmin
@@ -265,13 +268,14 @@ async function runOnce(app, opts = {}) {
   const { headers, items, spreadsheetId, tab, sheets } = await getRows();
 
   // 2) Mapeia cabeçalhos
-  const H_ID      = findHeader(headers, ['id', 'codigo', 'código']);
-  const H_DATA    = findHeader(headers, ['data', 'date']);
-  const H_HORA    = findHeader(headers, ['horario', 'hora', 'horário', 'time']);
-  const H_IMG     = findHeader(headers, ['url_imagem_processada', 'url_imagem', 'imagem', 'image_url']);
-  const H_PROD    = findHeader(headers, ['nome_do_produto', 'nome', 'produto', 'produto_nome']);
-  const H_WA_POST = findHeader(headers, ['wa_post']);
-  const H_WA_AT   = findHeader(headers, ['wa_post_at', 'wa_postado_em']);
+  const H_ID       = findHeader(headers, ['id', 'codigo', 'código']);
+  const H_DATA     = findHeader(headers, ['data', 'date']);
+  const H_HORA     = findHeader(headers, ['horario', 'hora', 'horário', 'time']);
+  const H_IMG      = findHeader(headers, ['url_imagem_processada', 'url_imagem', 'imagem', 'image_url']);
+  const H_PROD     = findHeader(headers, ['nome_do_produto', 'nome', 'produto', 'produto_nome']);
+  const H_WA_POST  = findHeader(headers, ['wa_post']);
+  const H_WA_AT    = findHeader(headers, ['wa_post_at', 'wa_postado_em']);
+  const H_WA_GROUPS= findHeader(headers, ['wa_post_groups','wa_groups','wa_grupos']); // << novo
 
   // Opcionais (headline/bg/music por linha)
   const H_CUSTOM_HEADLINE = findHeader(headers, ['headline']);
@@ -284,6 +288,8 @@ async function runOnce(app, opts = {}) {
       `Obrigatórios (alguma das opções): id | data | horario | url_imagem_processada | (nome_do_produto ou nome).`
     );
   }
+
+  const usePerGroupMode = !!H_WA_GROUPS;
 
   // 3) Seleciona linhas "prontas"
   const now = new Date();
@@ -304,9 +310,12 @@ async function runOnce(app, opts = {}) {
       return;
     }
 
-    const flagPosted = coerceStr(row[H_WA_POST]).toLowerCase() === 'postado';
-    if (flagPosted) { skipped.push({ row: rowIndex1, id, reason: 'WA_POST=Postado' }); return; }
-    if (settings.hasPosted(id)) { skipped.push({ row: rowIndex1, id, reason: 'settings.hasPosted' }); return; }
+    // --- gating antigo (fallback) ---
+    if (!usePerGroupMode) {
+      const flagPosted = coerceStr(row[H_WA_POST]).toLowerCase() === 'postado';
+      if (flagPosted) { skipped.push({ row: rowIndex1, id, reason: 'WA_POST=Postado' }); return; }
+      if (settings.hasPosted(id)) { skipped.push({ row: rowIndex1, id, reason: 'settings.hasPosted' }); return; }
+    }
 
     const text = `${data} ${hora}`;
     let spDate;
@@ -335,11 +344,26 @@ async function runOnce(app, opts = {}) {
     const bgUrl          = H_BG_URL          ? coerceStr(row[H_BG_URL])          : '';
     const musicUrl       = H_MUSIC_URL       ? coerceStr(row[H_MUSIC_URL])       : '';
 
+    // --- idempotência por grupo: calcula grupos restantes ---
+    let postedSet = new Set();
+    if (usePerGroupMode) {
+      postedSet = parseCsvSet(row[H_WA_GROUPS]);
+    }
+    const remainingJids = usePerGroupMode
+      ? targetJids.filter(j => !postedSet.has(j))
+      : targetJids.slice();
+
+    if (usePerGroupMode && remainingJids.length === 0) {
+      skipped.push({ row: rowIndex1, id, reason: 'todos_grupos_ja_postados' });
+      return;
+    }
+
     pending.push({
       rowIndex1, id,
       productName: product,
       imgUrl, spDate,
       customHeadline, bgUrl, musicUrl,
+      postedSet, remainingJids
     });
   });
 
@@ -348,7 +372,7 @@ async function runOnce(app, opts = {}) {
     return { ok: true, processed: 0, sent: 0, note: 'sem linhas prontas', skipped };
   }
 
-  // 4) Cupom (uma vez por execução)  – tenta 2; se não houver, cai pra 1
+  // 4) Cupom (uma vez por execução)
   let coupon;
   try {
     if (typeof fetchTopCoupons === 'function') {
@@ -361,7 +385,6 @@ async function runOnce(app, opts = {}) {
     }
   } catch (_) {}
   if (!coupon) {
-    // compatibilidade/fallback
     coupon = await fetchFirstCoupon();
   }
   dlog('coupon', coupon);
@@ -385,14 +408,13 @@ async function runOnce(app, opts = {}) {
       const { url: resultUrl, winner, participants } = info;
       dlog('linha', p.id, { winner, participantsCount: Array.isArray(participants) ? participants.length : 0 });
 
-      // ===== Trava: só segue se já existe ganhador "válido" =====
       if (!winnerLooksReady(info)) {
         skipped.push({ id: p.id, reason: 'winner_not_ready' });
         continue;
       }
       const { name: winnerName, metaDateTime, metaChannel } = parseWinnerDetailed(winner || '');
 
-      // 5.2) gerar mídia (poster ou vídeo)
+      // 5.2) gerar mídia
       let usedPath;
       let media;
 
@@ -400,7 +422,6 @@ async function runOnce(app, opts = {}) {
         const wantVideo = (process.env.POST_MEDIA_TYPE || 'image').toLowerCase() === 'video';
         const mode = (process.env.VIDEO_MODE || 'overlay').toLowerCase();
 
-        // Escolhas (prioridade: planilha > listas/código > ENV CSV)
         const headline   = p.customHeadline || pickHeadlineSafe();
         const premio     = p.productName;
         const videoBgUrl = p.bgUrl    || pickBgSafe();
@@ -431,7 +452,7 @@ async function runOnce(app, opts = {}) {
             winner: winnerName || 'Ganhador(a)',
             winnerMetaDateTime: metaDateTime,
             winnerMetaChannel:  metaChannel,
-            winnerMeta: winner, // retrocompat
+            winnerMeta: winner,
             participants
           });
 
@@ -473,7 +494,7 @@ async function runOnce(app, opts = {}) {
         continue;
       }
 
-      // 5.3) legenda (sem quebrar espaçamento do template)
+      // 5.3) legenda
       const resultUrlStr = safeStr(resultUrl);
       let captionFull = mergeText(chooseTemplate(), {
         WINNER: winnerName || 'Ganhador(a)',
@@ -482,22 +503,18 @@ async function runOnce(app, opts = {}) {
         RESULT_URL: resultUrlStr,
         COUPON: coupon
       });
-
-      // Link deve ficar na mesma mensagem SEMPRE
       captionFull = ensureLinkInsideCaption(captionFull, resultUrlStr);
-
-      // Não retiramos o link; apenas evitamos preview via opção do Baileys
       const captionOut = captionFull;
 
-      // 5.4) enviar
+      // 5.4) enviar (com idempotência por grupo)
       const sock = await getPreferredSock(app);
       if (!sock) {
         errors.push({ id: p.id, stage: 'sendMessage', error: 'WhatsApp não conectado (admin/cliente)' });
       } else if (dryRun) {
-        dlog('dry-run => NÃO enviou', { to: targetJids, id: p.id, caption: captionOut, link: resultUrlStr });
+        dlog('dry-run => NÃO enviou', { to: p.remainingJids, id: p.id, caption: captionOut, link: resultUrlStr });
       } else {
-        for (const rawJid of targetJids) {
-          let jid = safeStr(rawJid).trim();
+        for (const rawJid of p.remainingJids) {
+          const jid = safeStr(rawJid).trim();
           try {
             if (!jid || !jid.endsWith('@g.us')) throw new Error(`JID inválido: "${jid}"`);
             const payload = { ...media, caption: safeStr(captionOut) };
@@ -505,9 +522,22 @@ async function runOnce(app, opts = {}) {
 
             await sock.sendMessage(jid, payload, opts);
 
-            // Nunca enviar link separado
             anySentForThisRow = true;
             dlog('enviado', { jid, id: p.id });
+
+            // ===== marca o grupo imediatamente (idempotência) =====
+            if (usePerGroupMode) {
+              p.postedSet.add(jid);
+              const headerName = H_WA_GROUPS || 'WA_POST_GROUPS';
+              try {
+                await updateCellByHeader(
+                  sheets, spreadsheetId, tab, headers, p.rowIndex1, headerName,
+                  setToCsv(p.postedSet)
+                );
+              } catch (e) {
+                errors.push({ id: p.id, stage: 'updateSheet(WA_POST_GROUPS)', error: e?.message || String(e) });
+              }
+            }
           } catch (e) {
             errors.push({
               id: p.id, stage: 'sendMessage', jid,
@@ -518,13 +548,18 @@ async function runOnce(app, opts = {}) {
         }
       }
 
-      // 5.5) marcar planilha
+      // 5.5) marcar planilha (linha) após qualquer sucesso
       try {
         if (!dryRun && anySentForThisRow) {
           const postAt = new Date().toISOString();
           await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_POST || 'WA_POST', 'Postado');
           await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_AT   || 'WA_POST_AT', postAt);
-          settings.addPosted(p.id);
+
+          // Com modo por grupo ativo, NÃO bloquear a linha inteira via settings,
+          // para permitir completar grupos restantes em execuções futuras.
+          if (!usePerGroupMode) {
+            settings.addPosted(p.id);
+          }
           sent++;
         }
       } catch (e) {
