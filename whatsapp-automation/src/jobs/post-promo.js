@@ -20,8 +20,8 @@ if (typeof zonedTimeToUtcSafe !== 'function') {
 
 const settings = require('../services/settings');
 const { getRows, updateCellByHeader } = require('../services/sheets');
-const { fetchFirstCoupon } = require('../services/coupons'); // mantido por compat.
-const couponsSvc = require('../services/coupons');            // novo: para top2
+const { fetchFirstCoupon } = require('../services/coupons'); // compat
+const couponsSvc = require('../services/coupons');            // para top2
 const { beforeTexts, dayTexts } = require('../services/promo-texts');
 
 const TZ = process.env.TZ || 'America/Sao_Paulo';
@@ -86,7 +86,7 @@ async function getPreferredSock(app) {
   return waClient?.sock || null;
 }
 
-// === NOVO: mesma regra do post-winner para o texto de cupom ===
+// === Cupom (mesma regra do post-winner): top2; fallback 1º; fallback ENV ===
 async function getCouponTextCTA() {
   try {
     let list = [];
@@ -116,6 +116,19 @@ function isCanceledFlag(v) {
   return s === 'cancelado' || s === 'cancelada' || s === 'cancel';
 }
 
+// Detecta se a linha já tem resultado de sorteio (ganhador/resultado/status).
+function hasResultForRow(row, hdrs) {
+  const val = (h) => safeStr(h ? row[h] : '').trim().toLowerCase();
+
+  const winner = val(hdrs.H_WINNER);
+  const resultUrl = safeStr(hdrs.H_RESULT_URL ? row[hdrs.H_RESULT_URL] : '').trim();
+  const resultAt = safeStr(hdrs.H_RESULT_AT ? row[hdrs.H_RESULT_AT] : '').trim();
+  const status = val(hdrs.H_STATUS);
+  const ended = ['finalizado','encerrado','concluido','concluído','ok','feito','postado','resultado','divulgado'].includes(status);
+
+  return (!!winner || !!resultUrl || !!resultAt || ended);
+}
+
 async function runOnce(app, opts = {}) {
   const dryRun = !!opts.dryRun || String(app?.locals?.reqDry || '').trim() === '1';
   const st = settings.get();
@@ -137,10 +150,17 @@ async function runOnce(app, opts = {}) {
     'url_imagem_sorteio', 'imagem_sorteio', 'url_imagem_processada', 'url_imagem', 'imagem', 'image_url'
   ]);
 
+  // Campos de controle das promoções
   const H_P1   = findHeader(headers, ['wa_promo1','wa_promocao1','promo1','wa_promo_1']) || 'WA_PROMO1';
   const H_P1AT = findHeader(headers, ['wa_promo1_at','wa_promocao1_at','promo1_at'])     || 'WA_PROMO1_AT';
   const H_P2   = findHeader(headers, ['wa_promo2','wa_promocao2','promo2','wa_promo_2']) || 'WA_PROMO2';
   const H_P2AT = findHeader(headers, ['wa_promo2_at','wa_promocao2_at','promo2_at'])     || 'WA_PROMO2_AT';
+
+  // Sinais de resultado/encerramento do sorteio
+  const H_WINNER     = findHeader(headers, ['ganhador','ganhadora','vencedor','winner','nome_ganhador']);
+  const H_RESULT_URL = findHeader(headers, ['resultado_url','url_resultado','link_resultado','url_result','resultado']);
+  const H_RESULT_AT  = findHeader(headers, ['resultado_at','result_at','data_resultado','resultado_data']);
+  const H_STATUS     = findHeader(headers, ['status','situacao','situação','state']);
 
   if (!H_PROD || !H_DATA || !H_IMG) {
     throw new Error(
@@ -150,7 +170,8 @@ async function runOnce(app, opts = {}) {
   }
 
   const now = new Date();
-  const couponText = await getCouponTextCTA(); // << usa top2/DEFAULT como no winner
+  const todayLocalDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate()); // meia-noite local (data puro)
+  const couponText = await getCouponTextCTA();
 
   let sent = 0;
   const errors = [];
@@ -161,6 +182,8 @@ async function runOnce(app, opts = {}) {
     dlog('WhatsApp não conectado.');
     return { ok: false, reason: 'wa_disconnected' };
   }
+
+  const hdrs = { H_WINNER, H_RESULT_URL, H_RESULT_AT, H_STATUS };
 
   for (let i = 0; i < items.length; i++) {
     const row = items[i];
@@ -189,6 +212,16 @@ async function runOnce(app, opts = {}) {
       continue;
     }
 
+    // ✅ Somente sorteios futuros (data da planilha >= hoje) e sem resultado ainda.
+    if (spDate < todayLocalDateOnly) {
+      skipped.push({ row: rowIndex1, reason: 'past_draw' });
+      continue;
+    }
+    if (hasResultForRow(row, hdrs)) {
+      skipped.push({ row: rowIndex1, reason: 'has_result' });
+      continue;
+    }
+
     const dayLocal    = mkLocalDateAtHour(spDate, PROMO_POST_HOUR);
     const beforeLocal = new Date(dayLocal.getTime() - PROMO_BEFORE_DAYS * 24 * 60 * 60 * 1000);
 
@@ -204,7 +237,7 @@ async function runOnce(app, opts = {}) {
         try {
           const buf = await downloadToBuffer(imgUrl);
           payload = { image: buf, caption };
-        } catch (e) {
+        } catch {
           payload = { text: `${caption}\n\n${imgUrl}` };
         }
 
@@ -237,7 +270,7 @@ async function runOnce(app, opts = {}) {
         try {
           const buf = await downloadToBuffer(imgUrl);
           payload = { image: buf, caption };
-        } catch (e) {
+        } catch {
           payload = { text: `${caption}\n\n${imgUrl}` };
         }
 
