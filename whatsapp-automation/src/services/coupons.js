@@ -40,7 +40,7 @@ async function _fetchWithRetry() {
 
 /**
  * Extrai até `max` cupons a partir do HTML do Clubemac.
- * Prioriza padrões "PEGA*" e faz fallback para códigos em caixa alta 4..12 chars filtrando blacklist.
+ * Prioriza padrões "PEGA*" e faz fallback para códigos em caixa alta (4–5 letras) filtrando blacklist.
  */
 async function fetchCoupons(max = 2) {
   // cache
@@ -60,7 +60,8 @@ async function fetchCoupons(max = 2) {
       const c = String(code || '').toUpperCase().trim();
       if (!c) return;
       if (BLACKLIST.has(c)) return;
-      if (!/^[A-Z0-9]{4,12}$/.test(c)) return;
+      // Aceita SOMENTE 4–5 letras, evita capturar partes de palavras
+      if (!/^[A-Z]{4,5}$/.test(c)) return;
       if (!seen.has(c)) { seen.add(c); ordered.push(c); }
     };
 
@@ -71,7 +72,8 @@ async function fetchCoupons(max = 2) {
         $(el).attr('data-coupon-code') ||
         $(el).text();
       const s = String(v || '').trim().toUpperCase();
-      if (s && s.length >= 4 && s.length <= 12) pushOrdered(s);
+      // Só empurra se já for exatamente 4–5 letras
+      if (/^[A-Z]{4,5}$/.test(s)) pushOrdered(s);
     });
 
     // 2) Varredura por padrão "PEGA*"
@@ -80,8 +82,8 @@ async function fetchCoupons(max = 2) {
     for (const c of pegaMatches) pushOrdered(c);
 
     if (ordered.length < max) {
-      // 3) Fallback genérico
-      const generic = [...text.matchAll(/\b[A-Z0-9]{4,12}\b/g)].map(m => m[0]);
+      // 3) Fallback genérico: 4–5 letras com fronteira Unicode (sem lookbehind, compatível)
+      const generic = [...text.matchAll(/(?:^|\P{L})([A-Z]{4,5})(?=$|\P{L})/gu)].map(m => m[1]);
       for (const c of generic) pushOrdered(c);
     }
 
