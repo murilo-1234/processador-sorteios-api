@@ -46,14 +46,44 @@ const DEBUG_JOB = String(process.env.DEBUG_JOB || '').trim() === '1';
 // Janela de segurança para não varrer histórico
 const MAX_AGE_H = Number(process.env.POST_MAX_AGE_HOURS || 48);
 
-// === Flags ===
+// === Flags (legadas) ===
 const DISABLE_LINK_PREVIEW = String(process.env.DISABLE_LINK_PREVIEW || '1') === '1';
 const SEND_RESULT_URL_SEPARATE = false; // NUNCA enviar link em mensagem separada
 const BAILEYS_LINK_PREVIEW_OFF = String(process.env.BAILEYS_LINK_PREVIEW_OFF || '1') === '1';
 
-// ---------- utils ----------
+// ===== NOVO: janela/limites/pausas =====
+const ACTIVE_HOURS = String(process.env.POST_ACTIVE_HOURS || '').trim();        // "09:00-21:00"
+const DAILY_CAP = Number(process.env.POST_DAILY_CAP || 0);                      // 0 = sem limite
+const MIN_PAUSE = Number(process.env.POST_GROUP_MIN_PAUSE_MS || 12000);
+const MAX_PAUSE = Number(process.env.POST_GROUP_MAX_PAUSE_MS || 20000);
+const GROUP_COOLDOWN_MS = Number(process.env.POST_GROUP_COOLDOWN_MS || 90000);
+const BATCH_SIZE = Number(process.env.POST_BATCH_SIZE || 20);
+const BATCH_REST_MS = Number(process.env.POST_BATCH_REST_MS || 300000);
+const MAX_RETRIES = Number(process.env.POST_MAX_RETRIES || 2);
+const POST_DRY_RUN = ['1','true','yes'].includes(String(process.env.POST_DRY_RUN || '').toLowerCase());
+
+function parseWindowOk(range) {
+  if (!range) return true;
+  // formato "HH:MM-HH:MM" no horário local do servidor (TZ já setado)
+  try {
+    const [a, b] = range.split('-').map(s => s.trim());
+    if (!a || !b) return true;
+    const now = new Date();
+    const hhmm = (d) => d.getHours() * 60 + d.getMinutes();
+    const cur = hhmm(now);
+    const [sh, sm] = a.split(':').map(n => parseInt(n,10));
+    const [eh, em] = b.split(':').map(n => parseInt(n,10));
+    const start = (sh*60) + (sm||0);
+    const end = (eh*60) + (em||0);
+    if (end >= start) return cur >= start && cur <= end;
+    // janela cruzando 00:00
+    return (cur >= start) || (cur <= end);
+  } catch { return true; }
+}
+
 const dlog = (...a) => { if (DEBUG_JOB) console.log('[JOB]', ...a); };
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
+const randBetween = (min, max) => Math.max(0, Math.floor(min + Math.random() * (Math.max(min, max) - min + 1)));
 
 let _lastTplIndex = -1;
 function chooseTemplate() {
@@ -71,7 +101,6 @@ function safeStr(v) {
   try { return v == null ? '' : String(v); } catch { return ''; }
 }
 
-// Constrói o bloco do vencedor (3 linhas)
 function buildWinnerBlock(name, metaDateTime, metaChannel, withLabel = true) {
   const line1 = withLabel ? `Ganhador(a): ${name || 'Ganhador(a)'}` : `${name || 'Ganhador(a)'}`;
   const line2 = metaDateTime ? `${metaDateTime}` : '';
@@ -79,7 +108,6 @@ function buildWinnerBlock(name, metaDateTime, metaChannel, withLabel = true) {
   return [line1, line2, line3].filter(Boolean).join('\n');
 }
 
-// Substituição com tratamento:
 function mergeText(tpl, vars) {
   let s = safeStr(tpl);
 
@@ -88,7 +116,6 @@ function mergeText(tpl, vars) {
   const ch   = safeStr(vars.WINNER_CH);
 
   const blockFull    = buildWinnerBlock(name, dt, ch, true);
-  const blockNoLabel = buildWinnerBlock(name, dt, ch, false);
 
   if (s.includes('{{WINNER_BLOCK}}')) {
     s = s.replaceAll('{{WINNER_BLOCK}}', blockFull);
@@ -156,7 +183,6 @@ function pickMusicSafe() {
   return pickOneCSV(process.env.AUDIO_URLS) || '';
 }
 
-// Remove APENAS a URL do resultado, mantendo links fixos dos templates
 function stripSpecificUrls(text, urls = []) {
   let out = safeStr(text);
   for (const u of urls) {
@@ -168,14 +194,12 @@ function stripSpecificUrls(text, urls = []) {
   return out;
 }
 
-// Remove letra de avatar no começo do nome (ex.: "V Vanessa")
 function stripLeadingAvatarLetter(name = '') {
   const m = String(name).match(/^([A-ZÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ])\s+(.+)$/i);
   if (m && m[2] && m[2].length >= 2) return m[2].trim();
   return String(name).trim();
 }
 
-// extrai nome + data/hora + canal do campo winner
 function parseWinnerDetailed(winnerStr = '') {
   const raw = String(winnerStr || '').replace(/\s+/g, ' ').trim();
 
@@ -200,7 +224,7 @@ function parseWinnerDetailed(winnerStr = '') {
 function winnerLooksReady(info) {
   const raw = String(info?.winner || '');
   if (!raw) return false;
-  if (/ser[áa]\s+anunciado/i.test(raw)) return false; // "será anunciado"
+  if (/ser[áa]\s+anunciado/i.test(raw)) return false;
   const { name, metaDateTime } = parseWinnerDetailed(raw);
   if (!name || name.length < 3) return false;
   if (!metaDateTime) return false;
@@ -219,7 +243,6 @@ async function getPreferredSock(app) {
   const waClient = app?.locals?.whatsappClient || app?.whatsappClient;
   return waClient?.sock || null;
 }
-// -------------------------------------
 
 function ensureLinkInsideCaption(caption, resultUrl) {
   const cap = String(caption || '');
@@ -247,9 +270,22 @@ function setToCsv(set) {
  */
 async function runOnce(app, opts = {}) {
   const dryRun =
+    POST_DRY_RUN ||
     !!opts.dryRun ||
     String(app?.locals?.reqDry || '').trim() === '1';
   dlog('tick start', { dryRun });
+
+  // Janela de horário ativa
+  if (!parseWindowOk(ACTIVE_HOURS)) {
+    dlog('fora da janela ativa', ACTIVE_HOURS);
+    return { ok: true, processed: 0, sent: 0, note: 'fora_da_janela' };
+  }
+
+  // Limite diário
+  if (!settings.canSendMore(DAILY_CAP)) {
+    dlog('teto diário atingido', { DAILY_CAP });
+    return { ok: true, processed: 0, sent: 0, note: 'daily_cap_reached' };
+  }
 
   // 0) grupos-alvo
   const st = settings.get();
@@ -279,9 +315,9 @@ async function runOnce(app, opts = {}) {
   const H_PROD     = findHeader(headers, ['nome_do_produto', 'nome', 'produto', 'produto_nome']);
   const H_WA_POST  = findHeader(headers, ['wa_post']);
   const H_WA_AT    = findHeader(headers, ['wa_post_at', 'wa_postado_em']);
-  const H_WA_GROUPS= findHeader(headers, ['wa_post_groups','wa_groups','wa_grupos']); // << novo
+  const H_WA_GROUPS= findHeader(headers, ['wa_post_groups','wa_groups','wa_grupos']); // por grupo
 
-  // Opcionais (headline/bg/music por linha)
+  // Opcionais por linha
   const H_CUSTOM_HEADLINE = findHeader(headers, ['headline']);
   const H_BG_URL          = findHeader(headers, ['video_bg_url', 'bg_url']);
   const H_MUSIC_URL       = findHeader(headers, ['music_url', 'audio_url']);
@@ -334,7 +370,6 @@ async function runOnce(app, opts = {}) {
     const utcDate = toUtcFromSheet(spDate);
     const readyAt = new Date(utcDate.getTime() + DELAY_MIN * 60000);
 
-    // ✅ Janela de segurança: ignora linhas muito antigas
     const tooOld = (now - utcDate) > MAX_AGE_H * 60 * 60 * 1000;
     if (tooOld) {
       skipped.push({ row: rowIndex1, id, reason: 'older_than_window' });
@@ -351,7 +386,6 @@ async function runOnce(app, opts = {}) {
       return;
     }
 
-    // opcionais por linha
     const customHeadline = H_CUSTOM_HEADLINE ? coerceStr(row[H_CUSTOM_HEADLINE]) : '';
     const bgUrl          = H_BG_URL          ? coerceStr(row[H_BG_URL])          : '';
     const musicUrl       = H_MUSIC_URL       ? coerceStr(row[H_MUSIC_URL])       : '';
@@ -381,7 +415,7 @@ async function runOnce(app, opts = {}) {
 
   if (!pending.length) {
     dlog('sem linhas prontas');
-    return { ok: true, processed: 0, sent: 0, note: 'sem linhas prontas', skipped };
+    return { ok: true, processed: 0, sent: 0, note: 'sem_linhas', skipped };
   }
 
   // 4) Cupom (uma vez por execução)
@@ -404,8 +438,13 @@ async function runOnce(app, opts = {}) {
   // 5) Processa e posta
   let sent = 0;
   const errors = [];
+  let batchCounter = 0;
 
   for (const p of pending) {
+    // Verifica janela e teto antes de cada linha
+    if (!parseWindowOk(ACTIVE_HOURS)) { dlog('janela fechou'); break; }
+    if (!settings.canSendMore(DAILY_CAP)) { dlog('teto diário atingido'); break; }
+
     let anySentForThisRow = false;
 
     try {
@@ -518,7 +557,7 @@ async function runOnce(app, opts = {}) {
       captionFull = ensureLinkInsideCaption(captionFull, resultUrlStr);
       const captionOut = captionFull;
 
-      // 5.4) enviar (com idempotência por grupo)
+      // 5.4) enviar (com idempotência por grupo + cooldown/limites)
       const sock = await getPreferredSock(app);
       if (!sock) {
         errors.push({ id: p.id, stage: 'sendMessage', error: 'WhatsApp não conectado (admin/cliente)' });
@@ -527,17 +566,46 @@ async function runOnce(app, opts = {}) {
       } else {
         for (const rawJid of p.remainingJids) {
           const jid = safeStr(rawJid).trim();
+
+          // janela e daily cap a cada envio
+          if (!parseWindowOk(ACTIVE_HOURS)) { dlog('janela fechou (loop grupos)'); break; }
+          if (!settings.canSendMore(DAILY_CAP)) { dlog('teto diário atingido (loop grupos)'); break; }
+
           try {
             if (!jid || !jid.endsWith('@g.us')) throw new Error(`JID inválido: "${jid}"`);
+
+            // cooldown por grupo
+            const last = settings.getLastGroupSendAt(jid);
+            const nowMs = Date.now();
+            const elapsed = nowMs - (last || 0);
+            if (last && elapsed < GROUP_COOLDOWN_MS) {
+              dlog('cooldown grupo', { jid, skipMs: GROUP_COOLDOWN_MS - elapsed });
+              continue; // pula este grupo por enquanto
+            }
+
             const payload = { ...media, caption: safeStr(captionOut) };
             const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
 
-            await sock.sendMessage(jid, payload, opts);
+            // até MAX_RETRIES
+            let ok = false, lastErr = null;
+            for (let i = 0; i <= Math.max(0, MAX_RETRIES); i++) {
+              try {
+                await sock.sendMessage(jid, payload, opts);
+                ok = true;
+                break;
+              } catch (e) {
+                lastErr = e;
+                await delay(1000 + i * 1000);
+              }
+            }
+            if (!ok) throw lastErr || new Error('falha de envio');
 
             anySentForThisRow = true;
             dlog('enviado', { jid, id: p.id });
 
-            // ===== marca o grupo imediatamente (idempotência) =====
+            // marca o grupo imediatamente (idempotência + cooldown)
+            settings.setLastGroupSendAt(jid, Date.now());
+
             if (usePerGroupMode) {
               p.postedSet.add(jid);
               const headerName = H_WA_GROUPS || 'WA_POST_GROUPS';
@@ -549,6 +617,20 @@ async function runOnce(app, opts = {}) {
               } catch (e) {
                 errors.push({ id: p.id, stage: 'updateSheet(WA_POST_GROUPS)', error: e?.message || String(e) });
               }
+            }
+
+            // contadores e pausas
+            settings.incDaily(1);
+            sent++;
+            batchCounter++;
+
+            // pausa aleatória entre grupos
+            await delay(randBetween(MIN_PAUSE, MAX_PAUSE));
+
+            // descanso de lote
+            if (BATCH_SIZE > 0 && BATCH_REST_MS > 0 && (batchCounter % BATCH_SIZE === 0)) {
+              dlog('pausa lote', { batchCounter, restMs: BATCH_REST_MS });
+              await delay(BATCH_REST_MS);
             }
           } catch (e) {
             errors.push({
@@ -567,12 +649,9 @@ async function runOnce(app, opts = {}) {
           await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_POST || 'WA_POST', 'Postado');
           await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_AT   || 'WA_POST_AT', postAt);
 
-          // Com modo por grupo ativo, NÃO bloquear a linha inteira via settings,
-          // para permitir completar grupos restantes em execuções futuras.
           if (!usePerGroupMode) {
             settings.addPosted(p.id);
           }
-          sent++;
         }
       } catch (e) {
         errors.push({ id: p.id, stage: 'updateSheet', error: e?.message || String(e) });
@@ -580,6 +659,9 @@ async function runOnce(app, opts = {}) {
     } catch (e) {
       errors.push({ id: p.id, stage: 'unknown', error: e?.message || String(e) });
     }
+
+    // Reavalia teto antes de seguir para próxima linha
+    if (!settings.canSendMore(DAILY_CAP)) { dlog('teto diário atingido (fim linha)'); break; }
   }
 
   dlog('tick end', { processed: pending.length, sent, errorsCount: errors.length, skippedCount: skipped.length });
