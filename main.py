@@ -291,9 +291,12 @@ class ProcessadorSorteioV5:
 
     def extrair_codigo_produto(self, url):
         try:
-            match = re.search(r'NATBRA-(\d+)', url)
-            if match:
-                codigo = f"NATBRA-{match.group(1)}"
+            # aceita NATBRA ou AVNBRA, com ou sem hífen, case-insensitive
+            m = re.search(r'((?:NATBRA|AVNBRA)-?\d+)', url, re.IGNORECASE)
+            if m:
+                bruto = m.group(1).upper()
+                # normaliza para TER hífen: PREFIXO-123456
+                codigo = re.sub(r'^(NATBRA|AVNBRA)-?(\d+)$', r'\1-\2', bruto)
                 logger.info(f"📋 Código extraído: {codigo}")
                 return codigo
             else:
