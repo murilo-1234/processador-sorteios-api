@@ -13,7 +13,7 @@ function load() {
     const raw = fs.readFileSync(SETTINGS_FILE, 'utf8');
     const s = JSON.parse(raw);
 
-    // defaults
+    // defaults existentes
     if (!Array.isArray(s.groups)) s.groups = [];
     if (!('lastSyncAt' in s)) s.lastSyncAt = null;
     if (!Array.isArray(s.postedIds)) s.postedIds = [];
@@ -21,13 +21,15 @@ function load() {
     // NOVO: lista de grupos selecionados
     if (!Array.isArray(s.postGroupJids)) s.postGroupJids = [];
 
-    // Compat: se só existir o antigo, migra para a lista
+    // Compatibilidade legado
     if (s.resultGroupJid && !s.postGroupJids.length) {
       s.postGroupJids = [s.resultGroupJid];
     }
-
-    // Mantém resultGroupJid igual ao primeiro da lista para não quebrar legado
     s.resultGroupJid = s.postGroupJids.length ? s.postGroupJids[0] : (s.resultGroupJid ?? null);
+
+    // ===== NOVO: controle diário e cooldown por grupo =====
+    if (!s.postDaily) s.postDaily = { date: null, sent: 0 };
+    if (!s.lastGroupSendAt) s.lastGroupSendAt = {}; // { jid: ISO-string }
 
     return s;
   } catch {
@@ -37,7 +39,9 @@ function load() {
       lastSyncAt: null,
       postedIds: [],
       postGroupJids: [],
-      resultGroupJid: null
+      resultGroupJid: null,
+      postDaily: { date: null, sent: 0 },
+      lastGroupSendAt: {}
     };
   }
 }
@@ -51,13 +55,20 @@ function dedup(arr) {
   return Array.from(new Set((arr || []).filter(Boolean).map(String))).map(s => s.trim()).filter(Boolean);
 }
 
+function todayKey() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 module.exports = {
   get() { return load(); },
 
   set(upd) {
     const cur = load();
     const out = { ...cur, ...upd };
-    // Se alguém alterou a lista externamente, mantenha coerência com o legado
     if (Array.isArray(out.postGroupJids)) {
       out.postGroupJids = dedup(out.postGroupJids);
       out.resultGroupJid = out.postGroupJids[0] || null;
@@ -84,5 +95,45 @@ module.exports = {
 
   hasPosted(id) {
     return load().postedIds.includes(id);
+  },
+
+  // ===== NOVO: contadores e cooldown =====
+  getDaily() {
+    const s = load();
+    const key = todayKey();
+    if (s.postDaily?.date !== key) {
+      s.postDaily = { date: key, sent: 0 };
+      save(s);
+    }
+    return { ...s.postDaily };
+  },
+
+  incDaily(n = 1) {
+    const s = load();
+    const key = todayKey();
+    if (s.postDaily?.date !== key) s.postDaily = { date: key, sent: 0 };
+    s.postDaily.sent = (s.postDaily.sent || 0) + Number(n || 0);
+    save(s);
+    return { ...s.postDaily };
+  },
+
+  canSendMore(cap = 0) {
+    const c = this.getDaily();
+    if (!cap || cap <= 0) return true; // sem limite
+    return (c.sent || 0) < cap;
+  },
+
+  getLastGroupSendAt(jid) {
+    const s = load();
+    const v = s.lastGroupSendAt?.[jid];
+    return v ? new Date(v).getTime() : 0;
+  },
+
+  setLastGroupSendAt(jid, whenMs) {
+    if (!jid) return;
+    const s = load();
+    if (!s.lastGroupSendAt) s.lastGroupSendAt = {};
+    s.lastGroupSendAt[jid] = new Date(whenMs || Date.now()).toISOString();
+    save(s);
   }
 };
