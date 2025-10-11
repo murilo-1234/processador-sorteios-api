@@ -44,6 +44,12 @@ import tempfile
 
 from openai import OpenAI
 
+# --- Compat Pillow (mantém a chamada Image.Resampling.LANCZOS válida em versões antigas) ---
+if not hasattr(Image, "Resampling"):
+    class _Resampling:
+        LANCZOS = getattr(Image, "LANCZOS", getattr(Image, "ANTIALIAS", 1))
+    Image.Resampling = _Resampling()
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -153,7 +159,7 @@ def processar_com_chatgpt(message, user_name, user_id):
                         try:
                             client.beta.threads.runs.cancel(thread_id=thread_id, run_id=run.id)
                             logger.info("🚫 Run anterior cancelado")
-                        except:
+                        except Exception:
                             logger.warning("⚠️ Não foi possível cancelar run anterior")
                     break
             logger.info("✅ Thread livre para nova mensagem")
@@ -184,12 +190,36 @@ def processar_com_chatgpt(message, user_name, user_id):
             raise Exception("Timeout aguardando resposta do assistente")
 
         logger.info("📥 Obtendo resposta do assistente")
-        messages = client.beta.threads.messages.list(thread_id=thread_id, order="desc", limit=1)
+        try:
+            messages = client.beta.threads.messages.list(thread_id=thread_id, order="desc", limit=10)
+        except TypeError:
+            messages = client.beta.threads.messages.list(thread_id=thread_id, limit=10)
+
         if not messages.data:
             logger.error("❌ Nenhuma resposta encontrada")
             raise Exception("Nenhuma resposta encontrada")
 
-        resposta = messages.data[0].content[0].text.value
+        resposta = None
+        for msg in messages.data:
+            role = getattr(msg, "role", "")
+            if role == "assistant":
+                for part in getattr(msg, "content", []) or []:
+                    # SDKs variam: part.type == "text" e part.text.value
+                    text_obj = getattr(part, "text", None)
+                    if text_obj and getattr(text_obj, "value", None):
+                        resposta = text_obj.value
+                        break
+                if resposta:
+                    break
+
+        if not resposta:
+            # Fallback minimalista
+            first = messages.data[0]
+            if getattr(first, "content", None):
+                c0 = first.content[0]
+                tobj = getattr(c0, "text", None)
+                resposta = (tobj.value if tobj and getattr(tobj, "value", None) else "Sem conteúdo de texto disponível.")
+
         logger.info("✅ Resposta recebida do assistente")
         logger.info(f"✅ Resposta para {user_name}: {resposta[:50]}...")
         return resposta
@@ -218,7 +248,8 @@ def webhook_manychat():
         logger.info(f"🔄 Webhook recebido - Usuário: {user_name} ({user_id}) - Platform: {platform}")
         logger.info(f"📝 Mensagem: {message}")
 
-        valid_platforms = ['manychat', 'instagram', 'messenger']
+        # Aceita alias 'whatsapp' além das oficiais
+        valid_platforms = ['manychat', 'instagram', 'messenger', 'whatsapp']
         if platform not in valid_platforms:
             logger.warning(f"⚠️ Platform inválida: {platform}. Plataformas suportadas: {valid_platforms}")
             return jsonify({"error": f"Platform inválida. Suportadas: {valid_platforms}"}), 400
@@ -374,6 +405,7 @@ class ProcessadorSorteioV5:
 
             if not candidatas:
                 logger.error(f"❌ Nenhuma imagem com código {codigo_produto}")
+                logger.info(f"🔎 Página sem match de código. URL analisada: {url}")
                 return [], "Nenhuma imagem encontrada com o código do produto"
 
             logger.info(f"📋 Candidatas encontradas: {len(candidatas)}")
@@ -599,21 +631,59 @@ class GoogleSheetsManager:
             logger.error(f"❌ Erro ao conectar Google Sheets: {e}")
             self.planilha = None
             return False
+
+    # --- Helpers de planilha ---
+    def _get_ws(self):
+        try:
+            return self.planilha.worksheet('Sorteios')
+        except Exception:
+            return self.planilha.get_worksheet(0)
+
+    def _headers(self, ws):
+        try:
+            return [h or "" for h in ws.row_values(1)]
+        except Exception:
+            return []
     
-    # NOVO: lista linhas com URL do Produto e Status vazio/pendente
+    # NOVO: lista linhas com URL do Produto e Status vazio/pendente (robusto)
     def obter_produtos_pendentes(self):
         try:
             if not self.planilha and not self.conectar():
                 return []
-            worksheet = self.planilha.get_worksheet(0)  # aba "Sorteios"
+            worksheet = self._get_ws()
+            headers = self._headers(worksheet)
+            logger.info(f"📋 Cabeçalhos detectados: {headers}")
+
             dados = worksheet.get_all_records()
             pendentes = []
+            url_key_candidates = {'url do produto', 'url', 'link do produto', 'produto'}
+
             for i, linha in enumerate(dados, start=2):  # pula cabeçalho
-                url = (linha.get('URL do Produto') or '').strip()
-                status = (linha.get('Status') or '').strip().lower()
-                if url and (status == '' or status == 'pendente'):
+                # 1) tentativa direta pelos nomes mais comuns
+                url = ""
+                for k in list(linha.keys()):
+                    k_low = (k or "").strip().lower()
+                    if any(tok in k_low for tok in url_key_candidates):
+                        v = (linha.get(k) or "").strip()
+                        if v:
+                            url = v
+                            break
+                # 2) fallback: varrer a linha e pegar a primeira URL válida
+                if not url:
+                    for v in linha.values():
+                        if isinstance(v, str):
+                            m = re.search(r'https?://\S+', v)
+                            if m:
+                                url = m.group(0).strip()
+                                break
+
+                status = (linha.get('Status') or linha.get('status') or '').strip().lower()
+                if url and (status in ['', 'pendente', 'pending']):
                     pendentes.append({'linha': i, 'url': url, 'dados': linha})
+
             logger.info(f"📋 Produtos pendentes encontrados: {len(pendentes)}")
+            if not pendentes:
+                logger.info("⚠️ Nenhum pendente. Verifique nomes das colunas e valores de Status.")
             return pendentes
         except Exception as e:
             logger.error(f"❌ Erro ao ler pendentes: {e}")
@@ -631,7 +701,7 @@ class GoogleSheetsManager:
             col_imagem2 = None
             col_erro = None
             for i, header in enumerate(headers, 1):
-                h = header.lower().strip()
+                h = (header or '').lower().strip()
                 if 'status' in h:
                     col_status = i
                 elif ('imagem' in h or 'resultado' in h) and ('2' not in h):
@@ -640,6 +710,15 @@ class GoogleSheetsManager:
                     col_imagem2 = i
                 elif 'erro' in h or 'observ' in h:
                     col_erro = i
+
+            # Heurística extra para imagem 2 se não achou acima
+            if not col_imagem2:
+                for i, header in enumerate(headers, 1):
+                    s = (header or "").lower()
+                    if any(k in s for k in ['1080', 'vertical', 'story', 'imagem 2', 'img2', 'resultado 2']):
+                        if any(k in s for k in ['url', 'imagem', 'resultado', 'link']):
+                            col_imagem2 = i
+                            break
 
             if url_imagem:
                 if col_status:
