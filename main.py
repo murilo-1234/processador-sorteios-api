@@ -492,7 +492,6 @@ class ProcessadorSorteioV5:
     def processar_imagem_story_sem_texto(self, img_produto):
         try:
             logger.info("🎨 Processando imagem 1080x1920 sem texto...")
-            # margem proporcional (~10% como na 600x600: 540/600)
             max_w, max_h = int(1080 * 0.9), int(1920 * 0.9)  # 972x1728
             img_produto.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
             canvas = Image.new('RGB', (1080, 1920), (255, 255, 255))
@@ -550,7 +549,7 @@ class ProcessadorSorteioV5:
             if not img_produto:
                 return None, f"❌ Seleção falhou: {msg_selecao}"
 
-            # 600x600 com textos (mantém o fluxo original)
+            # 600x600 com textos
             buffer_processado, msg_processamento = self.processar_imagem_sorteio(img_produto.copy())
             if not buffer_processado:
                 return None, f"❌ Processamento falhou: {msg_processamento}"
@@ -558,11 +557,11 @@ class ProcessadorSorteioV5:
             if not url_final:
                 return None, f"❌ Upload falhou: {msg_upload}"
 
-            # 1080x1920 sem texto (extra, não bloqueia o sucesso da imagem 1)
+            # 1080x1920 sem texto (extra)
             try:
-                buffer_story, msg_story = self.processar_imagem_story_sem_texto(img_produto.copy())
+                buffer_story, _ = self.processar_imagem_story_sem_texto(img_produto.copy())
                 if buffer_story:
-                    url_story, msg_upload2 = self.upload_catbox(buffer_story)
+                    url_story, _ = self.upload_catbox(buffer_story)
                     if url_story:
                         self.last_url_imagem2 = url_story
                         logger.info(f"🎯 URL imagem 1080x1920: {url_story}")
@@ -600,6 +599,25 @@ class GoogleSheetsManager:
             logger.error(f"❌ Erro ao conectar Google Sheets: {e}")
             self.planilha = None
             return False
+    
+    # NOVO: lista linhas com URL do Produto e Status vazio/pendente
+    def obter_produtos_pendentes(self):
+        try:
+            if not self.planilha and not self.conectar():
+                return []
+            worksheet = self.planilha.get_worksheet(0)  # aba "Sorteios"
+            dados = worksheet.get_all_records()
+            produtos_pendentes = []
+            for i, linha in enumerate(dados, start=2):  # +1 cabeçalho, +1 base-1
+                url_produto = (linha.get('URL do Produto') or '').strip()
+                status = (linha.get('Status') or '').strip().lower()
+                if url_produto and status in ('', 'pendente'):
+                    produtos_pendentes.append({'linha': i, 'url': url_produto, 'dados': linha})
+            logger.info(f"📋 Produtos pendentes encontrados: {len(produtos_pendentes)}")
+            return produtos_pendentes
+        except Exception as e:
+            logger.error(f"❌ Erro ao obter produtos pendentes: {e}")
+            return []
     
     # aceita url_imagem2 opcional para gravar "URL do Produto 2" se existir
     def atualizar_resultado(self, linha, url_imagem=None, erro=None, url_imagem2=None):
