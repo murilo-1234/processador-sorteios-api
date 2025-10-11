@@ -287,6 +287,7 @@ class ProcessadorSorteioV5:
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
+        self.last_url_imagem2 = None  # link da arte 1080x1920 sem texto
         logger.info("🎯 PROCESSADOR V5.0 INICIADO - Extração por código + validação fundo branco")
 
     def extrair_codigo_produto(self, url):
@@ -487,6 +488,30 @@ class ProcessadorSorteioV5:
             logger.error(f"❌ Erro ao processar imagem: {e}")
             return None, f"Erro no processamento: {str(e)}"
 
+    # NOVO: arte 1080x1920 sem texto
+    def processar_imagem_story_sem_texto(self, img_produto):
+        try:
+            logger.info("🎨 Processando imagem 1080x1920 sem texto...")
+            # margem proporcional (~10% como na 600x600: 540/600)
+            max_w, max_h = int(1080 * 0.9), int(1920 * 0.9)  # 972x1728
+            img_produto.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
+            canvas = Image.new('RGB', (1080, 1920), (255, 255, 255))
+            produto_width, produto_height = img_produto.size
+            pos_x = (1080 - produto_width) // 2
+            pos_y = (1920 - produto_height) // 2
+            if img_produto.mode == 'RGBA':
+                canvas.paste(img_produto, (pos_x, pos_y), img_produto)
+            else:
+                canvas.paste(img_produto, (pos_x, pos_y))
+            buffer = io.BytesIO()
+            canvas.save(buffer, format='PNG', quality=95)
+            buffer.seek(0)
+            logger.info("✅ Imagem 1080x1920 gerada com sucesso")
+            return buffer, "Imagem 1080x1920 gerada"
+        except Exception as e:
+            logger.error(f"❌ Erro na imagem 1080x1920: {e}")
+            return None, f"Erro na imagem 1080x1920: {str(e)}"
+
     def upload_catbox(self, buffer_imagem):
         try:
             logger.info("📤 Upload para Catbox.moe...")
@@ -514,6 +539,7 @@ class ProcessadorSorteioV5:
     def processar_produto_completo(self, url_produto):
         try:
             logger.info(f"🚀 PROCESSAMENTO V5.0: {url_produto}")
+            self.last_url_imagem2 = None  # reset
             codigo = self.extrair_codigo_produto(url_produto)
             if not codigo:
                 return None, "❌ Código NATBRA não encontrado na URL"
@@ -523,12 +549,26 @@ class ProcessadorSorteioV5:
             img_produto, msg_selecao = self.avaliar_e_selecionar_imagem(candidatas)
             if not img_produto:
                 return None, f"❌ Seleção falhou: {msg_selecao}"
-            buffer_processado, msg_processamento = self.processar_imagem_sorteio(img_produto)
+
+            # 600x600 com textos (mantém o fluxo original)
+            buffer_processado, msg_processamento = self.processar_imagem_sorteio(img_produto.copy())
             if not buffer_processado:
                 return None, f"❌ Processamento falhou: {msg_processamento}"
             url_final, msg_upload = self.upload_catbox(buffer_processado)
             if not url_final:
                 return None, f"❌ Upload falhou: {msg_upload}"
+
+            # 1080x1920 sem texto (extra, não bloqueia o sucesso da imagem 1)
+            try:
+                buffer_story, msg_story = self.processar_imagem_story_sem_texto(img_produto.copy())
+                if buffer_story:
+                    url_story, msg_upload2 = self.upload_catbox(buffer_story)
+                    if url_story:
+                        self.last_url_imagem2 = url_story
+                        logger.info(f"🎯 URL imagem 1080x1920: {url_story}")
+            except Exception as e:
+                logger.error(f"⚠️ Falha na geração/envio da imagem 1080x1920: {e}")
+
             logger.info(f"🎉 SUCESSO: {url_final}")
             return url_final, "✅ Produto processado com sucesso"
         except Exception as e:
@@ -561,25 +601,8 @@ class GoogleSheetsManager:
             self.planilha = None
             return False
     
-    def obter_produtos_pendentes(self):
-        try:
-            if not self.planilha and not self.conectar():
-                return []
-            worksheet = self.planilha.get_worksheet(0)
-            dados = worksheet.get_all_records()
-            produtos_pendentes = []
-            for i, linha in enumerate(dados, start=2):
-                url_produto = linha.get('URL do Produto', '').strip()
-                status = linha.get('Status', '').strip()
-                if url_produto and status.lower() in ['pendente', '']:
-                    produtos_pendentes.append({'linha': i, 'url': url_produto, 'dados': linha})
-            logger.info(f"📋 Produtos pendentes encontrados: {len(produtos_pendentes)}")
-            return produtos_pendentes
-        except Exception as e:
-            logger.error(f"❌ Erro ao obter produtos pendentes: {e}")
-            return []
-    
-    def atualizar_resultado(self, linha, url_imagem=None, erro=None):
+    # aceita url_imagem2 opcional para gravar "URL do Produto 2" se existir
+    def atualizar_resultado(self, linha, url_imagem=None, erro=None, url_imagem2=None):
         try:
             if not self.planilha and not self.conectar():
                 return False
@@ -587,13 +610,16 @@ class GoogleSheetsManager:
             headers = worksheet.row_values(1)
             col_status = None
             col_imagem = None
+            col_imagem2 = None
             col_erro = None
             for i, header in enumerate(headers, 1):
-                h = header.lower()
+                h = header.lower().strip()
                 if 'status' in h:
                     col_status = i
-                elif 'imagem' in h or 'resultado' in h:   # <-- corrigido (or)
+                elif ('imagem' in h or 'resultado' in h) and ('2' not in h):
                     col_imagem = i
+                elif ('produto' in h or 'imagem' in h or 'url' in h) and '2' in h:
+                    col_imagem2 = i
                 elif 'erro' in h or 'observ' in h:
                     col_erro = i
 
@@ -602,6 +628,8 @@ class GoogleSheetsManager:
                     worksheet.update_cell(linha, col_status, "✅ Processado")
                 if col_imagem:
                     worksheet.update_cell(linha, col_imagem, url_imagem)
+                if url_imagem2 and col_imagem2:
+                    worksheet.update_cell(linha, col_imagem2, url_imagem2)
                 if col_erro:
                     worksheet.update_cell(linha, col_erro, "")
                 logger.info(f"✅ Linha {linha} atualizada com sucesso")
@@ -609,7 +637,7 @@ class GoogleSheetsManager:
                 if col_status:
                     worksheet.update_cell(linha, col_status, "❌ Erro")
                 if col_erro:
-                    worksheet.update_cell(linha, col_erro, erro or "Erro desconhecido")  # <-- corrigido (or)
+                    worksheet.update_cell(linha, col_erro, erro or "Erro desconhecido")
                 logger.info(f"❌ Linha {linha} atualizada com erro")
             return True
         except Exception as e:
@@ -640,7 +668,11 @@ def executar_processamento_automatico():
                 logger.info(f"🔄 Processando linha {produto['linha']}: {produto['url']}")
                 url_imagem, mensagem = processador.processar_produto_completo(produto['url'])
                 if url_imagem:
-                    sheets_manager.atualizar_resultado(produto['linha'], url_imagem=url_imagem)
+                    sheets_manager.atualizar_resultado(
+                        produto['linha'],
+                        url_imagem=url_imagem,
+                        url_imagem2=getattr(processador, 'last_url_imagem2', None)
+                    )
                     sucessos += 1
                     logger.info(f"✅ Linha {produto['linha']} processada com sucesso")
                 else:
@@ -811,8 +843,13 @@ def processar_produto():
         processador = ProcessadorSorteioV5()
         url_imagem, mensagem = processador.processar_produto_completo(url_produto)
         if url_imagem:
-            return jsonify({"status": "success", "url_imagem": url_imagem, "message": mensagem,
-                            "timestamp": datetime.now().isoformat()})
+            return jsonify({
+                "status": "success",
+                "url_imagem": url_imagem,
+                "url_imagem2": getattr(processador, 'last_url_imagem2', None),
+                "message": mensagem,
+                "timestamp": datetime.now().isoformat()
+            })
         else:
             return jsonify({"status": "error", "message": mensagem,
                             "timestamp": datetime.now().isoformat()}), 400
