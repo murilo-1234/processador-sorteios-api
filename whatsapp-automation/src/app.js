@@ -183,7 +183,7 @@ class App {
       }
     } catch (_) {}
     if (this.isFallbackEnabled) {
-      const wa = this.getClient({ create = false })
+      const wa = this.getClient({ create: false })
       if (wa?.isConnected && wa?.sock) return wa.sock
     }
     return null
