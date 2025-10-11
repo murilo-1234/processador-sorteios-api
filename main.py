@@ -602,22 +602,22 @@ class GoogleSheetsManager:
     
     # NOVO: lista linhas com URL do Produto e Status vazio/pendente
     def obter_produtos_pendentes(self):
-        try:
-            if not self.planilha and not self.conectar():
-                return []
-            worksheet = self.planilha.get_worksheet(0)  # aba "Sorteios"
-            dados = worksheet.get_all_records()
-            produtos_pendentes = []
-            for i, linha in enumerate(dados, start=2):  # +1 cabeçalho, +1 base-1
-                url_produto = (linha.get('URL do Produto') or '').strip()
-                status = (linha.get('Status') or '').strip().lower()
-                if url_produto and status in ('', 'pendente'):
-                    produtos_pendentes.append({'linha': i, 'url': url_produto, 'dados': linha})
-            logger.info(f"📋 Produtos pendentes encontrados: {len(produtos_pendentes)}")
-            return produtos_pendentes
-        except Exception as e:
-            logger.error(f"❌ Erro ao obter produtos pendentes: {e}")
+    try:
+        if not self.planilha and not self.conectar():
             return []
+        worksheet = self.planilha.get_worksheet(0)  # aba "Sorteios"
+        dados = worksheet.get_all_records()
+        pendentes = []
+        for i, linha in enumerate(dados, start=2):  # pula cabeçalho
+            url = (linha.get('URL do Produto') or '').strip()
+            status = (linha.get('Status') or '').strip().lower()
+            if url and (status == '' or status == 'pendente'):
+                pendentes.append({'linha': i, 'url': url, 'dados': linha})
+        logger.info(f"📋 Produtos pendentes encontrados: {len(pendentes)}")
+        return pendentes
+    except Exception as e:
+        logger.error(f"❌ Erro ao ler pendentes: {e}")
+        return []
     
     # aceita url_imagem2 opcional para gravar "URL do Produto 2" se existir
     def atualizar_resultado(self, linha, url_imagem=None, erro=None, url_imagem2=None):
