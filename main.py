@@ -293,9 +293,11 @@ class ProcessadorSorteioV5:
 
     def extrair_codigo_produto(self, url):
         try:
+            # aceita NATBRA ou AVNBRA, com ou sem hífen, case-insensitive
             m = re.search(r'((?:NATBRA|AVNBRA)-?\d+)', url, re.IGNORECASE)
             if m:
                 bruto = m.group(1).upper()
+                # normaliza para TER hífen: PREFIXO-123456
                 codigo = re.sub(r'^(NATBRA|AVNBRA)-?(\d+)$', r'\1-\2', bruto)
                 logger.info(f"📋 Código extraído: {codigo}")
                 return codigo
@@ -361,6 +363,7 @@ class ProcessadorSorteioV5:
             candidatas = []
             vistos = set()
 
+            # filtros para descartar logos e banners
             def lixo(u: str) -> bool:
                 if not u:
                     return True
@@ -380,6 +383,7 @@ class ProcessadorSorteioV5:
             def add_cand(src, motivo, prio):
                 if not src:
                     return
+                # normaliza
                 if src.startswith('//'):
                     src = 'https:' + src
                 if src.startswith('/'):
@@ -394,10 +398,12 @@ class ProcessadorSorteioV5:
 
             def pick_srcset(val):
                 try:
+                    # pega a opção com maior densidade (última)
                     return val.split(',')[-1].strip().split(' ')[0]
                 except Exception:
                     return None
 
+            # 0) Regex direta no HTML para o CDN oficial (Natura/Avon)
             cdn_patterns = [
                 r'https://production\.na01\.natura\.com/[^\s"\'\)]+/(?:Produtos|produtos)/(?:NATBRA|AVNBRA)-\d+_[1-4]\.(?:jpg|png)',
                 r'https://production\.na01\.natura\.com/[^\s"\'\)]+/(?:NATBRA|AVNBRA)-\d+_[1-4]\.(?:jpg|png)'
@@ -406,6 +412,7 @@ class ProcessadorSorteioV5:
                 for m in re.findall(pat, html_text):
                     add_cand(m, 'regex CDN', 0)
 
+            # 1) Atributos de <img> contendo o código
             imgs = soup.find_all('img')
             for img in imgs:
                 for attr in ('src', 'data-src', 'data-lazy-src', 'data-original', 'data-image'):
@@ -417,11 +424,13 @@ class ProcessadorSorteioV5:
                     if v and (codigo_produto in v or codigo_produto.replace('-', '') in v):
                         add_cand(pick_srcset(v), f'srcset contém código {codigo_produto}', 1)
 
+            # 1b) <source> com srcset contendo o código
             for source in soup.find_all('source'):
                 v = source.get('srcset') or source.get('data-srcset')
                 if v and (codigo_produto in v or codigo_produto.replace('-', '') in v):
                     add_cand(pick_srcset(v), f'<source> contém código {codigo_produto}', 1)
 
+            # 1c) background-image inline
             for el in soup.select('[style*="background-image"]'):
                 style = el.get('style', '')
                 for m in re.findall(r'url\(([^)]+)\)', style):
@@ -429,9 +438,11 @@ class ProcessadorSorteioV5:
                     if codigo_produto in m or codigo_produto.replace('-', '') in m:
                         add_cand(m, 'background-image contém código', 1)
 
+            # 1d) <link rel=preload as=image>
             for lk in soup.select('link[rel="preload"][as="image"]'):
                 add_cand(lk.get('href'), 'link preload image', 2)
 
+            # 2) JSON-LD (image)
             if not candidatas:
                 for s in soup.select('script[type="application/ld+json"]'):
                     try:
@@ -444,6 +455,7 @@ class ProcessadorSorteioV5:
                     except Exception:
                         continue
 
+            # 3) Galerias comuns
             if not candidatas:
                 for sel in ('.product-gallery img', '.swiper-slide img', '.glide__slide img', '[data-testid="thumbnail"] img'):
                     for g in soup.select(sel):
@@ -451,6 +463,7 @@ class ProcessadorSorteioV5:
                 for source in soup.select('picture source'):
                     add_cand(pick_srcset(source.get('srcset') or ''), 'picture source', 3)
 
+            # 4) Meta og/twitter como último recurso
             if not candidatas:
                 m = soup.find('meta', {'property': 'og:image'}) or soup.find('meta', {'name': 'twitter:image'})
                 add_cand(m.get('content') if m else None, 'meta image', 4)
@@ -459,6 +472,7 @@ class ProcessadorSorteioV5:
                 logger.error("❌ Nenhuma imagem candidata encontrada na página")
                 return [], "Nenhuma imagem candidata encontrada na página"
 
+            # ordenar por prioridade: CDN regex > contém código > json-ld/preload > galeria > meta
             candidatas.sort(key=lambda x: x.get('prio', 99))
             logger.info(f"📋 Candidatas encontradas: {len(candidatas)}")
             return candidatas, "Candidatas extraídas com sucesso"
@@ -572,36 +586,47 @@ class ProcessadorSorteioV5:
             logger.error(f"❌ Erro ao processar imagem: {e}")
             return None, f"Erro no processamento: {str(e)}"
 
-    # NOVO: arte vertical 1080x1920 sem textos, ajustada para caixa 800x1500
+    # NOVO: arte vertical 1080x1920 sem textos, com upscaling permitido e box 800x1500 (+margem)
     def processar_imagem_vertical_1080x1920(self, img_produto):
         try:
             logger.info("🎨 Processando imagem vertical 1080x1920 (sem texto)...")
             canvas_w, canvas_h = 1080, 1920
-            limit_w, limit_h = 800, 1500  # caixa alvo
-
-            if img_produto.mode not in ('RGB', 'RGBA'):
-                img_produto = img_produto.convert('RGBA')
-
-            w, h = img_produto.size
-            scale = min(limit_w / float(w), limit_h / float(h))
-            new_w = max(1, int(round(w * scale)))
-            new_h = max(1, int(round(h * scale)))
-
-            img_scaled = img_produto.resize((new_w, new_h), Image.Resampling.LANCZOS)
-
             canvas = Image.new('RGB', (canvas_w, canvas_h), (255, 255, 255))
+
+            # margem de 5% do lado menor
+            margem = int(min(canvas_w, canvas_h) * 0.05)  # 54
+            avail_w = canvas_w - 2 * margem
+            avail_h = canvas_h - 2 * margem
+
+            # limites solicitados
+            max_w_limite = min(800, avail_w)             # largura fixa 800
+            max_h_atual = min(1500, avail_h)             # limite "atual" de altura
+            novo_max_h = min(2 * max_h_atual, avail_h, 1500)  # dobra mas prende ao canvas e a 1500
+
+            # cálculo de escala com upscaling permitido
+            w0, h0 = img_produto.size
+            if w0 <= 0 or h0 <= 0:
+                raise ValueError("Dimensões inválidas da imagem do produto")
+
+            escala = min(max_w_limite / w0, novo_max_h / h0)
+            new_w = max(1, int(round(w0 * escala)))
+            new_h = max(1, int(round(h0 * escala)))
+
+            img_redim = img_produto.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+            # centralização
             pos_x = (canvas_w - new_w) // 2
             pos_y = (canvas_h - new_h) // 2
 
-            if img_scaled.mode == 'RGBA':
-                canvas.paste(img_scaled, (pos_x, pos_y), img_scaled)
+            if img_redim.mode == 'RGBA':
+                canvas.paste(img_redim, (pos_x, pos_y), img_redim)
             else:
-                canvas.paste(img_scaled, (pos_x, pos_y))
+                canvas.paste(img_redim, (pos_x, pos_y))
 
             buffer = io.BytesIO()
             canvas.save(buffer, format='PNG', quality=95)
             buffer.seek(0)
-            logger.info("✅ Imagem 1080x1920 pronta")
+            logger.info(f"✅ Imagem 1080x1920 pronta | alvo 800x{novo_max_h}, final {new_w}x{new_h}")
             return buffer, "Imagem 1080x1920 gerada"
         except Exception as e:
             logger.error(f"❌ Erro no processamento 1080x1920: {e}")
@@ -644,9 +669,11 @@ class ProcessadorSorteioV5:
             if not img_produto:
                 return None, None, f"❌ Seleção falhou: {msg_selecao}"
 
+            # usar cópias para não interferir entre formatos
             img_base1 = img_produto.copy()
             img_base2 = img_produto.copy()
 
+            # imagem 1: 600x600 com textos
             buffer_600, msg_processamento_600 = self.processar_imagem_sorteio(img_base1)
             if not buffer_600:
                 return None, None, f"❌ Processamento falhou (600x600): {msg_processamento_600}"
@@ -654,8 +681,10 @@ class ProcessadorSorteioV5:
             if not url_600:
                 return None, None, f"❌ Upload falhou (600x600): {msg_upload_600}"
 
+            # imagem 2: 1080x1920 sem textos
             buffer_1080, msg_processamento_1080 = self.processar_imagem_vertical_1080x1920(img_base2)
             if not buffer_1080:
+                # retrocompatível: mantém a 600x600 mesmo se a vertical falhar
                 logger.error(f"⚠️ Falha ao gerar 1080x1920: {msg_processamento_1080}")
                 return url_600, None, "✅ 600x600 ok; 1080x1920 falhou"
             url_1080, msg_upload_1080 = self.upload_catbox(buffer_1080, nome_arquivo='sorteio_1080x1920.png')
@@ -705,7 +734,7 @@ class GoogleSheetsManager:
             for i, linha in enumerate(dados, start=2):
                 url_produto = linha.get('URL do Produto', '').strip()
                 status = linha.get('Status', '').strip()
-                if url_produto and status.lower() in ['pendente', '']:
+                if url_produto e status.lower() in ['pendente', '']:
                     produtos_pendentes.append({'linha': i, 'url': url_produto, 'dados': linha})
             logger.info(f"📋 Produtos pendentes encontrados: {len(produtos_pendentes)}")
             return produtos_pendentes
@@ -731,7 +760,7 @@ class GoogleSheetsManager:
                     col_imagem = i
                 elif 'erro' in h or 'observ' in h:
                     col_erro = i
-                if ('url do produto 2' in h) or ('produto 2' in h):
+                if ('produto 2' in h) or ('url do produto 2' in h):
                     col_imagem2 = i
 
             if url_imagem:
