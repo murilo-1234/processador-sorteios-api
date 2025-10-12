@@ -34,14 +34,13 @@ from datetime import datetime
 import json
 import requests
 from bs4 import BeautifulSoup
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageChops
 import io
 import re
 from urllib.parse import urljoin
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import tempfile
-import numpy as np
 
 from openai import OpenAI
 
@@ -578,103 +577,84 @@ class ProcessadorSorteioV5:
 
     # Vertical 1080x1920: recorte do fundo branco + escala até caber em 800×min(2*1500, 1920-2*margem)
     def processar_imagem_vertical_1080x1920(self, img_produto):
-        try:
-            logger.info("🎨 Processando imagem vertical 1080x1920 (sem texto)...")
-            canvas_w, canvas_h = 1080, 1920
-            canvas = Image.new('RGB', (canvas_w, canvas_h), (255, 255, 255))
+    try:
+        logger.info("🎨 Processando imagem vertical 1080x1920 (sem texto)...")
+        canvas_w, canvas_h = 1080, 1920
+        canvas = Image.new('RGB', (canvas_w, canvas_h), (255, 255, 255))
 
-            # Box útil e margens
-            box_w = 800
-            base_max_h = 1500
-            margem_px = int(0.05 * min(canvas_w, canvas_h))  # 5% do lado menor
-            max_h_canvas = canvas_h - 2 * margem_px
-            box_h = min(2 * base_max_h, max_h_canvas)  # dobra e prende ao canvas
+        # Box útil e margens
+        box_w = 800
+        base_max_h = 1500
+        margem_px = int(0.05 * min(canvas_w, canvas_h))  # 5%
+        box_h = min(2 * base_max_h, canvas_h - 2 * margem_px)
 
-            # Garantir RGB
-            if img_produto.mode not in ('RGB', 'RGBA'):
-                img_produto = img_produto.convert('RGB')
+        # Garantir RGB
+        if img_produto.mode == 'RGBA':
+            base_rgb = Image.new('RGB', img_produto.size, (255, 255, 255))
+            base_rgb.paste(img_produto, mask=img_produto.split()[-1])
+            rgb = base_rgb
+        else:
+            rgb = img_produto.convert('RGB') if img_produto.mode != 'RGB' else img_produto
 
-            w0, h0 = img_produto.size
-            if w0 <= 0 or h0 <= 0:
-                raise ValueError("Dimensões inválidas da imagem do produto")
+        w0, h0 = rgb.size
+        if w0 <= 0 or h0 <= 0:
+            raise ValueError("Dimensões inválidas da imagem do produto")
 
-            # -------- 1) Máscara de não-branco e recorte --------
-            if img_produto.mode == 'RGBA':
-                base_rgb = Image.new('RGB', (w0, h0), (255, 255, 255))
-                base_rgb.paste(img_produto, mask=img_produto.split()[-1])
-                rgb = base_rgb
-            else:
-                rgb = img_produto
+        # -------- 1) Máscara de não-branco e recorte (PIL only) --------
+        white_bg = Image.new('RGB', (w0, h0), (255, 255, 255))
+        diff = ImageChops.difference(rgb, white_bg)        # onde é diferente de branco
+        gray = diff.convert('L')                            # intensidade da diferença
+        # threshold simples
+        mask = gray.point(lambda p: 255 if p > self.WHITE_T else 0)
+        # dilatação leve para fechar buracos
+        mask = mask.filter(ImageFilter.MaxFilter(3))
+        bbox = mask.getbbox()
 
-            arr = np.asarray(rgb, dtype=np.uint8)
-            # distância para branco
-            dist = np.maximum.reduce([255 - arr[..., 0], 255 - arr[..., 1], 255 - arr[..., 2]])
-            mask = (dist > self.WHITE_T).astype(np.uint8) * 255
+        crop_img = rgb
+        used_crop = False
+        if bbox:
+            left, top, right, bottom = bbox
+            pad = int(0.02 * min(w0, h0))  # 2% de folga
+            left = max(0, left - pad)
+            top = max(0, top - pad)
+            right = min(w0, right + pad)
+            bottom = min(h0, bottom + pad)
+            if right - left > 10 and bottom - top > 10:
+                crop_img = rgb.crop((left, top, right, bottom))
+                used_crop = True
 
-            # dilatação leve para fechar falhas finas
-            mask_img = Image.fromarray(mask, mode='L').filter(ImageFilter.MaxFilter(3))
-            mask = np.array(mask_img) > 0
+        cw, ch = crop_img.size
 
-            rows = np.where(mask.any(axis=1))[0]
-            cols = np.where(mask.any(axis=0))[0]
+        # -------- 2) Escalas: antiga vs nova --------
+        old_scale = min(box_w / float(w0), box_h / float(h0))
+        new_scale_base = min(box_w / float(cw), box_h / float(ch))
+        target_scale = min(max(2.0 * old_scale, 0.0), new_scale_base) if new_scale_base < 2.0 * old_scale else new_scale_base
 
-            crop_img = rgb
-            used_crop = False
-            if rows.size > 0 and cols.size > 0:
-                top, bottom = int(rows[0]), int(rows[-1])
-                left, right = int(cols[0]), int(cols[-1])
+        new_w = max(1, int(round(cw * target_scale)))
+        new_h = max(1, int(round(ch * target_scale)))
 
-                # padding 2%
-                pad = int(0.02 * min(w0, h0))
-                top = max(0, top - pad)
-                left = max(0, left - pad)
-                bottom = min(h0, bottom + pad)
-                right = min(w0, right + pad)
+        logger.info(
+            f"📐 1080x1920 | box {box_w}x{box_h} | origem {w0}x{h0} | "
+            f"{'crop ' if used_crop else ''}{cw}x{ch} | "
+            f"esc_old {old_scale:.3f} esc_new {new_scale_base:.3f} -> final {new_w}x{new_h}"
+        )
 
-                # checar se o recorte é significativo
-                if (right - left) > 10 and (bottom - top) > 10:
-                    crop_img = rgb.crop((left, top, right, bottom))
-                    used_crop = True
+        img_redim = crop_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-            cw, ch = crop_img.size
+        # -------- 3) Centralização --------
+        pos_x = (canvas_w - new_w) // 2
+        pos_y = (canvas_h - new_h) // 2
+        canvas.paste(img_redim, (pos_x, pos_y))
 
-            # -------- 2) Escalas: antiga vs nova --------
-            old_scale = min(box_w / float(w0), box_h / float(h0))
-            new_scale_base = min(box_w / float(cw), box_h / float(ch))
+        buffer = io.BytesIO()
+        canvas.save(buffer, format='PNG', quality=95)
+        buffer.seek(0)
+        logger.info("✅ Imagem 1080x1920 pronta")
+        return buffer, "Imagem 1080x1920 gerada"
+    except Exception as e:
+        logger.error(f"❌ Erro no processamento 1080x1920: {e}")
+        return None, f"Erro no processamento 1080x1920: {str(e)}"
 
-            # alvo: no mínimo o permitido pelo recorte; se couber, tente >= 2x da escala antiga
-            target_scale = new_scale_base
-            if new_scale_base >= 2.0 * old_scale:
-                target_scale = new_scale_base
-            else:
-                # tentar forçar 2x, respeitando limites do box
-                target_scale = min(2.0 * old_scale, new_scale_base)
-
-            new_w = max(1, int(round(cw * target_scale)))
-            new_h = max(1, int(round(ch * target_scale)))
-
-            logger.info(
-                f"📐 1080x1920 | box {box_w}x{box_h} | origem {w0}x{h0} | "
-                f"{'crop ' if used_crop else ''}{cw}x{ch} | "
-                f"esc_old {old_scale:.3f} esc_new {new_scale_base:.3f} "
-                f"-> final {new_w}x{new_h}"
-            )
-
-            img_redim = crop_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-
-            # -------- 3) Centralização --------
-            pos_x = (canvas_w - new_w) // 2
-            pos_y = (canvas_h - new_h) // 2
-            canvas.paste(img_redim, (pos_x, pos_y))
-
-            buffer = io.BytesIO()
-            canvas.save(buffer, format='PNG', quality=95)
-            buffer.seek(0)
-            logger.info("✅ Imagem 1080x1920 pronta")
-            return buffer, "Imagem 1080x1920 gerada"
-        except Exception as e:
-            logger.error(f"❌ Erro no processamento 1080x1920: {e}")
-            return None, f"Erro no processamento 1080x1920: {str(e)}"
 
     def upload_catbox(self, buffer_imagem, nome_arquivo='sorteio.png'):
         try:
