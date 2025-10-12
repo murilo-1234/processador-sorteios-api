@@ -423,7 +423,7 @@ class ProcessadorSorteioV5:
                         add_cand(v, f'Contém código {codigo_produto}', 1)
                 for attr in ('srcset', 'data-srcset'):
                     v = img.get(attr)
-                    if v and (codigo_produto in v ou codigo_produto.replace('-', '') in v):
+                    if v and (codigo_produto in v or codigo_produto.replace('-', '') in v):
                         add_cand(pick_srcset(v), f'srcset contém código {codigo_produto}', 1)
 
             # 1b) <source> com srcset contendo o código
