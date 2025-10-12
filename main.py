@@ -282,9 +282,6 @@ def stats_manychat():
 # PROCESSADOR DE IMAGENS V5.0
 # ================================
 class ProcessadorSorteioV5:
-    # limiar de não-branco para recorte; ajuste fino se necessário
-    WHITE_T = 18
-
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
@@ -292,13 +289,17 @@ class ProcessadorSorteioV5:
             'Accept-Language': 'pt-BR,pt;q=0.9',
             'Referer': 'https://www.minhaloja.natura.com/'
         })
+        # Threshold para detectar não-branco no recorte automático (0..255)
+        self.DIFF_T = 16
         logger.info("🎯 PROCESSADOR V5.0 INICIADO - Extração por código + validação fundo branco")
 
     def extrair_codigo_produto(self, url):
         try:
+            # aceita NATBRA ou AVNBRA, com ou sem hífen, case-insensitive
             m = re.search(r'((?:NATBRA|AVNBRA)-?\d+)', url, re.IGNORECASE)
             if m:
                 bruto = m.group(1).upper()
+                # normaliza para TER hífen: PREFIXO-123456
                 codigo = re.sub(r'^(NATBRA|AVNBRA)-?(\d+)$', r'\1-\2', bruto)
                 logger.info(f"📋 Código extraído: {codigo}")
                 return codigo
@@ -364,6 +365,7 @@ class ProcessadorSorteioV5:
             candidatas = []
             vistos = set()
 
+            # filtros para descartar logos e banners
             def lixo(u: str) -> bool:
                 if not u:
                     return True
@@ -383,6 +385,7 @@ class ProcessadorSorteioV5:
             def add_cand(src, motivo, prio):
                 if not src:
                     return
+                # normaliza
                 if src.startswith('//'):
                     src = 'https:' + src
                 if src.startswith('/'):
@@ -397,10 +400,12 @@ class ProcessadorSorteioV5:
 
             def pick_srcset(val):
                 try:
+                    # pega a opção com maior densidade (última)
                     return val.split(',')[-1].strip().split(' ')[0]
                 except Exception:
                     return None
 
+            # 0) Regex direta no HTML para o CDN oficial (Natura/Avon)
             cdn_patterns = [
                 r'https://production\.na01\.natura\.com/[^\s"\'\)]+/(?:Produtos|produtos)/(?:NATBRA|AVNBRA)-\d+_[1-4]\.(?:jpg|png)',
                 r'https://production\.na01\.natura\.com/[^\s"\'\)]+/(?:NATBRA|AVNBRA)-\d+_[1-4]\.(?:jpg|png)'
@@ -409,6 +414,7 @@ class ProcessadorSorteioV5:
                 for m in re.findall(pat, html_text):
                     add_cand(m, 'regex CDN', 0)
 
+            # 1) Atributos de <img> contendo o código
             imgs = soup.find_all('img')
             for img in imgs:
                 for attr in ('src', 'data-src', 'data-lazy-src', 'data-original', 'data-image'):
@@ -420,11 +426,13 @@ class ProcessadorSorteioV5:
                     if v and (codigo_produto in v or codigo_produto.replace('-', '') in v):
                         add_cand(pick_srcset(v), f'srcset contém código {codigo_produto}', 1)
 
+            # 1b) <source> com srcset contendo o código
             for source in soup.find_all('source'):
                 v = source.get('srcset') or source.get('data-srcset')
                 if v and (codigo_produto in v or codigo_produto.replace('-', '') in v):
                     add_cand(pick_srcset(v), f'<source> contém código {codigo_produto}', 1)
 
+            # 1c) background-image inline
             for el in soup.select('[style*="background-image"]'):
                 style = el.get('style', '')
                 for m in re.findall(r'url\(([^)]+)\)', style):
@@ -432,9 +440,11 @@ class ProcessadorSorteioV5:
                     if codigo_produto in m or codigo_produto.replace('-', '') in m:
                         add_cand(m, 'background-image contém código', 1)
 
+            # 1d) <link rel=preload as=image>
             for lk in soup.select('link[rel="preload"][as="image"]'):
                 add_cand(lk.get('href'), 'link preload image', 2)
 
+            # 2) JSON-LD (image)
             if not candidatas:
                 for s in soup.select('script[type="application/ld+json"]'):
                     try:
@@ -447,6 +457,7 @@ class ProcessadorSorteioV5:
                     except Exception:
                         continue
 
+            # 3) Galerias comuns
             if not candidatas:
                 for sel in ('.product-gallery img', '.swiper-slide img', '.glide__slide img', '[data-testid="thumbnail"] img'):
                     for g in soup.select(sel):
@@ -454,6 +465,7 @@ class ProcessadorSorteioV5:
                 for source in soup.select('picture source'):
                     add_cand(pick_srcset(source.get('srcset') or ''), 'picture source', 3)
 
+            # 4) Meta og/twitter como último recurso
             if not candidatas:
                 m = soup.find('meta', {'property': 'og:image'}) or soup.find('meta', {'name': 'twitter:image'})
                 add_cand(m.get('content') if m else None, 'meta image', 4)
@@ -462,6 +474,7 @@ class ProcessadorSorteioV5:
                 logger.error("❌ Nenhuma imagem candidata encontrada na página")
                 return [], "Nenhuma imagem candidata encontrada na página"
 
+            # ordenar por prioridade: CDN regex > contém código > json-ld/preload > galeria > meta
             candidatas.sort(key=lambda x: x.get('prio', 99))
             logger.info(f"📋 Candidatas encontradas: {len(candidatas)}")
             return candidatas, "Candidatas extraídas com sucesso"
@@ -575,86 +588,88 @@ class ProcessadorSorteioV5:
             logger.error(f"❌ Erro ao processar imagem: {e}")
             return None, f"Erro no processamento: {str(e)}"
 
-    # Vertical 1080x1920: recorte do fundo branco + escala até caber em 800×min(2*1500, 1920-2*margem)
+    # Vertical 1080x1920: recorta bordas brancas, permite upscaling, mantém largura ≤800 e altura ≤min(2*1500, canvas_h-2*margem).
     def processar_imagem_vertical_1080x1920(self, img_produto):
-    try:
-        logger.info("🎨 Processando imagem vertical 1080x1920 (sem texto)...")
-        canvas_w, canvas_h = 1080, 1920
-        canvas = Image.new('RGB', (canvas_w, canvas_h), (255, 255, 255))
+        try:
+            logger.info("🎨 Processando imagem vertical 1080x1920 (sem texto)...")
+            canvas_w, canvas_h = 1080, 1920
+            canvas = Image.new('RGB', (canvas_w, canvas_h), (255, 255, 255))
 
-        # Box útil e margens
-        box_w = 800
-        base_max_h = 1500
-        margem_px = int(0.05 * min(canvas_w, canvas_h))  # 5%
-        box_h = min(2 * base_max_h, canvas_h - 2 * margem_px)
+            # Box útil e margens
+            box_w = 800
+            base_max_h = 1500
+            margem_px = int(0.05 * min(canvas_w, canvas_h))  # 5% do lado menor
+            box_h = min(2 * base_max_h, canvas_h - 2 * margem_px)
 
-        # Garantir RGB
-        if img_produto.mode == 'RGBA':
-            base_rgb = Image.new('RGB', img_produto.size, (255, 255, 255))
-            base_rgb.paste(img_produto, mask=img_produto.split()[-1])
-            rgb = base_rgb
-        else:
-            rgb = img_produto.convert('RGB') if img_produto.mode != 'RGB' else img_produto
+            # Garantir RGB e tratar alfa se houver
+            if img_produto.mode == 'RGBA':
+                base_rgb = Image.new('RGB', img_produto.size, (255, 255, 255))
+                base_rgb.paste(img_produto, mask=img_produto.split()[-1])
+                rgb = base_rgb
+            else:
+                rgb = img_produto.convert('RGB') if img_produto.mode != 'RGB' else img_produto
 
-        w0, h0 = rgb.size
-        if w0 <= 0 or h0 <= 0:
-            raise ValueError("Dimensões inválidas da imagem do produto")
+            w0, h0 = rgb.size
+            if w0 <= 0 or h0 <= 0:
+                raise ValueError("Dimensões inválidas da imagem do produto")
 
-        # -------- 1) Máscara de não-branco e recorte (PIL only) --------
-        white_bg = Image.new('RGB', (w0, h0), (255, 255, 255))
-        diff = ImageChops.difference(rgb, white_bg)        # onde é diferente de branco
-        gray = diff.convert('L')                            # intensidade da diferença
-        # threshold simples
-        mask = gray.point(lambda p: 255 if p > self.WHITE_T else 0)
-        # dilatação leve para fechar buracos
-        mask = mask.filter(ImageFilter.MaxFilter(3))
-        bbox = mask.getbbox()
+            # 1) Máscara de não-branco e recorte com PIL (sem numpy)
+            white_bg = Image.new('RGB', (w0, h0), (255, 255, 255))
+            diff = ImageChops.difference(rgb, white_bg)
+            gray = diff.convert('L')
+            mask = gray.point(lambda p: 255 if p > self.DIFF_T else 0)
+            # pequena dilatação para englobar áreas internas
+            mask = mask.filter(ImageFilter.MaxFilter(3))
+            bbox = mask.getbbox()
 
-        crop_img = rgb
-        used_crop = False
-        if bbox:
-            left, top, right, bottom = bbox
-            pad = int(0.02 * min(w0, h0))  # 2% de folga
-            left = max(0, left - pad)
-            top = max(0, top - pad)
-            right = min(w0, right + pad)
-            bottom = min(h0, bottom + pad)
-            if right - left > 10 and bottom - top > 10:
-                crop_img = rgb.crop((left, top, right, bottom))
-                used_crop = True
+            crop_img = rgb
+            used_crop = False
+            if bbox:
+                left, top, right, bottom = bbox
+                pad = int(0.02 * min(w0, h0))  # 2% de folga
+                left = max(0, left - pad)
+                top = max(0, top - pad)
+                right = min(w0, right + pad)
+                bottom = min(h0, bottom + pad)
+                if right - left > 10 and bottom - top > 10:
+                    crop_img = rgb.crop((left, top, right, bottom))
+                    used_crop = True
 
-        cw, ch = crop_img.size
+            cw, ch = crop_img.size
 
-        # -------- 2) Escalas: antiga vs nova --------
-        old_scale = min(box_w / float(w0), box_h / float(h0))
-        new_scale_base = min(box_w / float(cw), box_h / float(ch))
-        target_scale = min(max(2.0 * old_scale, 0.0), new_scale_base) if new_scale_base < 2.0 * old_scale else new_scale_base
+            # 2) Escalas: antiga vs nova. Garante crescimento ≥2x quando houver margem.
+            old_scale = min(box_w / float(w0), box_h / float(h0))
+            new_scale_base = min(box_w / float(cw), box_h / float(ch))
+            target_scale = new_scale_base
+            if new_scale_base >= 2.0 * old_scale:
+                target_scale = 2.0 * old_scale  # pelo menos 2x do que viria sem crop
+            # respeita limites do box
+            target_scale = min(target_scale, new_scale_base)
 
-        new_w = max(1, int(round(cw * target_scale)))
-        new_h = max(1, int(round(ch * target_scale)))
+            new_w = max(1, int(round(cw * target_scale)))
+            new_h = max(1, int(round(ch * target_scale)))
 
-        logger.info(
-            f"📐 1080x1920 | box {box_w}x{box_h} | origem {w0}x{h0} | "
-            f"{'crop ' if used_crop else ''}{cw}x{ch} | "
-            f"esc_old {old_scale:.3f} esc_new {new_scale_base:.3f} -> final {new_w}x{new_h}"
-        )
+            logger.info(
+                f"📐 1080x1920 | box {box_w}x{box_h} | origem {w0}x{h0} | "
+                f"{'crop ' if used_crop else ''}{cw}x{ch} | "
+                f"esc_old {old_scale:.3f} esc_new {new_scale_base:.3f} -> final {new_w}x{new_h}"
+            )
 
-        img_redim = crop_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            img_redim = crop_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-        # -------- 3) Centralização --------
-        pos_x = (canvas_w - new_w) // 2
-        pos_y = (canvas_h - new_h) // 2
-        canvas.paste(img_redim, (pos_x, pos_y))
+            # 3) Centralização
+            pos_x = (canvas_w - new_w) // 2
+            pos_y = (canvas_h - new_h) // 2
+            canvas.paste(img_redim, (pos_x, pos_y))
 
-        buffer = io.BytesIO()
-        canvas.save(buffer, format='PNG', quality=95)
-        buffer.seek(0)
-        logger.info("✅ Imagem 1080x1920 pronta")
-        return buffer, "Imagem 1080x1920 gerada"
-    except Exception as e:
-        logger.error(f"❌ Erro no processamento 1080x1920: {e}")
-        return None, f"Erro no processamento 1080x1920: {str(e)}"
-
+            buffer = io.BytesIO()
+            canvas.save(buffer, format='PNG', quality=95)
+            buffer.seek(0)
+            logger.info("✅ Imagem 1080x1920 pronta")
+            return buffer, "Imagem 1080x1920 gerada"
+        except Exception as e:
+            logger.error(f"❌ Erro no processamento 1080x1920: {e}")
+            return None, f"Erro no processamento 1080x1920: {str(e)}"
 
     def upload_catbox(self, buffer_imagem, nome_arquivo='sorteio.png'):
         try:
@@ -693,9 +708,11 @@ class ProcessadorSorteioV5:
             if not img_produto:
                 return None, None, f"❌ Seleção falhou: {msg_selecao}"
 
+            # usar cópias para não interferir entre formatos
             img_base1 = img_produto.copy()
             img_base2 = img_produto.copy()
 
+            # imagem 1: 600x600 com textos
             buffer_600, msg_processamento_600 = self.processar_imagem_sorteio(img_base1)
             if not buffer_600:
                 return None, None, f"❌ Processamento falhou (600x600): {msg_processamento_600}"
@@ -703,8 +720,10 @@ class ProcessadorSorteioV5:
             if not url_600:
                 return None, None, f"❌ Upload falhou (600x600): {msg_upload_600}"
 
+            # imagem 2: 1080x1920 sem textos
             buffer_1080, msg_processamento_1080 = self.processar_imagem_vertical_1080x1920(img_base2)
             if not buffer_1080:
+                # mantém retrocompatibilidade: ainda retorna a 600x600 se a vertical falhar
                 logger.error(f"⚠️ Falha ao gerar 1080x1920: {msg_processamento_1080}")
                 return url_600, None, "✅ 600x600 ok; 1080x1920 falhou"
             url_1080, msg_upload_1080 = self.upload_catbox(buffer_1080, nome_arquivo='sorteio_1080x1920.png')
@@ -780,6 +799,7 @@ class GoogleSheetsManager:
                     col_imagem = i
                 elif 'erro' in h or 'observ' in h:
                     col_erro = i
+                # procura por "url do produto 2" ou "produto 2"
                 if ('produto 2' in h) or ('url do produto 2' in h):
                     col_imagem2 = i
 
