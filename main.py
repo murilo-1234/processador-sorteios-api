@@ -295,11 +295,9 @@ class ProcessadorSorteioV5:
 
     def extrair_codigo_produto(self, url):
         try:
-            # aceita NATBRA ou AVNBRA, com ou sem hífen, case-insensitive
             m = re.search(r'((?:NATBRA|AVNBRA)-?\d+)', url, re.IGNORECASE)
             if m:
                 bruto = m.group(1).upper()
-                # normaliza para TER hífen: PREFIXO-123456
                 codigo = re.sub(r'^(NATBRA|AVNBRA)-?(\d+)$', r'\1-\2', bruto)
                 logger.info(f"📋 Código extraído: {codigo}")
                 return codigo
@@ -365,7 +363,6 @@ class ProcessadorSorteioV5:
             candidatas = []
             vistos = set()
 
-            # filtros para descartar logos e banners
             def lixo(u: str) -> bool:
                 if not u:
                     return True
@@ -385,7 +382,6 @@ class ProcessadorSorteioV5:
             def add_cand(src, motivo, prio):
                 if not src:
                     return
-                # normaliza
                 if src.startswith('//'):
                     src = 'https:' + src
                 if src.startswith('/'):
@@ -400,12 +396,10 @@ class ProcessadorSorteioV5:
 
             def pick_srcset(val):
                 try:
-                    # pega a opção com maior densidade (última)
                     return val.split(',')[-1].strip().split(' ')[0]
                 except Exception:
                     return None
 
-            # 0) Regex direta no HTML para o CDN oficial (Natura/Avon)
             cdn_patterns = [
                 r'https://production\.na01\.natura\.com/[^\s"\'\)]+/(?:Produtos|produtos)/(?:NATBRA|AVNBRA)-\d+_[1-4]\.(?:jpg|png)',
                 r'https://production\.na01\.natura\.com/[^\s"\'\)]+/(?:NATBRA|AVNBRA)-\d+_[1-4]\.(?:jpg|png)'
@@ -414,7 +408,6 @@ class ProcessadorSorteioV5:
                 for m in re.findall(pat, html_text):
                     add_cand(m, 'regex CDN', 0)
 
-            # 1) Atributos de <img> contendo o código
             imgs = soup.find_all('img')
             for img in imgs:
                 for attr in ('src', 'data-src', 'data-lazy-src', 'data-original', 'data-image'):
@@ -426,13 +419,11 @@ class ProcessadorSorteioV5:
                     if v and (codigo_produto in v or codigo_produto.replace('-', '') in v):
                         add_cand(pick_srcset(v), f'srcset contém código {codigo_produto}', 1)
 
-            # 1b) <source> com srcset contendo o código
             for source in soup.find_all('source'):
                 v = source.get('srcset') or source.get('data-srcset')
                 if v and (codigo_produto in v or codigo_produto.replace('-', '') in v):
                     add_cand(pick_srcset(v), f'<source> contém código {codigo_produto}', 1)
 
-            # 1c) background-image inline
             for el in soup.select('[style*="background-image"]'):
                 style = el.get('style', '')
                 for m in re.findall(r'url\(([^)]+)\)', style):
@@ -440,11 +431,9 @@ class ProcessadorSorteioV5:
                     if codigo_produto in m or codigo_produto.replace('-', '') in m:
                         add_cand(m, 'background-image contém código', 1)
 
-            # 1d) <link rel=preload as=image>
             for lk in soup.select('link[rel="preload"][as="image"]'):
                 add_cand(lk.get('href'), 'link preload image', 2)
 
-            # 2) JSON-LD (image)
             if not candidatas:
                 for s in soup.select('script[type="application/ld+json"]'):
                     try:
@@ -457,7 +446,6 @@ class ProcessadorSorteioV5:
                     except Exception:
                         continue
 
-            # 3) Galerias comuns
             if not candidatas:
                 for sel in ('.product-gallery img', '.swiper-slide img', '.glide__slide img', '[data-testid="thumbnail"] img'):
                     for g in soup.select(sel):
@@ -465,7 +453,6 @@ class ProcessadorSorteioV5:
                 for source in soup.select('picture source'):
                     add_cand(pick_srcset(source.get('srcset') or ''), 'picture source', 3)
 
-            # 4) Meta og/twitter como último recurso
             if not candidatas:
                 m = soup.find('meta', {'property': 'og:image'}) or soup.find('meta', {'name': 'twitter:image'})
                 add_cand(m.get('content') if m else None, 'meta image', 4)
@@ -474,7 +461,6 @@ class ProcessadorSorteioV5:
                 logger.error("❌ Nenhuma imagem candidata encontrada na página")
                 return [], "Nenhuma imagem candidata encontrada na página"
 
-            # ordenar por prioridade: CDN regex > contém código > json-ld/preload > galeria > meta
             candidatas.sort(key=lambda x: x.get('prio', 99))
             logger.info(f"📋 Candidatas encontradas: {len(candidatas)}")
             return candidatas, "Candidatas extraídas com sucesso"
@@ -610,13 +596,11 @@ class ProcessadorSorteioV5:
             canvas_w, canvas_h = 1080, 1920
             canvas = Image.new('RGB', (canvas_w, canvas_h), (255, 255, 255))
 
-            # Box útil e margens
             box_w = 800
             base_max_h = 1500
-            margem_px = int(0.05 * min(canvas_w, canvas_h))  # 5% do lado menor
+            margem_px = int(0.05 * min(canvas_w, canvas_h))
             box_h = min(2 * base_max_h, canvas_h - 2 * margem_px)
 
-            # Garantir RGB e tratar alfa se houver
             if img_produto.mode == 'RGBA':
                 base_rgb = Image.new('RGB', img_produto.size, (255, 255, 255))
                 base_rgb.paste(img_produto, mask=img_produto.split()[-1])
@@ -628,7 +612,6 @@ class ProcessadorSorteioV5:
             if w0 <= 0 or h0 <= 0:
                 raise ValueError("Dimensões inválidas da imagem do produto")
 
-            # 1) Máscara de não-branco e recorte com PIL (sem numpy)
             white_bg = Image.new('RGB', (w0, h0), (255, 255, 255))
             diff = ImageChops.difference(rgb, white_bg)
             gray = diff.convert('L')
@@ -640,7 +623,7 @@ class ProcessadorSorteioV5:
             used_crop = False
             if bbox:
                 left, top, right, bottom = bbox
-                pad = int(0.02 * min(w0, h0))  # 2% de folga
+                pad = int(0.02 * min(w0, h0))
                 left = max(0, left - pad)
                 top = max(0, top - pad)
                 right = min(w0, right + pad)
@@ -651,7 +634,6 @@ class ProcessadorSorteioV5:
 
             cw, ch = crop_img.size
 
-            # 2) Escalas: antiga vs nova. Garante crescimento ≥2x quando houver margem.
             old_scale = min(box_w / float(w0), box_h / float(h0))
             new_scale_base = min(box_w / float(cw), box_h / float(ch))
             target_scale = new_scale_base
@@ -670,7 +652,6 @@ class ProcessadorSorteioV5:
 
             img_redim = crop_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-            # 3) Centralização
             pos_x = (canvas_w - new_w) // 2
             pos_y = (canvas_h - new_h) // 2
             canvas.paste(img_redim, (pos_x, pos_y))
@@ -684,20 +665,18 @@ class ProcessadorSorteioV5:
             logger.error(f"❌ Erro no processamento 1080x1920: {e}")
             return None, f"Erro no processamento 1080x1920: {str(e)}"
 
-    # Vertical 1080x1920 mascarada: igual à anterior, com sobreposição vermelha opaca e texto.
+    # Vertical 1080x1920 mascarada: sobreposição vermelha opaca com texto.
     def processar_imagem_vertical_1080x1920_mascarada(self, img_produto):
         try:
-            logger.info("🎨 Processando imagem vertical 1080x1920 MAScarada...")
+            logger.info("🎨 Processando imagem vertical 1080x1920 mascarada...")
             canvas_w, canvas_h = 1080, 1920
             base_canvas = Image.new('RGB', (canvas_w, canvas_h), (255, 255, 255))
 
-            # Parâmetros do box útil
             box_w = 800
             base_max_h = 1500
             margem_px = int(0.05 * min(canvas_w, canvas_h))
             box_h = min(2 * base_max_h, canvas_h - 2 * margem_px)
 
-            # Normaliza para RGB
             if img_produto.mode == 'RGBA':
                 tmp = Image.new('RGB', img_produto.size, (255, 255, 255))
                 tmp.paste(img_produto, mask=img_produto.split()[-1])
@@ -734,24 +713,19 @@ class ProcessadorSorteioV5:
             pos_y = (canvas_h - new_h) // 2
             base_canvas.paste(img_redim, (pos_x, pos_y))
 
-            # Sobreposição
             overlay = Image.new('RGBA', (canvas_w, canvas_h), (0, 0, 0, 0))
             draw = ImageDraw.Draw(overlay)
 
-            # Dimensões do card
             card_w = min(720, int(new_w * 0.7))
             s = card_w / 720.0
             pad = int(24 * s)
 
-            # Fontes
             f1, f2, f3 = self._load_fonts(int(90 * s), int(48 * s), int(90 * s))
-
             texto1 = "ADIVINHE"
             texto2 = "e ganhe esse"
             texto3 = "PRODUTO"
 
-            # Medidas
-            def tbox(t, f): 
+            def tbox(t, f):
                 return draw.textbbox((0, 0), t, font=f)
             b1 = tbox(texto1, f1); b2 = tbox(texto2, f2); b3 = tbox(texto3, f3)
             line_h1 = b1[3] - b1[1]
@@ -761,36 +735,28 @@ class ProcessadorSorteioV5:
 
             card_h = pad + line_h1 + spacing + line_h2 + spacing + line_h3 + pad
 
-            # Posição do card: centro do produto, levemente abaixo do meio
             cx = pos_x + new_w // 2
             cy = pos_y + int(new_h * 0.55)
             x0 = max(0, cx - card_w // 2)
             y0 = max(0, cy - card_h // 2)
             x1 = min(canvas_w, x0 + card_w)
             y1 = min(canvas_h, y0 + card_h)
-
-            # Garantir dimensões mínimas
             x0 = int(x0); y0 = int(y0); x1 = int(x1); y1 = int(y1)
 
-            # Desenha card com cantos arredondados
             radius = int(28 * s)
             vermelho = (200, 0, 0, 230)  # ~90% opacidade
             sombra = (0, 0, 0, 90)
-            # sombra leve
             draw.rounded_rectangle((x0+3, y0+4, x1+3, y1+4), radius=radius, fill=sombra)
             draw.rounded_rectangle((x0, y0, x1, y1), radius=radius, fill=vermelho)
 
-            # Texto centralizado
-            tx = x0 + card_w // 2
+            tx = x0 + (x1 - x0) // 2
             cursor_y = y0 + pad
-
             branco90 = (255, 255, 255, 230)
 
             def draw_center(t, f, y):
                 bbox = draw.textbbox((0, 0), t, font=f)
                 tw = bbox[2] - bbox[0]
                 x = tx - tw // 2
-                # leve contorno
                 for dx, dy in ((1,0),(0,1),(-1,0),(0,-1)):
                     draw.text((x+dx, y+dy), t, font=f, fill=(0,0,0,60))
                 draw.text((x, y), t, font=f, fill=branco90)
@@ -802,7 +768,6 @@ class ProcessadorSorteioV5:
             cursor_y += spacing
             _ = draw_center(texto3, f3, cursor_y)
 
-            # Composição final
             out = base_canvas.convert('RGBA')
             out = Image.alpha_composite(out, overlay).convert('RGB')
 
@@ -814,6 +779,101 @@ class ProcessadorSorteioV5:
         except Exception as e:
             logger.error(f"❌ Erro no processamento 1080x1920 mascarada: {e}")
             return None, f"Erro no processamento 1080x1920 mascarada: {str(e)}"
+
+    # Vertical 1080x1920 com círculo e "?"
+    def processar_imagem_vertical_1080x1920_teaser_q(self, img_produto):
+        try:
+            logger.info("🎨 Processando imagem vertical 1080x1920 com '?'...")
+            canvas_w, canvas_h = 1080, 1920
+            base_canvas = Image.new('RGB', (canvas_w, canvas_h), (255, 255, 255))
+
+            box_w = 800
+            base_max_h = 1500
+            margem_px = int(0.05 * min(canvas_w, canvas_h))
+            box_h = min(2 * base_max_h, canvas_h - 2 * margem_px)
+
+            if img_produto.mode == 'RGBA':
+                tmp = Image.new('RGB', img_produto.size, (255, 255, 255))
+                tmp.paste(img_produto, mask=img_produto.split()[-1])
+                rgb = tmp
+            else:
+                rgb = img_produto.convert('RGB') if img_produto.mode != 'RGB' else img_produto
+
+            w0, h0 = rgb.size
+            white_bg = Image.new('RGB', (w0, h0), (255, 255, 255))
+            diff = ImageChops.difference(rgb, white_bg)
+            gray = diff.convert('L')
+            mask = gray.point(lambda p: 255 if p > self.DIFF_T else 0)
+            mask = mask.filter(ImageFilter.MaxFilter(3))
+            bbox = mask.getbbox()
+
+            crop_img = rgb
+            if bbox:
+                left, top, right, bottom = bbox
+                pad = int(0.02 * min(w0, h0))
+                left = max(0, left - pad)
+                top = max(0, top - pad)
+                right = min(w0, right + pad)
+                bottom = min(h0, bottom + pad)
+                if right - left > 10 and bottom - top > 10:
+                    crop_img = rgb.crop((left, top, right, bottom))
+
+            cw, ch = crop_img.size
+            scale = min(box_w / float(cw), box_h / float(ch))
+            new_w = max(1, int(round(cw * scale)))
+            new_h = max(1, int(round(ch * scale)))
+            img_redim = crop_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+            pos_x = (canvas_w - new_w) // 2
+            pos_y = (canvas_h - new_h) // 2
+            base_canvas.paste(img_redim, (pos_x, pos_y))
+
+            overlay = Image.new('RGBA', (canvas_w, canvas_h), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(overlay)
+
+            # Círculo central
+            diam = int(canvas_w * 0.58)  # 58% da largura
+            cx = canvas_w // 2
+            cy = pos_y + new_h // 2
+            x0 = cx - diam // 2
+            y0 = cy - diam // 2
+            x1 = cx + diam // 2
+            y1 = cy + diam // 2
+
+            # sombra leve
+            draw.ellipse((x0+4, y0+6, x1+4, y1+6), fill=(0, 0, 0, 80))
+            draw.ellipse((x0, y0, x1, y1), fill=(200, 0, 0, 230))
+
+            # "?" central
+            try:
+                f_q = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", int(diam * 0.8))
+            except:
+                try:
+                    f_q = ImageFont.truetype("arialbd.ttf", int(diam * 0.8))
+                except:
+                    f_q = ImageFont.load_default()
+
+            q_bbox = draw.textbbox((0, 0), "?", font=f_q)
+            q_w = q_bbox[2] - q_bbox[0]
+            q_h = q_bbox[3] - q_bbox[1]
+            q_x = cx - q_w // 2
+            q_y = cy - q_h // 2
+            # borda sutil
+            for dx, dy in ((1,0),(0,1),(-1,0),(0,-1)):
+                draw.text((q_x+dx, q_y+dy), "?", font=f_q, fill=(0,0,0,70))
+            draw.text((q_x, q_y), "?", font=f_q, fill=(255,255,255,240))
+
+            out = base_canvas.convert('RGBA')
+            out = Image.alpha_composite(out, overlay).convert('RGB')
+
+            buffer = io.BytesIO()
+            out.save(buffer, format='PNG', quality=95)
+            buffer.seek(0)
+            logger.info("✅ Imagem 1080x1920 '?' pronta")
+            return buffer, "Imagem 1080x1920 '?' gerada"
+        except Exception as e:
+            logger.error(f"❌ Erro no processamento 1080x1920 '?': {e}")
+            return None, f"Erro no processamento 1080x1920 '?': {str(e)}"
 
     def upload_catbox(self, buffer_imagem, nome_arquivo='sorteio.png'):
         try:
@@ -844,26 +904,26 @@ class ProcessadorSorteioV5:
             logger.info(f"🚀 PROCESSAMENTO V5.0: {url_produto}")
             codigo = self.extrair_codigo_produto(url_produto)
             if not codigo:
-                return None, None, None, "❌ Código NATBRA não encontrado na URL"
+                return None, None, None, None, "❌ Código NATBRA não encontrado na URL"
             candidatas, msg_extracao = self.extrair_imagens_por_codigo(url_produto, codigo)
             if not candidatas:
-                return None, None, None, f"❌ Extração falhou: {msg_extracao}"
+                return None, None, None, None, f"❌ Extração falhou: {msg_extracao}"
             img_produto, msg_selecao = self.avaliar_e_selecionar_imagem(candidatas)
             if not img_produto:
-                return None, None, None, f"❌ Seleção falhou: {msg_selecao}"
+                return None, None, None, None, f"❌ Seleção falhou: {msg_selecao}"
 
-            # cópias independentes
             img_base1 = img_produto.copy()
             img_base2 = img_produto.copy()
             img_base3 = img_produto.copy()
+            img_base4 = img_produto.copy()
 
             # imagem 1: 600x600 com textos
             buffer_600, msg_processamento_600 = self.processar_imagem_sorteio(img_base1)
             if not buffer_600:
-                return None, None, None, f"❌ Processamento falhou (600x600): {msg_processamento_600}"
+                return None, None, None, None, f"❌ Processamento falhou (600x600): {msg_processamento_600}"
             url_600, msg_upload_600 = self.upload_catbox(buffer_600, nome_arquivo='sorteio_600.png')
             if not url_600:
-                return None, None, None, f"❌ Upload falhou (600x600): {msg_upload_600}"
+                return None, None, None, None, f"❌ Upload falhou (600x600): {msg_upload_600}"
 
             # imagem 2: 1080x1920 sem textos
             buffer_1080, msg_processamento_1080 = self.processar_imagem_vertical_1080x1920(img_base2)
@@ -875,7 +935,7 @@ class ProcessadorSorteioV5:
             else:
                 logger.error(f"⚠️ Falha ao gerar 1080x1920: {msg_processamento_1080}")
 
-            # imagem 3: 1080x1920 mascarada
+            # imagem 3: 1080x1920 mascarada (texto)
             buffer_mask, msg_mask = self.processar_imagem_vertical_1080x1920_mascarada(img_base3)
             url_1080_mask = None
             if buffer_mask:
@@ -885,11 +945,21 @@ class ProcessadorSorteioV5:
             else:
                 logger.error(f"⚠️ Falha ao gerar 1080x1920 mascarada: {msg_mask}")
 
-            logger.info(f"🎉 SUCESSO: 600x600={url_600} | 1080x1920={url_1080} | 1080x1920_mask={url_1080_mask}")
-            return url_600, url_1080, url_1080_mask, "✅ Produto processado com sucesso"
+            # imagem 4: 1080x1920 com '?'
+            buffer_q, msg_q = self.processar_imagem_vertical_1080x1920_teaser_q(img_base4)
+            url_1080_q = None
+            if buffer_q:
+                url_1080_q, msg_upload_q = self.upload_catbox(buffer_q, nome_arquivo='sorteio_1080x1920_q.png')
+                if not url_1080_q:
+                    logger.error(f"⚠️ Falha upload 1080x1920 '?': {msg_upload_q}")
+            else:
+                logger.error(f"⚠️ Falha ao gerar 1080x1920 '?': {msg_q}")
+
+            logger.info(f"🎉 SUCESSO: 600x600={url_600} | 1080x1920={url_1080} | 1080x1920_mask={url_1080_mask} | 1080x1920_q={url_1080_q}")
+            return url_600, url_1080, url_1080_mask, url_1080_q, "✅ Produto processado com sucesso"
         except Exception as e:
             logger.error(f"❌ Erro geral: {e}")
-            return None, None, None, f"❌ Erro geral: {str(e)}"
+            return None, None, None, None, f"❌ Erro geral: {str(e)}"
 
 # ================================
 # GERENCIADOR GOOGLE SHEETS
@@ -935,7 +1005,7 @@ class GoogleSheetsManager:
             logger.error(f"❌ Erro ao obter produtos pendentes: {e}")
             return []
     
-    def atualizar_resultado(self, linha, url_imagem=None, erro=None, url_imagem2=None, url_imagem3=None):
+    def atualizar_resultado(self, linha, url_imagem=None, erro=None, url_imagem2=None, url_imagem3=None, url_imagem4=None):
         try:
             if not self.planilha and not self.conectar():
                 return False
@@ -946,6 +1016,7 @@ class GoogleSheetsManager:
             col_erro = None
             col_imagem2 = None
             col_imagem3 = None
+            col_imagem4 = None
             for i, header in enumerate(headers, 1):
                 h = header.lower()
                 if 'status' in h:
@@ -958,6 +1029,8 @@ class GoogleSheetsManager:
                     col_imagem2 = i
                 if ('produto 3' in h) or ('url do produto 3' in h):
                     col_imagem3 = i
+                if ('produto 4' in h) or ('url do produto 4' in h):
+                    col_imagem4 = i
 
             if url_imagem:
                 if col_status:
@@ -968,6 +1041,8 @@ class GoogleSheetsManager:
                     worksheet.update_cell(linha, col_imagem2, url_imagem2)
                 if url_imagem3 and col_imagem3:
                     worksheet.update_cell(linha, col_imagem3, url_imagem3)
+                if url_imagem4 and col_imagem4:
+                    worksheet.update_cell(linha, col_imagem4, url_imagem4)
                 if col_erro:
                     worksheet.update_cell(linha, col_erro, "")
                 logger.info(f"✅ Linha {linha} atualizada com sucesso")
@@ -1004,13 +1079,14 @@ def executar_processamento_automatico():
         for produto in produtos:
             try:
                 logger.info(f"🔄 Processando linha {produto['linha']}: {produto['url']}")
-                url_imagem, url_imagem2, url_imagem3, mensagem = processador.processar_produto_completo(produto['url'])
+                url_imagem, url_imagem2, url_imagem3, url_imagem4, mensagem = processador.processar_produto_completo(produto['url'])
                 if url_imagem:
                     sheets_manager.atualizar_resultado(
                         produto['linha'],
                         url_imagem=url_imagem,
                         url_imagem2=url_imagem2,
-                        url_imagem3=url_imagem3
+                        url_imagem3=url_imagem3,
+                        url_imagem4=url_imagem4
                     )
                     sucessos += 1
                     logger.info(f"✅ Linha {produto['linha']} processada com sucesso")
@@ -1180,12 +1256,13 @@ def processar_produto():
         if not url_produto:
             return jsonify({"error": "URL do produto é obrigatória"}), 400
         processador = ProcessadorSorteioV5()
-        url_imagem, url_imagem2, url_imagem3, mensagem = processador.processar_produto_completo(url_produto)
+        url_imagem, url_imagem2, url_imagem3, url_imagem4, mensagem = processador.processar_produto_completo(url_produto)
         if url_imagem:
             return jsonify({"status": "success",
                             "url_imagem": url_imagem,
                             "url_imagem2": url_imagem2,
                             "url_imagem3": url_imagem3,
+                            "url_imagem4": url_imagem4,
                             "message": mensagem,
                             "timestamp": datetime.now().isoformat()})
         else:
