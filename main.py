@@ -359,8 +359,26 @@ class ProcessadorSorteioV5:
                 return [], "Erro ao acessar página do produto"
 
             soup = BeautifulSoup(response.content, 'html.parser')
+            html_text = response.text
             candidatas = []
             vistos = set()
+
+            # filtros para descartar logos e banners
+            def lixo(u: str) -> bool:
+                if not u:
+                    return True
+                ul = u.lower()
+                if 'images.rede.natura.net' in ul:
+                    return True
+                if 'logo' in ul:
+                    return True
+                if 'banner' in ul:
+                    return True
+                if '/produtosjoia/background/' in ul:
+                    return True
+                if 'bannerjoia' in ul:
+                    return True
+                return False
 
             def add_cand(src, motivo, prio):
                 if not src:
@@ -370,19 +388,31 @@ class ProcessadorSorteioV5:
                     src = 'https:' + src
                 if src.startswith('/'):
                     src = urljoin(url, src)
-                src_clean = src.split('?')[0].strip()
-                if src_clean and src_clean not in vistos:
+                src_clean = (src.split('?')[0] or '').strip()
+                if not src_clean or lixo(src_clean):
+                    return
+                if src_clean not in vistos:
                     vistos.add(src_clean)
                     candidatas.append({'url': src_clean, 'score': 0, 'motivo': motivo, 'prio': prio})
                     logger.info(f"✅ Candidata ({motivo}): {src_clean}")
 
             def pick_srcset(val):
                 try:
+                    # pega a opção com maior densidade (última)
                     return val.split(',')[-1].strip().split(' ')[0]
                 except Exception:
                     return None
 
-            # 1) Regra principal: imagens que contêm o código (img/src, data-*, srcset, <source>)
+            # 0) Regex direta no HTML para o CDN oficial (Natura/Avon)
+            cdn_patterns = [
+                r'https://production\.na01\.natura\.com/[^\s"\'\)]+/(?:Produtos|produtos)/(?:NATBRA|AVNBRA)-\d+_[1-4]\.(?:jpg|png)',
+                r'https://production\.na01\.natura\.com/[^\s"\'\)]+/(?:NATBRA|AVNBRA)-\d+_[1-4]\.(?:jpg|png)'
+            ]
+            for pat in cdn_patterns:
+                for m in re.findall(pat, html_text):
+                    add_cand(m, 'regex CDN', 0)
+
+            # 1) Atributos de <img> contendo o código
             imgs = soup.find_all('img')
             for img in imgs:
                 for attr in ('src', 'data-src', 'data-lazy-src', 'data-original', 'data-image'):
@@ -394,17 +424,25 @@ class ProcessadorSorteioV5:
                     if v and (codigo_produto in v or codigo_produto.replace('-', '') in v):
                         add_cand(pick_srcset(v), f'srcset contém código {codigo_produto}', 1)
 
+            # 1b) <source> com srcset contendo o código
             for source in soup.find_all('source'):
                 v = source.get('srcset') or source.get('data-srcset')
                 if v and (codigo_produto in v or codigo_produto.replace('-', '') in v):
                     add_cand(pick_srcset(v), f'<source> contém código {codigo_produto}', 1)
 
-            # 2) Fallback A: meta og/twitter
-            if not candidatas:
-                m = soup.find('meta', {'property': 'og:image'}) or soup.find('meta', {'name': 'twitter:image'})
-                add_cand(m.get('content') if m else None, 'meta image', 2)
+            # 1c) background-image inline
+            for el in soup.select('[style*="background-image"]'):
+                style = el.get('style', '')
+                for m in re.findall(r'url\(([^)]+)\)', style):
+                    m = m.strip('\'" ')
+                    if codigo_produto in m or codigo_produto.replace('-', '') in m:
+                        add_cand(m, 'background-image contém código', 1)
 
-            # 3) Fallback B: JSON-LD (image)
+            # 1d) <link rel=preload as=image>
+            for lk in soup.select('link[rel="preload"][as="image"]'):
+                add_cand(lk.get('href'), 'link preload image', 2)
+
+            # 2) JSON-LD (image)
             if not candidatas:
                 for s in soup.select('script[type="application/ld+json"]'):
                     try:
@@ -417,7 +455,7 @@ class ProcessadorSorteioV5:
                     except Exception:
                         continue
 
-            # 4) Fallback C: galeria genérica
+            # 3) Galerias comuns
             if not candidatas:
                 for sel in ('.product-gallery img', '.swiper-slide img', '.glide__slide img', '[data-testid="thumbnail"] img'):
                     for g in soup.select(sel):
@@ -425,11 +463,16 @@ class ProcessadorSorteioV5:
                 for source in soup.select('picture source'):
                     add_cand(pick_srcset(source.get('srcset') or ''), 'picture source', 3)
 
+            # 4) Meta og/twitter como último recurso
+            if not candidatas:
+                m = soup.find('meta', {'property': 'og:image'}) or soup.find('meta', {'name': 'twitter:image'})
+                add_cand(m.get('content') if m else None, 'meta image', 4)
+
             if not candidatas:
                 logger.error("❌ Nenhuma imagem candidata encontrada na página")
                 return [], "Nenhuma imagem candidata encontrada na página"
 
-            # ordenar por prioridade: código > meta/json-ld > galeria
+            # ordenar por prioridade: CDN regex > contém código > json-ld/preload > galeria > meta
             candidatas.sort(key=lambda x: x.get('prio', 99))
             logger.info(f"📋 Candidatas encontradas: {len(candidatas)}")
             return candidatas, "Candidatas extraídas com sucesso"
