@@ -34,13 +34,14 @@ from datetime import datetime
 import json
 import requests
 from bs4 import BeautifulSoup
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import io
 import re
 from urllib.parse import urljoin
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import tempfile
+import numpy as np
 
 from openai import OpenAI
 
@@ -282,6 +283,9 @@ def stats_manychat():
 # PROCESSADOR DE IMAGENS V5.0
 # ================================
 class ProcessadorSorteioV5:
+    # limiar de não-branco para recorte; ajuste fino se necessário
+    WHITE_T = 18
+
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
@@ -426,7 +430,7 @@ class ProcessadorSorteioV5:
                 style = el.get('style', '')
                 for m in re.findall(r'url\(([^)]+)\)', style):
                     m = m.strip('\'" ')
-                    if codigo_produto in m ou codigo_produto.replace('-', '') in m:
+                    if codigo_produto in m or codigo_produto.replace('-', '') in m:
                         add_cand(m, 'background-image contém código', 1)
 
             for lk in soup.select('link[rel="preload"][as="image"]'):
@@ -572,39 +576,96 @@ class ProcessadorSorteioV5:
             logger.error(f"❌ Erro ao processar imagem: {e}")
             return None, f"Erro no processamento: {str(e)}"
 
-    # Vertical 1080x1920: manter largura ≤800, dobrar teto vertical de 1500 e limitar ao canvas com margem 5%.
-    # Usa resize com fator de escala para permitir upscaling quando necessário.
+    # Vertical 1080x1920: recorte do fundo branco + escala até caber em 800×min(2*1500, 1920-2*margem)
     def processar_imagem_vertical_1080x1920(self, img_produto):
         try:
             logger.info("🎨 Processando imagem vertical 1080x1920 (sem texto)...")
             canvas_w, canvas_h = 1080, 1920
             canvas = Image.new('RGB', (canvas_w, canvas_h), (255, 255, 255))
 
-            # Regras solicitadas
-            box_w = 800  # limite rígido de largura
+            # Box útil e margens
+            box_w = 800
             base_max_h = 1500
             margem_px = int(0.05 * min(canvas_w, canvas_h))  # 5% do lado menor
-            teto_canvas = canvas_h - 2 * margem_px
-            new_max_h = min(2 * base_max_h, teto_canvas)  # dobra e prende ao canvas
+            max_h_canvas = canvas_h - 2 * margem_px
+            box_h = min(2 * base_max_h, max_h_canvas)  # dobra e prende ao canvas
 
-            # Calcula escala preservando aspecto. Permite upscaling.
+            # Garantir RGB
+            if img_produto.mode not in ('RGB', 'RGBA'):
+                img_produto = img_produto.convert('RGB')
+
             w0, h0 = img_produto.size
             if w0 <= 0 or h0 <= 0:
                 raise ValueError("Dimensões inválidas da imagem do produto")
-            escala = min(box_w / float(w0), new_max_h / float(h0))
-            new_w = max(1, int(round(w0 * escala)))
-            new_h = max(1, int(round(h0 * escala)))
-            logger.info(f"📐 Box útil 800x{new_max_h} | origem {w0}x{h0} | escala {escala:.3f} -> {new_w}x{new_h}")
 
-            img_redim = img_produto.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            # -------- 1) Máscara de não-branco e recorte --------
+            if img_produto.mode == 'RGBA':
+                base_rgb = Image.new('RGB', (w0, h0), (255, 255, 255))
+                base_rgb.paste(img_produto, mask=img_produto.split()[-1])
+                rgb = base_rgb
+            else:
+                rgb = img_produto
 
+            arr = np.asarray(rgb, dtype=np.uint8)
+            # distância para branco
+            dist = np.maximum.reduce([255 - arr[..., 0], 255 - arr[..., 1], 255 - arr[..., 2]])
+            mask = (dist > self.WHITE_T).astype(np.uint8) * 255
+
+            # dilatação leve para fechar falhas finas
+            mask_img = Image.fromarray(mask, mode='L').filter(ImageFilter.MaxFilter(3))
+            mask = np.array(mask_img) > 0
+
+            rows = np.where(mask.any(axis=1))[0]
+            cols = np.where(mask.any(axis=0))[0]
+
+            crop_img = rgb
+            used_crop = False
+            if rows.size > 0 and cols.size > 0:
+                top, bottom = int(rows[0]), int(rows[-1])
+                left, right = int(cols[0]), int(cols[-1])
+
+                # padding 2%
+                pad = int(0.02 * min(w0, h0))
+                top = max(0, top - pad)
+                left = max(0, left - pad)
+                bottom = min(h0, bottom + pad)
+                right = min(w0, right + pad)
+
+                # checar se o recorte é significativo
+                if (right - left) > 10 and (bottom - top) > 10:
+                    crop_img = rgb.crop((left, top, right, bottom))
+                    used_crop = True
+
+            cw, ch = crop_img.size
+
+            # -------- 2) Escalas: antiga vs nova --------
+            old_scale = min(box_w / float(w0), box_h / float(h0))
+            new_scale_base = min(box_w / float(cw), box_h / float(ch))
+
+            # alvo: no mínimo o permitido pelo recorte; se couber, tente >= 2x da escala antiga
+            target_scale = new_scale_base
+            if new_scale_base >= 2.0 * old_scale:
+                target_scale = new_scale_base
+            else:
+                # tentar forçar 2x, respeitando limites do box
+                target_scale = min(2.0 * old_scale, new_scale_base)
+
+            new_w = max(1, int(round(cw * target_scale)))
+            new_h = max(1, int(round(ch * target_scale)))
+
+            logger.info(
+                f"📐 1080x1920 | box {box_w}x{box_h} | origem {w0}x{h0} | "
+                f"{'crop ' if used_crop else ''}{cw}x{ch} | "
+                f"esc_old {old_scale:.3f} esc_new {new_scale_base:.3f} "
+                f"-> final {new_w}x{new_h}"
+            )
+
+            img_redim = crop_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+            # -------- 3) Centralização --------
             pos_x = (canvas_w - new_w) // 2
             pos_y = (canvas_h - new_h) // 2
-
-            if img_redim.mode == 'RGBA':
-                canvas.paste(img_redim, (pos_x, pos_y), img_redim)
-            else:
-                canvas.paste(img_redim, (pos_x, pos_y))
+            canvas.paste(img_redim, (pos_x, pos_y))
 
             buffer = io.BytesIO()
             canvas.save(buffer, format='PNG', quality=95)
@@ -737,7 +798,7 @@ class GoogleSheetsManager:
                     col_status = i
                 elif ('imagem' in h or 'resultado' in h) and col_imagem is None:
                     col_imagem = i
-                elif 'erro' in h ou 'observ' in h:
+                elif 'erro' in h or 'observ' in h:
                     col_erro = i
                 if ('produto 2' in h) or ('url do produto 2' in h):
                     col_imagem2 = i
@@ -756,7 +817,7 @@ class GoogleSheetsManager:
                 if col_status:
                     worksheet.update_cell(linha, col_status, "❌ Erro")
                 if col_erro:
-                    worksheet.update_cell(linha, col_erro, erro ou "Erro desconhecido")
+                    worksheet.update_cell(linha, col_erro, erro or "Erro desconhecido")
                 logger.info(f"❌ Linha {linha} atualizada com erro")
             return True
         except Exception as e:
