@@ -285,7 +285,9 @@ class ProcessadorSorteioV5:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept-Language': 'pt-BR,pt;q=0.9',
+            'Referer': 'https://www.minhaloja.natura.com/'
         })
         logger.info("🎯 PROCESSADOR V5.0 INICIADO - Extração por código + validação fundo branco")
 
@@ -352,29 +354,83 @@ class ProcessadorSorteioV5:
     def extrair_imagens_por_codigo(self, url, codigo_produto):
         try:
             logger.info(f"🔍 Buscando imagens para código: {codigo_produto}")
-            response = self.session.get(url, timeout=15)
+            response = self.session.get(url, timeout=20)
             if response.status_code != 200:
                 return [], "Erro ao acessar página do produto"
 
             soup = BeautifulSoup(response.content, 'html.parser')
-            imgs = soup.find_all('img')
             candidatas = []
-            for img in imgs:
-                src = img.get('src') or img.get('data-src') or img.get('data-lazy-src')
+            vistos = set()
+
+            def add_cand(src, motivo, prio):
                 if not src:
-                    continue
+                    return
+                # normaliza
                 if src.startswith('//'):
                     src = 'https:' + src
-                elif src.startswith('/'):
+                if src.startswith('/'):
                     src = urljoin(url, src)
-                if codigo_produto in src or codigo_produto.replace('-', '') in src:
-                    candidatas.append({'url': src, 'score': 0, 'motivo': f'Contém código {codigo_produto}'})
-                    logger.info(f"✅ Candidata: {src}")
+                src_clean = src.split('?')[0].strip()
+                if src_clean and src_clean not in vistos:
+                    vistos.add(src_clean)
+                    candidatas.append({'url': src_clean, 'score': 0, 'motivo': motivo, 'prio': prio})
+                    logger.info(f"✅ Candidata ({motivo}): {src_clean}")
+
+            def pick_srcset(val):
+                try:
+                    return val.split(',')[-1].strip().split(' ')[0]
+                except Exception:
+                    return None
+
+            # 1) Regra principal: imagens que contêm o código (img/src, data-*, srcset, <source>)
+            imgs = soup.find_all('img')
+            for img in imgs:
+                for attr in ('src', 'data-src', 'data-lazy-src', 'data-original', 'data-image'):
+                    v = img.get(attr)
+                    if v and (codigo_produto in v or codigo_produto.replace('-', '') in v):
+                        add_cand(v, f'Contém código {codigo_produto}', 1)
+                for attr in ('srcset', 'data-srcset'):
+                    v = img.get(attr)
+                    if v and (codigo_produto in v or codigo_produto.replace('-', '') in v):
+                        add_cand(pick_srcset(v), f'srcset contém código {codigo_produto}', 1)
+
+            for source in soup.find_all('source'):
+                v = source.get('srcset') or source.get('data-srcset')
+                if v and (codigo_produto in v or codigo_produto.replace('-', '') in v):
+                    add_cand(pick_srcset(v), f'<source> contém código {codigo_produto}', 1)
+
+            # 2) Fallback A: meta og/twitter
+            if not candidatas:
+                m = soup.find('meta', {'property': 'og:image'}) or soup.find('meta', {'name': 'twitter:image'})
+                add_cand(m.get('content') if m else None, 'meta image', 2)
+
+            # 3) Fallback B: JSON-LD (image)
+            if not candidatas:
+                for s in soup.select('script[type="application/ld+json"]'):
+                    try:
+                        data = json.loads(s.string or '')
+                        img_field = data.get('image')
+                        if isinstance(img_field, str):
+                            add_cand(img_field, 'json-ld image', 2)
+                        elif isinstance(img_field, list) and img_field:
+                            add_cand(img_field[0], 'json-ld image[0]', 2)
+                    except Exception:
+                        continue
+
+            # 4) Fallback C: galeria genérica
+            if not candidatas:
+                for sel in ('.product-gallery img', '.swiper-slide img', '.glide__slide img', '[data-testid="thumbnail"] img'):
+                    for g in soup.select(sel):
+                        add_cand(g.get('src') or g.get('data-src') or pick_srcset(g.get('srcset') or ''), f'galeria {sel}', 3)
+                for source in soup.select('picture source'):
+                    add_cand(pick_srcset(source.get('srcset') or ''), 'picture source', 3)
 
             if not candidatas:
-                logger.error(f"❌ Nenhuma imagem com código {codigo_produto}")
-                return [], "Nenhuma imagem encontrada com o código do produto"
+                logger.error("❌ Nenhuma imagem candidata encontrada na página")
+                return [], "Nenhuma imagem candidata encontrada na página"
 
+            # ordenar por prioridade: código > meta/json-ld > galeria
+            candidatas.sort(key=lambda x: x.get('prio', 99))
             logger.info(f"📋 Candidatas encontradas: {len(candidatas)}")
             return candidatas, "Candidatas extraídas com sucesso"
         except Exception as e:
