@@ -44,12 +44,6 @@ import tempfile
 
 from openai import OpenAI
 
-# --- Compat Pillow (mantém a chamada Image.Resampling.LANCZOS válida em versões antigas) ---
-if not hasattr(Image, "Resampling"):
-    class _Resampling:
-        LANCZOS = getattr(Image, "LANCZOS", getattr(Image, "ANTIALIAS", 1))
-    Image.Resampling = _Resampling()
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -159,7 +153,7 @@ def processar_com_chatgpt(message, user_name, user_id):
                         try:
                             client.beta.threads.runs.cancel(thread_id=thread_id, run_id=run.id)
                             logger.info("🚫 Run anterior cancelado")
-                        except Exception:
+                        except:
                             logger.warning("⚠️ Não foi possível cancelar run anterior")
                     break
             logger.info("✅ Thread livre para nova mensagem")
@@ -190,36 +184,12 @@ def processar_com_chatgpt(message, user_name, user_id):
             raise Exception("Timeout aguardando resposta do assistente")
 
         logger.info("📥 Obtendo resposta do assistente")
-        try:
-            messages = client.beta.threads.messages.list(thread_id=thread_id, order="desc", limit=10)
-        except TypeError:
-            messages = client.beta.threads.messages.list(thread_id=thread_id, limit=10)
-
+        messages = client.beta.threads.messages.list(thread_id=thread_id, order="desc", limit=1)
         if not messages.data:
             logger.error("❌ Nenhuma resposta encontrada")
             raise Exception("Nenhuma resposta encontrada")
 
-        resposta = None
-        for msg in messages.data:
-            role = getattr(msg, "role", "")
-            if role == "assistant":
-                for part in getattr(msg, "content", []) or []:
-                    # SDKs variam: part.type == "text" e part.text.value
-                    text_obj = getattr(part, "text", None)
-                    if text_obj and getattr(text_obj, "value", None):
-                        resposta = text_obj.value
-                        break
-                if resposta:
-                    break
-
-        if not resposta:
-            # Fallback minimalista
-            first = messages.data[0]
-            if getattr(first, "content", None):
-                c0 = first.content[0]
-                tobj = getattr(c0, "text", None)
-                resposta = (tobj.value if tobj and getattr(tobj, "value", None) else "Sem conteúdo de texto disponível.")
-
+        resposta = messages.data[0].content[0].text.value
         logger.info("✅ Resposta recebida do assistente")
         logger.info(f"✅ Resposta para {user_name}: {resposta[:50]}...")
         return resposta
@@ -248,8 +218,7 @@ def webhook_manychat():
         logger.info(f"🔄 Webhook recebido - Usuário: {user_name} ({user_id}) - Platform: {platform}")
         logger.info(f"📝 Mensagem: {message}")
 
-        # Aceita alias 'whatsapp' além das oficiais
-        valid_platforms = ['manychat', 'instagram', 'messenger', 'whatsapp']
+        valid_platforms = ['manychat', 'instagram', 'messenger']
         if platform not in valid_platforms:
             logger.warning(f"⚠️ Platform inválida: {platform}. Plataformas suportadas: {valid_platforms}")
             return jsonify({"error": f"Platform inválida. Suportadas: {valid_platforms}"}), 400
@@ -318,7 +287,6 @@ class ProcessadorSorteioV5:
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
-        self.last_url_imagem2 = None  # link da arte 1080x1920 sem texto
         logger.info("🎯 PROCESSADOR V5.0 INICIADO - Extração por código + validação fundo branco")
 
     def extrair_codigo_produto(self, url):
@@ -405,7 +373,6 @@ class ProcessadorSorteioV5:
 
             if not candidatas:
                 logger.error(f"❌ Nenhuma imagem com código {codigo_produto}")
-                logger.info(f"🔎 Página sem match de código. URL analisada: {url}")
                 return [], "Nenhuma imagem encontrada com o código do produto"
 
             logger.info(f"📋 Candidatas encontradas: {len(candidatas)}")
@@ -520,29 +487,6 @@ class ProcessadorSorteioV5:
             logger.error(f"❌ Erro ao processar imagem: {e}")
             return None, f"Erro no processamento: {str(e)}"
 
-    # NOVO: arte 1080x1920 sem texto
-    def processar_imagem_story_sem_texto(self, img_produto):
-        try:
-            logger.info("🎨 Processando imagem 1080x1920 sem texto...")
-            max_w, max_h = int(1080 * 0.9), int(1920 * 0.9)  # 972x1728
-            img_produto.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
-            canvas = Image.new('RGB', (1080, 1920), (255, 255, 255))
-            produto_width, produto_height = img_produto.size
-            pos_x = (1080 - produto_width) // 2
-            pos_y = (1920 - produto_height) // 2
-            if img_produto.mode == 'RGBA':
-                canvas.paste(img_produto, (pos_x, pos_y), img_produto)
-            else:
-                canvas.paste(img_produto, (pos_x, pos_y))
-            buffer = io.BytesIO()
-            canvas.save(buffer, format='PNG', quality=95)
-            buffer.seek(0)
-            logger.info("✅ Imagem 1080x1920 gerada com sucesso")
-            return buffer, "Imagem 1080x1920 gerada"
-        except Exception as e:
-            logger.error(f"❌ Erro na imagem 1080x1920: {e}")
-            return None, f"Erro na imagem 1080x1920: {str(e)}"
-
     def upload_catbox(self, buffer_imagem):
         try:
             logger.info("📤 Upload para Catbox.moe...")
@@ -570,7 +514,6 @@ class ProcessadorSorteioV5:
     def processar_produto_completo(self, url_produto):
         try:
             logger.info(f"🚀 PROCESSAMENTO V5.0: {url_produto}")
-            self.last_url_imagem2 = None  # reset
             codigo = self.extrair_codigo_produto(url_produto)
             if not codigo:
                 return None, "❌ Código NATBRA não encontrado na URL"
@@ -580,26 +523,12 @@ class ProcessadorSorteioV5:
             img_produto, msg_selecao = self.avaliar_e_selecionar_imagem(candidatas)
             if not img_produto:
                 return None, f"❌ Seleção falhou: {msg_selecao}"
-
-            # 600x600 com textos
-            buffer_processado, msg_processamento = self.processar_imagem_sorteio(img_produto.copy())
+            buffer_processado, msg_processamento = self.processar_imagem_sorteio(img_produto)
             if not buffer_processado:
                 return None, f"❌ Processamento falhou: {msg_processamento}"
             url_final, msg_upload = self.upload_catbox(buffer_processado)
             if not url_final:
                 return None, f"❌ Upload falhou: {msg_upload}"
-
-            # 1080x1920 sem texto (extra)
-            try:
-                buffer_story, _ = self.processar_imagem_story_sem_texto(img_produto.copy())
-                if buffer_story:
-                    url_story, _ = self.upload_catbox(buffer_story)
-                    if url_story:
-                        self.last_url_imagem2 = url_story
-                        logger.info(f"🎯 URL imagem 1080x1920: {url_story}")
-            except Exception as e:
-                logger.error(f"⚠️ Falha na geração/envio da imagem 1080x1920: {e}")
-
             logger.info(f"🎉 SUCESSO: {url_final}")
             return url_final, "✅ Produto processado com sucesso"
         except Exception as e:
@@ -631,66 +560,26 @@ class GoogleSheetsManager:
             logger.error(f"❌ Erro ao conectar Google Sheets: {e}")
             self.planilha = None
             return False
-
-    # --- Helpers de planilha ---
-    def _get_ws(self):
-        try:
-            return self.planilha.worksheet('Sorteios')
-        except Exception:
-            return self.planilha.get_worksheet(0)
-
-    def _headers(self, ws):
-        try:
-            return [h or "" for h in ws.row_values(1)]
-        except Exception:
-            return []
     
-    # NOVO: lista linhas com URL do Produto e Status vazio/pendente (robusto)
     def obter_produtos_pendentes(self):
         try:
             if not self.planilha and not self.conectar():
                 return []
-            worksheet = self._get_ws()
-            headers = self._headers(worksheet)
-            logger.info(f"📋 Cabeçalhos detectados: {headers}")
-
+            worksheet = self.planilha.get_worksheet(0)
             dados = worksheet.get_all_records()
-            pendentes = []
-            url_key_candidates = {'url do produto', 'url', 'link do produto', 'produto'}
-
-            for i, linha in enumerate(dados, start=2):  # pula cabeçalho
-                # 1) tentativa direta pelos nomes mais comuns
-                url = ""
-                for k in list(linha.keys()):
-                    k_low = (k or "").strip().lower()
-                    if any(tok in k_low for tok in url_key_candidates):
-                        v = (linha.get(k) or "").strip()
-                        if v:
-                            url = v
-                            break
-                # 2) fallback: varrer a linha e pegar a primeira URL válida
-                if not url:
-                    for v in linha.values():
-                        if isinstance(v, str):
-                            m = re.search(r'https?://\S+', v)
-                            if m:
-                                url = m.group(0).strip()
-                                break
-
-                status = (linha.get('Status') or linha.get('status') or '').strip().lower()
-                if url and (status in ['', 'pendente', 'pending']):
-                    pendentes.append({'linha': i, 'url': url, 'dados': linha})
-
-            logger.info(f"📋 Produtos pendentes encontrados: {len(pendentes)}")
-            if not pendentes:
-                logger.info("⚠️ Nenhum pendente. Verifique nomes das colunas e valores de Status.")
-            return pendentes
+            produtos_pendentes = []
+            for i, linha in enumerate(dados, start=2):
+                url_produto = linha.get('URL do Produto', '').strip()
+                status = linha.get('Status', '').strip()
+                if url_produto and status.lower() in ['pendente', '']:
+                    produtos_pendentes.append({'linha': i, 'url': url_produto, 'dados': linha})
+            logger.info(f"📋 Produtos pendentes encontrados: {len(produtos_pendentes)}")
+            return produtos_pendentes
         except Exception as e:
-            logger.error(f"❌ Erro ao ler pendentes: {e}")
+            logger.error(f"❌ Erro ao obter produtos pendentes: {e}")
             return []
     
-    # aceita url_imagem2 opcional para gravar "URL do Produto 2" se existir
-    def atualizar_resultado(self, linha, url_imagem=None, erro=None, url_imagem2=None):
+    def atualizar_resultado(self, linha, url_imagem=None, erro=None):
         try:
             if not self.planilha and not self.conectar():
                 return False
@@ -698,35 +587,21 @@ class GoogleSheetsManager:
             headers = worksheet.row_values(1)
             col_status = None
             col_imagem = None
-            col_imagem2 = None
             col_erro = None
             for i, header in enumerate(headers, 1):
-                h = (header or '').lower().strip()
+                h = header.lower()
                 if 'status' in h:
                     col_status = i
-                elif ('imagem' in h or 'resultado' in h) and ('2' not in h):
+                elif 'imagem' in h or 'resultado' in h:   # <-- corrigido (or)
                     col_imagem = i
-                elif ('produto' in h or 'imagem' in h or 'url' in h) and '2' in h:
-                    col_imagem2 = i
                 elif 'erro' in h or 'observ' in h:
                     col_erro = i
-
-            # Heurística extra para imagem 2 se não achou acima
-            if not col_imagem2:
-                for i, header in enumerate(headers, 1):
-                    s = (header or "").lower()
-                    if any(k in s for k in ['1080', 'vertical', 'story', 'imagem 2', 'img2', 'resultado 2']):
-                        if any(k in s for k in ['url', 'imagem', 'resultado', 'link']):
-                            col_imagem2 = i
-                            break
 
             if url_imagem:
                 if col_status:
                     worksheet.update_cell(linha, col_status, "✅ Processado")
                 if col_imagem:
                     worksheet.update_cell(linha, col_imagem, url_imagem)
-                if url_imagem2 and col_imagem2:
-                    worksheet.update_cell(linha, col_imagem2, url_imagem2)
                 if col_erro:
                     worksheet.update_cell(linha, col_erro, "")
                 logger.info(f"✅ Linha {linha} atualizada com sucesso")
@@ -734,7 +609,7 @@ class GoogleSheetsManager:
                 if col_status:
                     worksheet.update_cell(linha, col_status, "❌ Erro")
                 if col_erro:
-                    worksheet.update_cell(linha, col_erro, erro or "Erro desconhecido")
+                    worksheet.update_cell(linha, col_erro, erro or "Erro desconhecido")  # <-- corrigido (or)
                 logger.info(f"❌ Linha {linha} atualizada com erro")
             return True
         except Exception as e:
@@ -765,11 +640,7 @@ def executar_processamento_automatico():
                 logger.info(f"🔄 Processando linha {produto['linha']}: {produto['url']}")
                 url_imagem, mensagem = processador.processar_produto_completo(produto['url'])
                 if url_imagem:
-                    sheets_manager.atualizar_resultado(
-                        produto['linha'],
-                        url_imagem=url_imagem,
-                        url_imagem2=getattr(processador, 'last_url_imagem2', None)
-                    )
+                    sheets_manager.atualizar_resultado(produto['linha'], url_imagem=url_imagem)
                     sucessos += 1
                     logger.info(f"✅ Linha {produto['linha']} processada com sucesso")
                 else:
@@ -940,13 +811,8 @@ def processar_produto():
         processador = ProcessadorSorteioV5()
         url_imagem, mensagem = processador.processar_produto_completo(url_produto)
         if url_imagem:
-            return jsonify({
-                "status": "success",
-                "url_imagem": url_imagem,
-                "url_imagem2": getattr(processador, 'last_url_imagem2', None),
-                "message": mensagem,
-                "timestamp": datetime.now().isoformat()
-            })
+            return jsonify({"status": "success", "url_imagem": url_imagem, "message": mensagem,
+                            "timestamp": datetime.now().isoformat()})
         else:
             return jsonify({"status": "error", "message": mensagem,
                             "timestamp": datetime.now().isoformat()}), 400
