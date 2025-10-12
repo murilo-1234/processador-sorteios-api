@@ -104,7 +104,7 @@ def detectar_automacao(message):
         if score > 0:
             scores[tipo] = score
     if scores:
-        return max(scores, key(scores.get))
+        return max(scores, key=scores.get)
     return None
 
 def processar_com_chatgpt(message, user_name, user_id):
