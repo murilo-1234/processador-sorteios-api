@@ -25,6 +25,14 @@ const { runOnce } = require('./jobs/post-winner')
 const { runOnce: runPromoOnce } = require('./jobs/post-promo') // << NOVO
 const promoSchedule = require('./services/promo-schedule')     // << NOVO
 
+// === (NOVO) Fila segura de grupos ===
+let safeQueueTick = null
+try {
+  ({ tick: safeQueueTick } = require('./jobs/post-groups-safe'))
+} catch (_) {
+  // se o arquivo ainda não existir, segue sem fila segura
+}
+
 // SSE hub
 const { addClient: sseAddClient, broadcast: sseBroadcast } = require('./services/wa-sse')
 
@@ -466,7 +474,7 @@ class App {
         let list = Array.isArray(postGroupJids) ? postGroupJids : []
         if (!list.length && resultGroupJid) list = [String(resultGroupJid)]
         list = Array.from(new Set(list.map(s => String(s).trim()).filter(Boolean)))
-        const out = settings.setPostGroups(list)
+        const out = settings.set({ postGroupJids: list, resultGroupJid: resultGroupJid || null })
         res.json({ ok: true, settings: out, cleared: list.length === 0 })
       } catch (e) {
         res.status(500).json({ ok: false, error: e?.message || String(e) })
@@ -514,7 +522,6 @@ class App {
     this.app.get('/api/promo/schedule', async (_req, res) => {
       try {
         const data = await promoSchedule.listScheduled()
-        // devolve separado para a página poder exibir em abas
         res.json({ ok: true, ...data })
       } catch (e) {
         res.status(500).json({ ok: false, error: e?.message || String(e) })
@@ -735,66 +742,81 @@ class App {
       }, 30_000)
     }
 
-    // === (NOVO) Socket Watcher: detecta troca de socket e reanexa listeners ===
-    try {
-      const wantWatcher = envOn(process.env.WA_SOCKET_WATCHER, true) // ON por padrão
-      if (wantWatcher) {
-        const { startSocketWatcher } = require('./services/socket-watcher')
-        startSocketWatcher(this)
-      }
-    } catch (e) {
-      console.warn('[socket-watcher] não iniciado:', e?.message || e)
+    // ====================== AGENDAMENTO ======================
+    const safeOn = envOn(process.env.SAFE_POST_QUEUE, false)
+
+    if (!safeOn) {
+      // Crons originais (mantidos intactos)
+      cron.schedule('*/1 * * * *', async () => {
+        try {
+          let canRun = false
+          try {
+            if (this.waAdmin && typeof this.waAdmin.getStatus === 'function') {
+              const st = await this.waAdmin.getStatus()
+              canRun = !!st.connected
+            }
+          } catch (_) {}
+
+          if (!canRun && this.isFallbackEnabled) {
+            const wa = this.getClient({ create: false })
+            canRun = !!(wa?.isConnected)
+          }
+
+          if (canRun) {
+            await runOnce(this.app)
+          }
+        } catch (e) {
+          console.error('cron runOnce error:', e?.message || e)
+        }
+      })
+
+      const promoCron = process.env.PROMO_CRON || '*/10 * * * *'
+      cron.schedule(promoCron, async () => {
+        try {
+          let canRun = false
+          try {
+            if (this.waAdmin && typeof this.waAdmin.getStatus === 'function') {
+              const st = await this.waAdmin.getStatus()
+              canRun = !!st.connected
+            }
+          } catch (_) {}
+
+          if (!canRun && this.isFallbackEnabled) {
+            const wa = this.getClient({ create: false })
+            canRun = !!(wa?.isConnected)
+          }
+
+          if (canRun) {
+            await runPromoOnce(this.app)
+          }
+        } catch (e) {
+          console.error('[promo] cron error:', e?.message || e)
+        }
+      })
+    } else if (typeof safeQueueTick === 'function') {
+      // Fila segura: 1 envio por vez, ritmo + jitter + cooldown por grupo
+      setInterval(async () => {
+        try {
+          let canRun = false
+          try {
+            if (this.waAdmin && typeof this.waAdmin.getStatus === 'function') {
+              const st = await this.waAdmin.getStatus()
+              canRun = !!st.connected
+            }
+          } catch (_) {}
+          if (!canRun && this.isFallbackEnabled) {
+            const wa = this.getClient({ create: false })
+            canRun = !!(wa?.isConnected)
+          }
+          if (canRun) {
+            await safeQueueTick(this) // passa a instância para o job usar getConnectedSock()
+          }
+        } catch (e) {
+          console.error('[safe-queue] tick error:', e?.message || e)
+        }
+      }, 60_000)
     }
-
-    // Cron: só roda se houver sessão conectada (POST WINNER)
-    cron.schedule('*/1 * * * *', async () => {
-      try {
-        let canRun = false
-
-        try {
-          if (this.waAdmin && typeof this.waAdmin.getStatus === 'function') {
-            const st = await this.waAdmin.getStatus()
-            canRun = !!st.connected
-          }
-        } catch (_) {}
-
-        if (!canRun && this.isFallbackEnabled) {
-          const wa = this.getClient({ create: false })
-          canRun = !!(wa?.isConnected)
-        }
-
-        if (canRun) {
-          await runOnce(this.app)
-        }
-      } catch (e) {
-        console.error('cron runOnce error:', e?.message || e)
-      }
-    })
-
-    // Cron: Divulgação 48h antes e no dia (09:00) — usa ENV PROMO_CRON ou padrão */10
-    const promoCron = process.env.PROMO_CRON || '*/10 * * * *'
-    cron.schedule(promoCron, async () => {
-      try {
-        let canRun = false
-        try {
-          if (this.waAdmin && typeof this.waAdmin.getStatus === 'function') {
-            const st = await this.waAdmin.getStatus()
-            canRun = !!st.connected
-          }
-        } catch (_) {}
-
-        if (!canRun && this.isFallbackEnabled) {
-          const wa = this.getClient({ create: false })
-          canRun = !!(wa?.isConnected)
-        }
-
-        if (canRun) {
-          await runPromoOnce(this.app)
-        }
-      } catch (e) {
-        console.error('[promo] cron error:', e?.message || e)
-      }
-    })
+    // =========================================================
   }
 
   listen() {
