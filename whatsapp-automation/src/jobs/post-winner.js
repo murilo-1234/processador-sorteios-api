@@ -51,21 +51,12 @@ const DISABLE_LINK_PREVIEW = String(process.env.DISABLE_LINK_PREVIEW || '1') ===
 const SEND_RESULT_URL_SEPARATE = false; // NUNCA enviar link em mensagem separada
 const BAILEYS_LINK_PREVIEW_OFF = String(process.env.BAILEYS_LINK_PREVIEW_OFF || '1') === '1';
 
-// ===== Ritmo seguro (iguais ao promo) =====
-const SAFE_SEND_GLOBAL_MIN_GAP_MIN = Number(process.env.SAFE_SEND_GLOBAL_MIN_GAP_MIN || 5);
-const SAFE_SEND_COOLDOWN_MIN       = Number(process.env.SAFE_SEND_COOLDOWN_MIN || 10);
-const SAFE_SEND_JITTER_MIN_SEC     = Number(process.env.SAFE_SEND_JITTER_MIN_SEC || 30);
-const SAFE_SEND_JITTER_MAX_SEC     = Number(process.env.SAFE_SEND_JITTER_MAX_SEC || 120);
-const SAFE_SEND_MAX_GROUPS_PER_HOUR= Number(process.env.SAFE_SEND_MAX_GROUPS_PER_HOUR || 12);
-const SAFE_SEND_DAILY_CAP          = Number(process.env.SAFE_SEND_DAILY_CAP || 100);
-const SAFE_SEND_LOCK_TTL_SEC       = Number(process.env.SAFE_SEND_LOCK_TTL_SEC || 30);
-
 // ---------- utils ----------
 const dlog = (...a) => { if (DEBUG_JOB) console.log('[JOB]', ...a); };
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
 let _lastTplIndex = -1;
-function chooseTemplateRandom() {
+function chooseTemplate() {
   const templates = require('../services/texts');
   if (!Array.isArray(templates) || !templates.length) {
     return '🎉 Resultado: {{WINNER_BLOCK}}\n🔗 Detalhes: {{RESULT_URL}}\n💸 Cupom: {{COUPON}}';
@@ -78,20 +69,6 @@ function chooseTemplateRandom() {
 }
 function safeStr(v) {
   try { return v == null ? '' : String(v); } catch { return ''; }
-}
-
-// rotação determinística por grupo
-function nextWinnerTemplateFor(ss, jid) {
-  let templates;
-  try { templates = require('../services/texts'); } catch { templates = []; }
-  if (!Array.isArray(templates) || templates.length === 0) {
-    return chooseTemplateRandom();
-  }
-  const key = `winner:${jid}`;
-  const idx = Number(ss.cursors[key] || 0);
-  const tpl = templates[(idx % templates.length) || 0];
-  ss.cursors[key] = idx + 1;
-  return tpl;
 }
 
 // Constrói o bloco do vencedor (3 linhas)
@@ -111,6 +88,7 @@ function mergeText(tpl, vars) {
   const ch   = safeStr(vars.WINNER_CH);
 
   const blockFull    = buildWinnerBlock(name, dt, ch, true);
+  const blockNoLabel = buildWinnerBlock(name, dt, ch, false);
 
   if (s.includes('{{WINNER_BLOCK}}')) {
     s = s.replaceAll('{{WINNER_BLOCK}}', blockFull);
@@ -190,7 +168,7 @@ function stripSpecificUrls(text, urls = []) {
   return out;
 }
 
-// Remove letra de avatar no começo do nome
+// Remove letra de avatar no começo do nome (ex.: "V Vanessa")
 function stripLeadingAvatarLetter(name = '') {
   const m = String(name).match(/^([A-ZÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ])\s+(.+)$/i);
   if (m && m[2] && m[2].length >= 2) return m[2].trim();
@@ -222,7 +200,7 @@ function parseWinnerDetailed(winnerStr = '') {
 function winnerLooksReady(info) {
   const raw = String(info?.winner || '');
   if (!raw) return false;
-  if (/ser[áa]\s+anunciado/i.test(raw)) return false;
+  if (/ser[áa]\s+anunciado/i.test(raw)) return false; // "será anunciado"
   const { name, metaDateTime } = parseWinnerDetailed(raw);
   if (!name || name.length < 3) return false;
   if (!metaDateTime) return false;
@@ -252,61 +230,28 @@ function ensureLinkInsideCaption(caption, resultUrl) {
   return `${join}Link resultado👇\n${url}`;
 }
 
-// ---- helpers idempotência por grupo ----
+// ---- helpers para idempotência por grupo ----
 function parseCsvSet(csv) {
   const s = String(csv || '');
   if (!s.trim()) return new Set();
   return new Set(s.split(',').map(x => x.trim()).filter(Boolean));
 }
-function setToCsv(set) { return Array.from(set).join(','); }
-
-// ----- estado seguro compartilhado -----
-function getSafeState() {
-  const cur = settings.get();
-  const ss = cur.safeSend || {};
-  return {
-    lastSentAtByGroup: ss.lastSentAtByGroup || {},
-    cursors: ss.cursors || {},
-    sentLastHour: Array.isArray(ss.sentLastHour) ? ss.sentLastHour : [],
-    sentToday: Array.isArray(ss.sentToday) ? ss.sentToday : [],
-    lastGlobalSentAt: Number(ss.lastGlobalSentAt || 0),
-    locks: ss.locks || {}
-  };
-}
-function saveSafeState(next) {
-  const cur = settings.get();
-  settings.set({ ...cur, safeSend: next });
-}
-function pruneCounters(ss, now) {
-  const hrAgo = now - 60*60*1000;
-  const dayAgo = now - 24*60*60*1000;
-  ss.sentLastHour = ss.sentLastHour.filter(ts => ts >= hrAgo);
-  ss.sentToday    = ss.sentToday.filter(ts => ts >= dayAgo);
-}
-function eligibleGlobal(ss, now) {
-  pruneCounters(ss, now);
-  const gapOk = (now - (ss.lastGlobalSentAt || 0)) >= SAFE_SEND_GLOBAL_MIN_GAP_MIN * 60 * 1000;
-  const hourOk = ss.sentLastHour.length < SAFE_SEND_MAX_GROUPS_PER_HOUR;
-  const dayOk = ss.sentToday.length < SAFE_SEND_DAILY_CAP;
-  return gapOk && hourOk && dayOk;
-}
-function eligibleGroup(ss, jid, now) {
-  const last = Number(ss.lastSentAtByGroup[jid] || 0);
-  return (now - last) >= SAFE_SEND_COOLDOWN_MIN * 60 * 1000;
-}
-function pickNextGroup(candidates, ss, now) {
-  const list = candidates
-    .filter(j => eligibleGroup(ss, j, now))
-    .sort((a,b) => (ss.lastSentAtByGroup[a]||0) - (ss.lastSentAtByGroup[b]||0));
-  return list[0] || null;
+function setToCsv(set) {
+  return Array.from(set).join(',');
 }
 
+/**
+ * Executa o job 1x.
+ * @param {*} app  express app com locals.whatsappClient/waAdmin
+ * @param {*} opts { dryRun?: boolean }
+ */
 async function runOnce(app, opts = {}) {
   const dryRun =
     !!opts.dryRun ||
     String(app?.locals?.reqDry || '').trim() === '1';
   dlog('tick start', { dryRun });
 
+  // 0) grupos-alvo
   const st = settings.get();
   const targetJids = Array.isArray(st.postGroupJids) && st.postGroupJids.length
     ? st.postGroupJids.filter(Boolean).map((x) => String(x).trim())
@@ -314,12 +259,19 @@ async function runOnce(app, opts = {}) {
 
   if (!targetJids.length) {
     dlog('skip: nenhum grupo selecionado');
-    return { ok: false, processed: 0, sent: 0, errors: [{ stage: 'precheck', error: 'Nenhum grupo selecionado em /admin/groups' }] };
+    return {
+      ok: false,
+      processed: 0,
+      sent: 0,
+      errors: [{ stage: 'precheck', error: 'Nenhum grupo selecionado em /admin/groups' }]
+    };
   }
   dlog('targets', targetJids);
 
+  // 1) Lê a planilha
   const { headers, items, spreadsheetId, tab, sheets } = await getRows();
 
+  // 2) Mapeia cabeçalhos
   const H_ID       = findHeader(headers, ['id', 'codigo', 'código']);
   const H_DATA     = findHeader(headers, ['data', 'date']);
   const H_HORA     = findHeader(headers, ['horario', 'hora', 'horário', 'time']);
@@ -327,8 +279,9 @@ async function runOnce(app, opts = {}) {
   const H_PROD     = findHeader(headers, ['nome_do_produto', 'nome', 'produto', 'produto_nome']);
   const H_WA_POST  = findHeader(headers, ['wa_post']);
   const H_WA_AT    = findHeader(headers, ['wa_post_at', 'wa_postado_em']);
-  const H_WA_GROUPS= findHeader(headers, ['wa_post_groups','wa_groups','wa_grupos']); // modo por grupo
+  const H_WA_GROUPS= findHeader(headers, ['wa_post_groups','wa_groups','wa_grupos']); // << novo
 
+  // Opcionais (headline/bg/music por linha)
   const H_CUSTOM_HEADLINE = findHeader(headers, ['headline']);
   const H_BG_URL          = findHeader(headers, ['video_bg_url', 'bg_url']);
   const H_MUSIC_URL       = findHeader(headers, ['music_url', 'audio_url']);
@@ -342,8 +295,8 @@ async function runOnce(app, opts = {}) {
 
   const usePerGroupMode = !!H_WA_GROUPS;
 
+  // 3) Seleciona linhas "prontas"
   const now = new Date();
-  const nowTs = now.getTime();
   const pending = [];
   const skipped = [];
 
@@ -361,6 +314,7 @@ async function runOnce(app, opts = {}) {
       return;
     }
 
+    // --- gating antigo (fallback) ---
     if (!usePerGroupMode) {
       const flagPosted = coerceStr(row[H_WA_POST]).toLowerCase() === 'postado';
       if (flagPosted) { skipped.push({ row: rowIndex1, id, reason: 'WA_POST=Postado' }); return; }
@@ -380,19 +334,37 @@ async function runOnce(app, opts = {}) {
     const utcDate = toUtcFromSheet(spDate);
     const readyAt = new Date(utcDate.getTime() + DELAY_MIN * 60000);
 
+    // ✅ Janela de segurança: ignora linhas muito antigas
     const tooOld = (now - utcDate) > MAX_AGE_H * 60 * 60 * 1000;
-    if (tooOld) { skipped.push({ row: rowIndex1, id, reason: 'older_than_window' }); return; }
-    if (now < readyAt) { skipped.push({ row: rowIndex1, id, reason: 'ainda_nao_chegou', readyAt: readyAt.toISOString() }); return; }
-    if (!imgUrl || !product) { skipped.push({ row: rowIndex1, id, reason: 'faltando imgUrl/nome' }); return; }
+    if (tooOld) {
+      skipped.push({ row: rowIndex1, id, reason: 'older_than_window' });
+      return;
+    }
 
+    if (now < readyAt) {
+      skipped.push({ row: rowIndex1, id, reason: 'ainda_nao_chegou', readyAt: readyAt.toISOString() });
+      return;
+    }
+
+    if (!imgUrl || !product) {
+      skipped.push({ row: rowIndex1, id, reason: 'faltando imgUrl/nome' });
+      return;
+    }
+
+    // opcionais por linha
     const customHeadline = H_CUSTOM_HEADLINE ? coerceStr(row[H_CUSTOM_HEADLINE]) : '';
     const bgUrl          = H_BG_URL          ? coerceStr(row[H_BG_URL])          : '';
     const musicUrl       = H_MUSIC_URL       ? coerceStr(row[H_MUSIC_URL])       : '';
 
+    // --- idempotência por grupo: calcula grupos restantes ---
     let postedSet = new Set();
-    if (usePerGroupMode) postedSet = parseCsvSet(row[H_WA_GROUPS]);
+    if (usePerGroupMode) {
+      postedSet = parseCsvSet(row[H_WA_GROUPS]);
+    }
+    const remainingJids = usePerGroupMode
+      ? targetJids.filter(j => !postedSet.has(j))
+      : targetJids.slice();
 
-    const remainingJids = usePerGroupMode ? targetJids.filter(j => !postedSet.has(j)) : targetJids.slice();
     if (usePerGroupMode && remainingJids.length === 0) {
       skipped.push({ row: rowIndex1, id, reason: 'todos_grupos_ja_postados' });
       return;
@@ -412,180 +384,202 @@ async function runOnce(app, opts = {}) {
     return { ok: true, processed: 0, sent: 0, note: 'sem linhas prontas', skipped };
   }
 
-  // 1×1 por execução
+  // 4) Cupom (uma vez por execução)
+  let coupon;
+  try {
+    if (typeof fetchTopCoupons === 'function') {
+      const list = await fetchTopCoupons(2);
+      if (Array.isArray(list) && list.length > 1) {
+        coupon = `${list[0]} ou ${list[1]}`;
+      } else if (Array.isArray(list) && list.length === 1) {
+        coupon = list[0];
+      }
+    }
+  } catch (_) {}
+  if (!coupon) {
+    coupon = await fetchFirstCoupon();
+  }
+  dlog('coupon', coupon);
+
+  // 5) Processa e posta
   let sent = 0;
   const errors = [];
 
-  // percorre linhas até achar 1 grupo elegível e postar
   for (const p of pending) {
-    const ss = getSafeState();
-    if (!eligibleGlobal(ss, nowTs)) { dlog('bloqueado por ritmo global'); break; }
+    let anySentForThisRow = false;
 
-    const candidate = pickNextGroup(p.remainingJids, ss, nowTs);
-    if (!candidate) { continue; }
-
-    // trava (evita duplicidade durante jitter)
-    const lockKey = `winner:${candidate}`;
-    const lockUntil = Number(ss.locks[lockKey] || 0);
-    if (nowTs < lockUntil) { continue; }
-    ss.locks[lockKey] = nowTs + SAFE_SEND_LOCK_TTL_SEC * 1000;
-    saveSafeState(ss);
-
-    // buscar resultado
-    let info;
     try {
-      info = await fetchResultInfo(p.id);
-    } catch (e) {
-      errors.push({ id: p.id, stage: 'fetchResultInfo', error: e?.message || String(e) });
-      // solta lock
-      const s2 = getSafeState(); delete s2.locks[lockKey]; saveSafeState(s2);
-      continue;
-    }
-    const { url: resultUrl, winner, participants } = info;
-    if (!winnerLooksReady(info)) {
-      const s2 = getSafeState(); delete s2.locks[lockKey]; saveSafeState(s2);
-      skipped.push({ id: p.id, reason: 'winner_not_ready' });
-      continue;
-    }
-    const { name: winnerName, metaDateTime, metaChannel } = parseWinnerDetailed(winner || '');
+      // 5.1) buscar resultado
+      let info;
+      try {
+        info = await fetchResultInfo(p.id);
+      } catch (e) {
+        errors.push({ id: p.id, stage: 'fetchResultInfo', error: e?.message || String(e) });
+        continue;
+      }
+      const { url: resultUrl, winner, participants } = info;
+      dlog('linha', p.id, { winner, participantsCount: Array.isArray(participants) ? participants.length : 0 });
 
-    // mídia
-    let usedPath;
-    let media;
-    try {
-      const wantVideo = (process.env.POST_MEDIA_TYPE || 'image').toLowerCase() === 'video';
-      const mode = (process.env.VIDEO_MODE || 'overlay').toLowerCase();
+      if (!winnerLooksReady(info)) {
+        skipped.push({ id: p.id, reason: 'winner_not_ready' });
+        continue;
+      }
+      const { name: winnerName, metaDateTime, metaChannel } = parseWinnerDetailed(winner || '');
 
-      const headline   = p.customHeadline || pickHeadlineSafe();
-      const premio     = p.productName;
-      const videoBgUrl = p.bgUrl    || pickBgSafe();
-      const musicUrl   = p.musicUrl || pickMusicSafe();
+      // 5.2) gerar mídia
+      let usedPath;
+      let media;
 
-      if (wantVideo && mode === 'creatomate' && typeof makeCreatomateVideo === 'function') {
-        const templateId = process.env.CREATOMATE_TEMPLATE_ID;
-        usedPath = await makeCreatomateVideo({
-          templateId, headline, premio,
-          winner: winnerName || 'Ganhador(a)',
-          participants, productImageUrl: p.imgUrl,
-          videoBgUrl, musicUrl,
-        });
-        const buf = fs.readFileSync(usedPath);
-        media = { video: buf, mimetype: 'video/mp4' };
-      } else {
-        const dateTimeStr = format(p.spDate, "dd/MM/yyyy 'às' HH:mm");
-        const posterPath = await generatePoster({
-          productImageUrl: p.imgUrl,
-          productName: p.productName,
-          dateTimeStr,
-          winner: winnerName || 'Ganhador(a)',
-          winnerMetaDateTime: metaDateTime,
-          winnerMetaChannel:  metaChannel,
-          winnerMeta: winner,
-          participants
-        });
-        usedPath = posterPath;
-        if (wantVideo) {
-          try {
-            const vid = await makeOverlayVideo({
-              posterPath,
-              duration: Number(process.env.VIDEO_DURATION || 7),
-              res: process.env.VIDEO_RES || '1080x1350',
-              bitrate: process.env.VIDEO_BITRATE || '2000k',
-              bg: videoBgUrl,
-              music: musicUrl
-            });
-            usedPath = vid;
-            const buf = fs.readFileSync(vid);
-            media = { video: buf, mimetype: 'video/mp4' };
-          } catch (fferr) {
+      try {
+        const wantVideo = (process.env.POST_MEDIA_TYPE || 'image').toLowerCase() === 'video';
+        const mode = (process.env.VIDEO_MODE || 'overlay').toLowerCase();
+
+        const headline   = p.customHeadline || pickHeadlineSafe();
+        const premio     = p.productName;
+        const videoBgUrl = p.bgUrl    || pickBgSafe();
+        const musicUrl   = p.musicUrl || pickMusicSafe();
+
+        if (wantVideo && mode === 'creatomate' && typeof makeCreatomateVideo === 'function') {
+          const templateId = process.env.CREATOMATE_TEMPLATE_ID;
+
+          usedPath = await makeCreatomateVideo({
+            templateId,
+            headline,
+            premio,
+            winner: winnerName || 'Ganhador(a)',
+            participants,
+            productImageUrl: p.imgUrl,
+            videoBgUrl,
+            musicUrl,
+          });
+
+          const buf = fs.readFileSync(usedPath);
+          media = { video: buf, mimetype: 'video/mp4' };
+        } else {
+          const dateTimeStr = format(p.spDate, "dd/MM/yyyy 'às' HH:mm");
+          const posterPath = await generatePoster({
+            productImageUrl: p.imgUrl,
+            productName: p.productName,
+            dateTimeStr,
+            winner: winnerName || 'Ganhador(a)',
+            winnerMetaDateTime: metaDateTime,
+            winnerMetaChannel:  metaChannel,
+            winnerMeta: winner,
+            participants
+          });
+
+          usedPath = posterPath;
+
+          if (wantVideo) {
+            if (dryRun) {
+              const buf = fs.readFileSync(posterPath);
+              media = { image: buf, mimetype: 'image/png' };
+              dlog('dry-run: pulando FFmpeg, usando poster como imagem');
+            } else {
+              try {
+                const vid = await makeOverlayVideo({
+                  posterPath,
+                  duration: Number(process.env.VIDEO_DURATION || 7),
+                  res: process.env.VIDEO_RES || '1080x1350',
+                  bitrate: process.env.VIDEO_BITRATE || '2000k',
+                  bg: videoBgUrl,
+                  music: musicUrl
+                });
+                usedPath = vid;
+                const buf = fs.readFileSync(vid);
+                media = { video: buf, mimetype: 'video/mp4' };
+              } catch (fferr) {
+                errors.push({ id: p.id, stage: 'prepareMedia(video)', error: fferr?.message || String(fferr) });
+                const buf = fs.readFileSync(posterPath);
+                media = { image: buf, mimetype: 'image/png' };
+                dlog('FFmpeg falhou, fallback para imagem (poster)', fferr?.message || fferr);
+              }
+            }
+          } else {
             const buf = fs.readFileSync(posterPath);
             media = { image: buf, mimetype: 'image/png' };
-            dlog('FFmpeg falhou, fallback para imagem (poster)', fferr?.message || fferr);
           }
-        } else {
-          const buf = fs.readFileSync(posterPath);
-          media = { image: buf, mimetype: 'image/png' };
+        }
+        dlog('midia pronta', { usedPath, keys: Object.keys(media || {}) });
+      } catch (e) {
+        errors.push({ id: p.id, stage: 'prepareMedia', error: e?.message || String(e) });
+        continue;
+      }
+
+      // 5.3) legenda
+      const resultUrlStr = safeStr(resultUrl);
+      let captionFull = mergeText(chooseTemplate(), {
+        WINNER: winnerName || 'Ganhador(a)',
+        WINNER_DT: metaDateTime,
+        WINNER_CH: metaChannel,
+        RESULT_URL: resultUrlStr,
+        COUPON: coupon
+      });
+      captionFull = ensureLinkInsideCaption(captionFull, resultUrlStr);
+      const captionOut = captionFull;
+
+      // 5.4) enviar (com idempotência por grupo)
+      const sock = await getPreferredSock(app);
+      if (!sock) {
+        errors.push({ id: p.id, stage: 'sendMessage', error: 'WhatsApp não conectado (admin/cliente)' });
+      } else if (dryRun) {
+        dlog('dry-run => NÃO enviou', { to: p.remainingJids, id: p.id, caption: captionOut, link: resultUrlStr });
+      } else {
+        for (const rawJid of p.remainingJids) {
+          const jid = safeStr(rawJid).trim();
+          try {
+            if (!jid || !jid.endsWith('@g.us')) throw new Error(`JID inválido: "${jid}"`);
+            const payload = { ...media, caption: safeStr(captionOut) };
+            const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
+
+            await sock.sendMessage(jid, payload, opts);
+
+            anySentForThisRow = true;
+            dlog('enviado', { jid, id: p.id });
+
+            // ===== marca o grupo imediatamente (idempotência) =====
+            if (usePerGroupMode) {
+              p.postedSet.add(jid);
+              const headerName = H_WA_GROUPS || 'WA_POST_GROUPS';
+              try {
+                await updateCellByHeader(
+                  sheets, spreadsheetId, tab, headers, p.rowIndex1, headerName,
+                  setToCsv(p.postedSet)
+                );
+              } catch (e) {
+                errors.push({ id: p.id, stage: 'updateSheet(WA_POST_GROUPS)', error: e?.message || String(e) });
+              }
+            }
+          } catch (e) {
+            errors.push({
+              id: p.id, stage: 'sendMessage', jid,
+              mediaKeys: Object.keys(media || {}), captionLen: (captionOut || '').length,
+              usedPath, error: e?.message || String(e)
+            });
+          }
         }
       }
-    } catch (e) {
-      errors.push({ id: p.id, stage: 'prepareMedia', error: e?.message || String(e) });
-      const s2 = getSafeState(); delete s2.locks[lockKey]; saveSafeState(s2);
-      continue;
-    }
 
-    // legenda com rotação por grupo
-    const tpl = nextWinnerTemplateFor(ss, candidate);
-    const resultUrlStr = safeStr(resultUrl);
-    let captionFull = mergeText(tpl, {
-      WINNER: winnerName || 'Ganhador(a)',
-      WINNER_DT: metaDateTime,
-      WINNER_CH: metaChannel,
-      RESULT_URL: resultUrlStr,
-      COUPON: (await (async () => {
-        try {
-          const list = await fetchTopCoupons(2);
-          if (Array.isArray(list) && list.length > 1) return `${list[0]} ou ${list[1]}`;
-          if (Array.isArray(list) && list.length === 1) return list[0];
-        } catch {}
-        return await fetchFirstCoupon();
-      })())
-    });
-    captionFull = ensureLinkInsideCaption(captionFull, resultUrlStr);
-    const captionOut = captionFull;
-
-    // enviar
-    const sock = await getPreferredSock(app);
-    if (!sock) {
-      errors.push({ id: p.id, stage: 'sendMessage', error: 'WhatsApp não conectado (admin/cliente)' });
-      const s2 = getSafeState(); delete s2.locks[lockKey]; saveSafeState(s2);
-      break;
-    }
-
-    if (dryRun) {
-      dlog('dry-run => NÃO enviou', { to: candidate, id: p.id });
-      const s2 = getSafeState(); delete s2.locks[lockKey]; saveSafeState(s2);
-      break;
-    }
-
-    const jitter = Math.max(0, Math.min(SAFE_SEND_JITTER_MAX_SEC, SAFE_SEND_JITTER_MIN_SEC + Math.floor(Math.random() * (SAFE_SEND_JITTER_MAX_SEC - SAFE_SEND_JITTER_MIN_SEC + 1))));
-    await delay(jitter * 1000);
-
-    const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
-    await sock.sendMessage(candidate, { ...media, caption: safeStr(captionOut) }, opts);
-
-    // marca grupo na planilha imediatamente
-    if (usePerGroupMode) {
-      p.postedSet.add(candidate);
-      const headerName = H_WA_GROUPS || 'WA_POST_GROUPS';
+      // 5.5) marcar planilha (linha) após qualquer sucesso
       try {
-        await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, headerName, setToCsv(p.postedSet));
+        if (!dryRun && anySentForThisRow) {
+          const postAt = new Date().toISOString();
+          await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_POST || 'WA_POST', 'Postado');
+          await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_AT   || 'WA_POST_AT', postAt);
+
+          // Com modo por grupo ativo, NÃO bloquear a linha inteira via settings,
+          // para permitir completar grupos restantes em execuções futuras.
+          if (!usePerGroupMode) {
+            settings.addPosted(p.id);
+          }
+          sent++;
+        }
       } catch (e) {
-        errors.push({ id: p.id, stage: 'updateSheet(WA_POST_GROUPS)', error: e?.message || String(e) });
+        errors.push({ id: p.id, stage: 'updateSheet', error: e?.message || String(e) });
       }
-    }
-
-    // marca linha (não bloqueia futuramente em modo por grupo)
-    try {
-      const postAt = new Date().toISOString();
-      await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_POST || 'WA_POST', 'Postado');
-      await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_AT   || 'WA_POST_AT', postAt);
-      if (!usePerGroupMode) settings.addPosted(p.id);
     } catch (e) {
-      errors.push({ id: p.id, stage: 'updateSheet', error: e?.message || String(e) });
+      errors.push({ id: p.id, stage: 'unknown', error: e?.message || String(e) });
     }
-
-    // atualiza ritmo e cursor
-    const ts = Date.now();
-    ss.lastSentAtByGroup[candidate] = ts;
-    ss.lastGlobalSentAt = ts;
-    pruneCounters(ss, ts);
-    ss.sentLastHour.push(ts);
-    ss.sentToday.push(ts);
-    delete ss.locks[lockKey];
-    saveSafeState(ss);
-
-    sent = 1;
-    break; // 1×1 por execução
   }
 
   dlog('tick end', { processed: pending.length, sent, errorsCount: errors.length, skippedCount: skipped.length });
