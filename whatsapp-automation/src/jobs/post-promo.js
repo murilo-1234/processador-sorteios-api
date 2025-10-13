@@ -31,7 +31,6 @@ function localLooksLikeConfiguredTZ() {
   return false;
 }
 function toUtcFromLocal(d) {
-  // Se o processo já está no fuso “certo”, não reconverte
   if (localLooksLikeConfiguredTZ()) return d;
   return zonedTimeToUtcSafe(d, TZ);
 }
@@ -48,9 +47,20 @@ const PROMO_BEFORE_DAYS = Number(process.env.PROMO_BEFORE_DAYS || 2);
 const PROMO_POST_HOUR  = Number(process.env.PROMO_POST_HOUR || 9);
 const BAILEYS_LINK_PREVIEW_OFF = String(process.env.BAILEYS_LINK_PREVIEW_OFF || '1') === '1';
 
+// ===== Ritmo seguro (com defaults) =====
+const SAFE_SEND_GLOBAL_MIN_GAP_MIN = Number(process.env.SAFE_SEND_GLOBAL_MIN_GAP_MIN || 5);
+const SAFE_SEND_COOLDOWN_MIN       = Number(process.env.SAFE_SEND_COOLDOWN_MIN || 10);
+const SAFE_SEND_JITTER_MIN_SEC     = Number(process.env.SAFE_SEND_JITTER_MIN_SEC || 30);
+const SAFE_SEND_JITTER_MAX_SEC     = Number(process.env.SAFE_SEND_JITTER_MAX_SEC || 120);
+const SAFE_SEND_MAX_GROUPS_PER_HOUR= Number(process.env.SAFE_SEND_MAX_GROUPS_PER_HOUR || 12);
+const SAFE_SEND_DAILY_CAP          = Number(process.env.SAFE_SEND_DAILY_CAP || 100);
+const SAFE_SEND_LOCK_TTL_SEC       = Number(process.env.SAFE_SEND_LOCK_TTL_SEC || 30);
+
 const dlog = (...a) => { if (DEBUG_JOB) console.log('[PROMO]', ...a); };
 const coerceStr = (v) => { try { return String(v ?? '').trim(); } catch { return ''; } };
+const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
+// ---------- helpers ----------
 function findHeader(headers, candidates) {
   const lower = headers.map((h) => (h || '').trim().toLowerCase());
   for (const cand of candidates) {
@@ -64,10 +74,6 @@ function mkLocalDateAtHour(spDateOnly /*Date*/, hour = 9) {
   const mm   = spDateOnly.getMonth();
   const dd   = spDateOnly.getDate();
   return new Date(yyyy, mm, dd, hour, 0, 0);
-}
-function choose(list) {
-  if (!Array.isArray(list) || !list.length) return '';
-  return list[Math.floor(Math.random() * list.length)];
 }
 function mergeText(tpl, vars) {
   return safeStr(tpl)
@@ -133,7 +139,7 @@ function hasResultForRow(row, hdrs) {
   return (!!winner || !!resultUrl || !!resultAt || ended);
 }
 
-// --- idempotência por grupo ---
+// --- idempotência por grupo (na planilha) ---
 function parseGroups(val) {
   const s = safeStr(val).trim();
   if (!s) return new Set();
@@ -145,6 +151,54 @@ function parseGroups(val) {
 }
 function groupsToCell(set) { return Array.from(set).join(','); }
 function isSuperset(setA, setB) { for (const v of setB) if (!setA.has(v)) return false; return true; }
+
+// --- estado seguro em settings ---
+function getSafeState() {
+  const cur = settings.get();
+  const ss = cur.safeSend || {};
+  return {
+    lastSentAtByGroup: ss.lastSentAtByGroup || {},
+    cursors: ss.cursors || {},
+    sentLastHour: Array.isArray(ss.sentLastHour) ? ss.sentLastHour : [],
+    sentToday: Array.isArray(ss.sentToday) ? ss.sentToday : [],
+    lastGlobalSentAt: Number(ss.lastGlobalSentAt || 0),
+    locks: ss.locks || {}
+  };
+}
+function saveSafeState(next) {
+  const cur = settings.get();
+  settings.set({ ...cur, safeSend: next });
+}
+function pruneCounters(ss, now) {
+  const hrAgo = now - 60*60*1000;
+  const dayAgo = now - 24*60*60*1000;
+  ss.sentLastHour = ss.sentLastHour.filter(ts => ts >= hrAgo);
+  ss.sentToday    = ss.sentToday.filter(ts => ts >= dayAgo);
+}
+function eligibleGlobal(ss, now) {
+  pruneCounters(ss, now);
+  const gapOk = (now - (ss.lastGlobalSentAt || 0)) >= SAFE_SEND_GLOBAL_MIN_GAP_MIN * 60 * 1000;
+  const hourOk = ss.sentLastHour.length < SAFE_SEND_MAX_GROUPS_PER_HOUR;
+  const dayOk = ss.sentToday.length < SAFE_SEND_DAILY_CAP;
+  return gapOk && hourOk && dayOk;
+}
+function eligibleGroup(ss, jid, now) {
+  const last = Number(ss.lastSentAtByGroup[jid] || 0);
+  return (now - last) >= SAFE_SEND_COOLDOWN_MIN * 60 * 1000;
+}
+function pickNextGroup(candidates, ss, now) {
+  const list = candidates
+    .filter(j => eligibleGroup(ss, j, now))
+    .sort((a,b) => (ss.lastSentAtByGroup[a]||0) - (ss.lastSentAtByGroup[b]||0));
+  return list[0] || null;
+}
+function nextTextFor(ss, cat, jid, list10) {
+  const key = `${cat}:${jid}`;
+  const idx = Number(ss.cursors[key] || 0);
+  const text = list10[(idx % list10.length) || 0];
+  ss.cursors[key] = idx + 1;
+  return text;
+}
 
 async function runOnce(app, opts = {}) {
   const dryRun = !!opts.dryRun || String(app?.locals?.reqDry || '').trim() === '1';
@@ -196,6 +250,7 @@ async function runOnce(app, opts = {}) {
   }
 
   const now = new Date();
+  const nowTs = now.getTime();
   const todayLocalDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const couponText = await getCouponTextCTA();
 
@@ -210,8 +265,12 @@ async function runOnce(app, opts = {}) {
   }
 
   const hdrs = { H_WINNER, H_RESULT_URL, H_RESULT_AT, H_STATUS };
+  const ss0 = getSafeState();
 
-  for (let i = 0; i < items.length; i++) {
+  // permite no máximo 1 envio por execução
+  let didSend = false;
+
+  for (let i = 0; i < items.length && !didSend; i++) {
     const row = items[i];
     const rowIndex1 = i + 2;
 
@@ -222,7 +281,6 @@ async function runOnce(app, opts = {}) {
     const imgUrl  = coerceStr(row[H_IMG]);
     const planUrl = coerceStr(row[H_PLAN]);
 
-    // validação obrigatórios
     const missing = [];
     if (!id)      missing.push('id');
     if (!dateStr) missing.push('data');
@@ -230,10 +288,8 @@ async function runOnce(app, opts = {}) {
     if (!product) missing.push('produto');
     if (!imgUrl)  missing.push('url_imagem_processada');
     if (!planUrl) missing.push('url_planilha');
-
     if (missing.length) { skipped.push({ row: rowIndex1, id, reason: 'faltando_campos', missing }); continue; }
 
-    // parse data da planilha
     let spDate;
     try {
       spDate = parse(dateStr, 'dd/MM/yyyy', new Date());
@@ -243,7 +299,6 @@ async function runOnce(app, opts = {}) {
       continue;
     }
 
-    // somente futuros e sem resultado
     if (spDate < todayLocalDateOnly) { skipped.push({ row: rowIndex1, id, reason: 'past_draw' }); continue; }
     if (hasResultForRow(row, hdrs))  { skipped.push({ row: rowIndex1, id, reason: 'has_result' }); continue; }
 
@@ -257,8 +312,12 @@ async function runOnce(app, opts = {}) {
     const p1At = toUtcFromLocal(beforeLocal);
     const p2At = toUtcFromLocal(dayLocal);
 
-    // ===== Promo 1 — 48h antes =====
-    if (!p1Canceled && now >= p1At) {
+    // estado mutável desta execução
+    const ss = getSafeState(); // recarrega a cada linha para minimizar concorrência
+    const canGlobal = eligibleGlobal(ss, nowTs);
+
+    // ===== Promo 1 — 48h antes (categoria: pre2) =====
+    if (!didSend && canGlobal && !p1Canceled && now >= p1At) {
       const alreadyP1 = parseGroups(row[H_P1G]);
       if (isSuperset(alreadyP1, targetSet)) {
         if (!p1Posted && !dryRun) {
@@ -266,95 +325,128 @@ async function runOnce(app, opts = {}) {
           await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P1AT, new Date().toISOString());
         }
       } else {
-        const caption = mergeText(choose(beforeTexts), { PRODUTO: product, COUPON: couponText });
-        try {
-          let payload;
-          try {
-            const buf = await downloadToBuffer(imgUrl);
-            payload = { image: buf, caption };
-          } catch {
-            payload = { text: `${caption}\n\n${imgUrl}` };
-          }
+        const remaining = targetJids.filter(j => !alreadyP1.has(j));
 
-          if (dryRun) {
-            dlog('DRY-RUN P1 =>', { row: rowIndex1, id, at: p1At.toISOString() });
-          } else {
-            let anySent = false;
-            for (const rawJid of targetJids) {
-              const jid = String(rawJid || '').trim();
-              if (!jid.endsWith('@g.us')) continue;
-              if (alreadyP1.has(jid)) { dlog('skip P1 já enviado', { jid, row: rowIndex1, id }); continue; }
+        const candidate = pickNextGroup(remaining, ss, nowTs);
+        if (candidate) {
+          const lockKey = `pre2:${candidate}`;
+          const lockUntil = Number(ss.locks[lockKey] || 0);
+          if (nowTs >= lockUntil) {
+            // trava antes de aguardar jitter
+            ss.locks[lockKey] = nowTs + SAFE_SEND_LOCK_TTL_SEC * 1000;
+            saveSafeState(ss);
+
+            const caption = mergeText(nextTextFor(ss, 'pre2', candidate, beforeTexts), { PRODUTO: product, COUPON: couponText });
+
+            let payload;
+            try {
+              const buf = await downloadToBuffer(imgUrl);
+              payload = { image: buf, caption };
+            } catch {
+              payload = { text: `${caption}\n\n${imgUrl}` };
+            }
+
+            if (dryRun) {
+              dlog('DRY-RUN P1 =>', { row: rowIndex1, id, at: p1At.toISOString(), to: candidate });
+            } else {
+              const jitter = Math.max(0, Math.min(SAFE_SEND_JITTER_MAX_SEC, SAFE_SEND_JITTER_MIN_SEC + Math.floor(Math.random() * (SAFE_SEND_JITTER_MAX_SEC - SAFE_SEND_JITTER_MIN_SEC + 1))));
+              await delay(jitter * 1000);
 
               const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
-              await sock.sendMessage(jid, payload, opts);
+              await sock.sendMessage(candidate, payload, opts);
 
-              alreadyP1.add(jid);
+              alreadyP1.add(candidate);
               await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P1G, groupsToCell(alreadyP1));
-              anySent = true;
+
+              const ts = Date.now();
+              ss.lastSentAtByGroup[candidate] = ts;
+              ss.lastGlobalSentAt = ts;
+              pruneCounters(ss, ts);
+              ss.sentLastHour.push(ts);
+              ss.sentToday.push(ts);
+              // libera lock
+              delete ss.locks[lockKey];
+              saveSafeState(ss);
+
+              if (isSuperset(alreadyP1, targetSet)) {
+                const iso = new Date().toISOString();
+                await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P1, 'Postado');
+                await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P1AT, iso);
+              }
               sent++;
-            }
-            if (anySent && isSuperset(alreadyP1, targetSet)) {
-              const ts = new Date().toISOString();
-              await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P1, 'Postado');
-              await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P1AT, ts);
+              didSend = true;
             }
           }
-        } catch (e) {
-          errors.push({ row: rowIndex1, id, stage: 'send-promo1', error: e?.message || String(e) });
         }
       }
-    } else {
-      dlog('aguardando P1', { id, row: rowIndex1, now: now.toISOString(), p1At: p1At.toISOString() });
     }
 
-    // ===== Promo 2 — no dia =====
-    if (!p2Canceled && now >= p2At) {
-      const alreadyP2 = parseGroups(row[H_P2G]);
-      if (isSuperset(alreadyP2, targetSet)) {
-        if (!p2Posted && !dryRun) {
-          await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P2, 'Postado');
-          await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P2AT, new Date().toISOString());
-        }
-      } else {
-        const caption = mergeText(choose(dayTexts), { PRODUTO: product, COUPON: couponText });
-        try {
-          let payload;
-          try {
-            const buf = await downloadToBuffer(imgUrl);
-            payload = { image: buf, caption };
-          } catch {
-            payload = { text: `${caption}\n\n${imgUrl}` };
+    // ===== Promo 2 — no dia (categoria: day0) =====
+    if (!didSend) {
+      const ss2 = getSafeState();
+      const canGlobal2 = eligibleGlobal(ss2, nowTs);
+      if (canGlobal2 && !p2Canceled && now >= p2At) {
+        const alreadyP2 = parseGroups(row[H_P2G]);
+        if (isSuperset(alreadyP2, targetSet)) {
+          if (!p2Posted && !dryRun) {
+            await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P2, 'Postado');
+            await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P2AT, new Date().toISOString());
           }
+        } else {
+          const remaining = targetJids.filter(j => !alreadyP2.has(j));
+          const candidate = pickNextGroup(remaining, ss2, nowTs);
+          if (candidate) {
+            const lockKey = `day0:${candidate}`;
+            const lockUntil = Number(ss2.locks[lockKey] || 0);
+            if (nowTs >= lockUntil) {
+              ss2.locks[lockKey] = nowTs + SAFE_SEND_LOCK_TTL_SEC * 1000;
+              saveSafeState(ss2);
 
-          if (dryRun) {
-            dlog('DRY-RUN P2 =>', { row: rowIndex1, id, at: p2At.toISOString() });
-          } else {
-            let anySent = false;
-            for (const rawJid of targetJids) {
-              const jid = String(rawJid || '').trim();
-              if (!jid.endsWith('@g.us')) continue;
-              if (alreadyP2.has(jid)) { dlog('skip P2 já enviado', { jid, row: rowIndex1, id }); continue; }
+              const caption = mergeText(nextTextFor(ss2, 'day0', candidate, dayTexts), { PRODUTO: product, COUPON: couponText });
 
-              const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
-              await sock.sendMessage(jid, payload, opts);
+              let payload;
+              try {
+                const buf = await downloadToBuffer(imgUrl);
+                payload = { image: buf, caption };
+              } catch {
+                payload = { text: `${caption}\n\n${imgUrl}` };
+              }
 
-              alreadyP2.add(jid);
-              await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P2G, groupsToCell(alreadyP2));
-              anySent = true;
-              sent++;
-            }
-            if (anySent && isSuperset(alreadyP2, targetSet)) {
-              const ts = new Date().toISOString();
-              await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P2, 'Postado');
-              await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P2AT, ts);
+              if (dryRun) {
+                dlog('DRY-RUN P2 =>', { row: rowIndex1, id, at: p2At.toISOString(), to: candidate });
+              } else {
+                const jitter = Math.max(0, Math.min(SAFE_SEND_JITTER_MAX_SEC, SAFE_SEND_JITTER_MIN_SEC + Math.floor(Math.random() * (SAFE_SEND_JITTER_MAX_SEC - SAFE_SEND_JITTER_MIN_SEC + 1))));
+                await delay(jitter * 1000);
+
+                const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
+                await sock.sendMessage(candidate, payload, opts);
+
+                alreadyP2.add(candidate);
+                await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P2G, groupsToCell(alreadyP2));
+
+                const ts = Date.now();
+                ss2.lastSentAtByGroup[candidate] = ts;
+                ss2.lastGlobalSentAt = ts;
+                pruneCounters(ss2, ts);
+                ss2.sentLastHour.push(ts);
+                ss2.sentToday.push(ts);
+                delete ss2.locks[lockKey];
+                saveSafeState(ss2);
+
+                if (isSuperset(alreadyP2, targetSet)) {
+                  const iso = new Date().toISOString();
+                  await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P2, 'Postado');
+                  await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P2AT, iso);
+                }
+                sent++;
+                didSend = true;
+              }
             }
           }
-        } catch (e) {
-          errors.push({ row: rowIndex1, id, stage: 'send-promo2', error: e?.message || String(e) });
         }
+      } else if (DEBUG_JOB) {
+        dlog('aguardando P2 ou bloqueado por ritmo', { id, row: rowIndex1 });
       }
-    } else {
-      dlog('aguardando P2', { id, row: rowIndex1, now: now.toISOString(), p2At: p2At.toISOString() });
     }
   }
 
