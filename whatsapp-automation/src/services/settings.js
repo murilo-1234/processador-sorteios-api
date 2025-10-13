@@ -20,19 +20,25 @@ function load() {
 
     // lista de grupos selecionados
     if (!Array.isArray(s.postGroupJids)) s.postGroupJids = [];
-    // Compat: migra legado para a lista
-    if (s.resultGroupJid && !s.postGroupJids.length) s.postGroupJids = [s.resultGroupJid];
-    // Mantém legado vivo
+
+    // Compat: migra legado para lista
+    if (s.resultGroupJid && !s.postGroupJids.length) {
+      s.postGroupJids = [s.resultGroupJid];
+    }
+
+    // Mantém resultGroupJid igual ao primeiro da lista
     s.resultGroupJid = s.postGroupJids.length ? s.postGroupJids[0] : (s.resultGroupJid ?? null);
 
-    // NOVO: estado de envio seguro (não quebra nada se ausente)
-    if (typeof s.safeSend !== 'object' || s.safeSend === null) s.safeSend = {};
-    if (typeof s.safeSend.lastAnySentAt !== 'number') s.safeSend.lastAnySentAt = 0;
-    if (typeof s.safeSend.lastSentAtByGroup !== 'object') s.safeSend.lastSentAtByGroup = {};
-    if (typeof s.safeSend.cursors !== 'object') s.safeSend.cursors = {};
-    if (!Array.isArray(s.safeSend.sentLastHour)) s.safeSend.sentLastHour = [];
-    if (!Array.isArray(s.safeSend.sentToday)) s.safeSend.sentToday = [];
-    if (typeof s.safeSend.lock !== 'object' || s.safeSend.lock === null) s.safeSend.lock = { owner: '', until: 0 };
+    // NOVO: bloco de estado da fila segura (opcional, sem quebrar)
+    const ss = s.safeSend || {};
+    s.safeSend = {
+      lastSentAtByGroup: ss.lastSentAtByGroup || {},
+      cursors: ss.cursors || {},
+      sentLastHour: Array.isArray(ss.sentLastHour) ? ss.sentLastHour : [],
+      sentToday: Array.isArray(ss.sentToday) ? ss.sentToday : [],
+      lastGlobalSentAt: Number(ss.lastGlobalSentAt || 0),
+      locks: ss.locks || {}
+    };
 
     return s;
   } catch {
@@ -44,12 +50,12 @@ function load() {
       postGroupJids: [],
       resultGroupJid: null,
       safeSend: {
-        lastAnySentAt: 0,
         lastSentAtByGroup: {},
         cursors: {},
         sentLastHour: [],
         sentToday: [],
-        lock: { owner: '', until: 0 }
+        lastGlobalSentAt: 0,
+        locks: {}
       }
     };
   }
@@ -64,41 +70,38 @@ function dedup(arr) {
   return Array.from(new Set((arr || []).filter(Boolean).map(String))).map(s => s.trim()).filter(Boolean);
 }
 
-function deepMergeSafeSend(cur, patch) {
-  const out = { ...cur };
-  if (!patch) return out;
-  if ('lastAnySentAt' in patch) out.lastAnySentAt = Number(patch.lastAnySentAt) || 0;
-  if (patch.lastSentAtByGroup) out.lastSentAtByGroup = { ...(cur.lastSentAtByGroup || {}), ...(patch.lastSentAtByGroup || {}) };
-  if (patch.cursors) out.cursors = { ...(cur.cursors || {}), ...(patch.cursors || {}) };
-  if (patch.sentLastHour) out.sentLastHour = Array.isArray(patch.sentLastHour) ? patch.sentLastHour.slice() : (cur.sentLastHour || []);
-  if (patch.sentToday) out.sentToday = Array.isArray(patch.sentToday) ? patch.sentToday.slice() : (cur.sentToday || []);
-  if (patch.lock) out.lock = { ...(cur.lock || { owner: '', until: 0 }), ...(patch.lock || {}) };
-  return out;
-}
-
 module.exports = {
   get() { return load(); },
 
   set(upd) {
     const cur = load();
     const out = { ...cur, ...upd };
+    // coerência com o legado
     if (Array.isArray(out.postGroupJids)) {
       out.postGroupJids = dedup(out.postGroupJids);
       out.resultGroupJid = out.postGroupJids[0] || null;
     }
-    // se veio safeSend no patch, merge cuidadoso
-    if (upd && typeof upd.safeSend === 'object') {
-      out.safeSend = deepMergeSafeSend(cur.safeSend || {}, upd.safeSend);
+    // garante shape do safeSend mesmo se vier parcial
+    if (out.safeSend) {
+      const ss = out.safeSend;
+      out.safeSend = {
+        lastSentAtByGroup: ss.lastSentAtByGroup || {},
+        cursors: ss.cursors || {},
+        sentLastHour: Array.isArray(ss.sentLastHour) ? ss.sentLastHour : [],
+        sentToday: Array.isArray(ss.sentToday) ? ss.sentToday : [],
+        lastGlobalSentAt: Number(ss.lastGlobalSentAt || 0),
+        locks: ss.locks || {}
+      };
     }
     save(out);
     return out;
   },
 
-  // define vários grupos, preservando compatibilidade
+  // define vários grupos
   setPostGroups(jids = []) {
     const s = load();
     s.postGroupJids = dedup(jids);
-    s.resultGroupJid = s.postGroupJids[0] || null;
+    s.resultGroupJid = s.postGroupJids[0] || null; // mantém legado vivo
     save(s);
     return s;
   },
@@ -112,14 +115,5 @@ module.exports = {
 
   hasPosted(id) {
     return load().postedIds.includes(id);
-  },
-
-  // NOVOS utilitários sem quebrar API existente
-  getSafeSend() { return load().safeSend || { lastAnySentAt: 0, lastSentAtByGroup: {}, cursors: {}, sentLastHour: [], sentToday: [], lock: { owner: '', until: 0 } }; },
-  setSafeSend(patch) {
-    const s = load();
-    s.safeSend = deepMergeSafeSend(s.safeSend || {}, patch || {});
-    save(s);
-    return s.safeSend;
   }
 };
