@@ -3,14 +3,14 @@
  * 
  * MUDANÇA PRINCIPAL:
  * - ANTES: Delay fixo de 2 minutos
- * - AGORA: Delay aleatório entre 4-6 minutos
+ * - AGORA: Delay aleatório entre 4-6 minutos (configurável via .env)
  * 
  * POR QUÊ: Parecer mais humano e evitar detecção de bot
  */
 
 const { sleep } = require('./sleep-util');
 
-// Lê as novas variáveis de ambiente
+// Lê as variáveis de ambiente (com fallback para 4-6 min)
 const MIN_DELAY_MINUTES = parseInt(process.env.GROUP_POST_DELAY_MINUTES || '4', 10);
 const MAX_DELAY_MINUTES = parseInt(process.env.GROUP_POST_DELAY_MAX_MINUTES || '6', 10);
 
@@ -110,8 +110,17 @@ async function waitRandomDelay() {
   await sleep(delayMs);
 }
 
+/**
+ * Alias para waitRandomDelay() - usado pelos jobs
+ * (post-promo.js e post-winner.js chamam `throttleWait()`)
+ */
+async function wait() {
+  return waitRandomDelay();
+}
+
 module.exports = {
   throttleGroupProcessing,
   waitRandomDelay,
+  wait,              // ← IMPORTANTE: exporta wait() para os jobs
   getRandomDelay
 };
