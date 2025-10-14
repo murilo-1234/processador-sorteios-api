@@ -24,6 +24,15 @@ if (typeof zonedTimeToUtcSafe !== 'function') {
 
 const settings = require('../services/settings');
 const { getRows, updateCellByHeader } = require('../services/sheets');
+// === preencher planilha (helpers) ===
+const nowISO = () => new Date().toISOString().replace('Z','');
+
+async function writeWinnerBack(rowNumber, jids) {
+  await updateCellByHeaderName(rowNumber, 'WA_POST', 'Postado');
+  await updateCellByHeaderName(rowNumber, 'WA_POST_AT', nowISO());
+  await updateCellByHeaderName(rowNumber, 'WA_POST_GROUPS', (jids||[]).join(','));
+}
+
 const { fetchResultInfo } = require('../services/result');
 const { fetchFirstCoupon, fetchTopCoupons } = require('../services/coupons');
 const { generatePoster } = require('../services/media');
