@@ -613,32 +613,3 @@ async function runOnce(app, opts = {}) {
 }
 
 module.exports = { runOnce };
-
-const { updateRow } = require('../src/services/sheets'); // ajuste o caminho se preciso
-
-function nowISO() { return new Date().toISOString().replace('Z',''); }
-
-async function writePromoBack(rowIdx, kind, jids) {
-  if (kind === 'P1') {
-    await updateRow(rowIdx, {
-      WA_PROMO1: 'Postado',
-      WA_PROMO1_AT: nowISO(),
-      WA_PROMO1_GROUPS: (jids||[]).join(',')
-    });
-  } else {
-    await updateRow(rowIdx, {
-      WA_PROMO2: 'Postado',
-      WA_PROMO2_AT: nowISO(),
-      WA_PROMO2_GROUPS: (jids||[]).join(',')
-    });
-  }
-}
-
-async function writeWinnerBack(rowIdx, jids) {
-  await updateRow(rowIdx, {
-    WA_POST: 'Postado',
-    WA_POST_AT: nowISO(),
-    WA_POST_GROUPS: (jids||[]).join(',')
-  });
-}
-
