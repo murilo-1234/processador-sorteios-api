@@ -819,3 +819,22 @@ class App {
 }
 
 new App().listen();
+
+// === Gatilho simples para postar GANHADOR (WINNER)
+const { runOnce: runWinner } = require('./src/jobs/post-winner'); // ajuste o caminho se preciso
+
+// segurança simples por token via querystring: ?secret=SEU_TOKEN
+const CRON_SECRET = process.env.CRON_SECRET || 'troque-este-token';
+
+app.post('/api/winner/run', async (req, res) => {
+  try {
+    if ((req.query.secret || '') !== CRON_SECRET) return res.status(403).json({error:'forbidden'});
+    console.log('⏰ [CRON] Disparando post-winner...');
+    const out = await runWinner(app, { dryRun: false });
+    res.json(out);
+  } catch (e) {
+    console.error('[WINNER] erro', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
