@@ -353,11 +353,26 @@ async function runOnce(app, opts = {}) {
         return;
       }
 
-      const utcDate = toUtcFromSheet(spDate);
-      const readyAt = new Date(utcDate.getTime() + DELAY_MIN * 60000);
+      // ========================================
+      // 🐛 BUG 1 CORRIGIDO: FUSO HORÁRIO
+      // ========================================
+      // ANTES: Sistema convertia para UTC e causava +3h de erro
+      // AGORA: Trabalha direto com horário local da planilha
+      
+      const localDate = spDate; // já está no horário local correto (SP)
+      const readyAt = new Date(localDate.getTime() + DELAY_MIN * 60000);
+      
+      // Log para debug (pode comentar depois)
+      if (DEBUG_JOB) {
+        dlog(`⏰ Linha ${rowIndex1}:`);
+        dlog(`   Planilha: ${data} ${hora}`);
+        dlog(`   Parsed: ${spDate.toLocaleString('pt-BR')}`);
+        dlog(`   Postar após: ${readyAt.toLocaleString('pt-BR')}`);
+        dlog(`   Agora: ${now.toLocaleString('pt-BR')}`);
+      }
 
       // ✅ Janela de segurança
-      const tooOld = (now - utcDate) > MAX_AGE_H * 60 * 60 * 1000;
+      const tooOld = (now - localDate) > MAX_AGE_H * 60 * 60 * 1000;
       if (tooOld) {
         skipped.push({ row: rowIndex1, id, reason: 'older_than_window' });
         return;
@@ -397,7 +412,7 @@ async function runOnce(app, opts = {}) {
         imgUrl, spDate,
         customHeadline, bgUrl, musicUrl,
         postedSet, remainingJids,
-        whenIso: utcDate.toISOString()
+        whenIso: localDate.toISOString() // usa localDate em vez de utcDate
       });
     });
 
@@ -566,7 +581,7 @@ async function runOnce(app, opts = {}) {
               const payload = { ...media, caption: safeStr(captionFull) };
               const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
 
-              await throttleWait(); // 2–5 min aleatório
+              await throttleWait(); // 4–6 min aleatório (configurável via .env)
               await sock.sendMessage(jid, payload, opts);
               await ledger.commit(ik, { message: 'sent' });
 
