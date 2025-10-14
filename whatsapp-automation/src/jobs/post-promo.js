@@ -5,6 +5,22 @@ const axios = require('axios');
 const { parse } = require('date-fns');
 const crypto = require('crypto');
 
+// === preencher planilha (helpers) ===
+const { updateCellByHeaderName } = require('../services/sheets');
+const nowISO = () => new Date().toISOString().replace('Z','');
+
+async function writePromoBack(rowNumber, kind, jids) {
+  if (kind === 'P1') {
+    await updateCellByHeaderName(rowNumber, 'WA_PROMO1', 'Postado');
+    await updateCellByHeaderName(rowNumber, 'WA_PROMO1_AT', nowISO());
+    await updateCellByHeaderName(rowNumber, 'WA_PROMO1_GROUPS', (jids||[]).join(','));
+  } else {
+    await updateCellByHeaderName(rowNumber, 'WA_PROMO2', 'Postado');
+    await updateCellByHeaderName(rowNumber, 'WA_PROMO2_AT', nowISO());
+    await updateCellByHeaderName(rowNumber, 'WA_PROMO2_GROUPS', (jids||[]).join(','));
+  }
+}
+
 // ========== TZ utils (iguais ao post-winner) ==========
 let zonedTimeToUtcSafe;
 try {
