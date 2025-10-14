@@ -31,7 +31,9 @@ function localLooksLikeConfiguredTZ() {
   } catch {}
   return false;
 }
-function toUtcFromLocal(d) { if (localLooksLikeConfiguredTZ()) return d; return zonedTimeToUtcSafe(d, TZ); }
+function toUtcFromLocal(d) {
+  return zonedTimeToUtcSafe(d, TZ);
+}
 // ======================================================
 
 const settings = require('../services/settings');
