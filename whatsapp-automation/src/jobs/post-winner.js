@@ -144,7 +144,6 @@ function localLooksLikeConfiguredTZ() {
   return false;
 }
 function toUtcFromSheet(spDate) {
-  if (localLooksLikeConfiguredTZ()) return spDate;
   return zonedTimeToUtcSafe(spDate, TZ);
 }
 function pickOneCSV(listStr) {
