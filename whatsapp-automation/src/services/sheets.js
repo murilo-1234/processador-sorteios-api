@@ -14,15 +14,26 @@ async function getRows() {
   const spreadsheetId = process.env.GOOGLE_SHEETS_ID;
   const tab = process.env.GOOGLE_SHEETS_TAB || 'Sorteios';
   const range = `${tab}!A1:Z1000`;
-  const { data } = await sheets.spreadsheets.values.get({ spreadsheetId, range });
+  
+  // 🔥 CORREÇÃO: Adiciona opções para bypass de cache
+  const { data } = await sheets.spreadsheets.values.get({ 
+    spreadsheetId, 
+    range,
+    // Força o Google Sheets a retornar dados frescos (não cacheados)
+    valueRenderOption: 'UNFORMATTED_VALUE',
+    dateTimeRenderOption: 'FORMATTED_STRING'
+  });
+  
   const rows = data.values || [];
   if (!rows.length) return { headers: [], items: [] };
+  
   const headers = rows[0].map(h => (h || '').trim());
   const items = rows.slice(1).map(r => {
     const obj = {};
     headers.forEach((h, i) => obj[h] = r[i] || '');
     return obj;
   });
+  
   return { headers, items, spreadsheetId, tab, sheets };
 }
 
