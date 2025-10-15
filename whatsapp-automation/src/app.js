@@ -808,6 +808,31 @@ class App {
         console.error('[promo] cron error:', e?.message || e);
       }
     });
+
+    // 🔥 NOVO: Cron para POST WINNER (resultados) — usa ENV WINNER_CRON ou padrão */2
+    const winnerCron = process.env.WINNER_CRON || '*/2 * * * *';
+    cron.schedule(winnerCron, async () => {
+      try {
+        let canRun = false;
+        try {
+          if (this.waAdmin && typeof this.waAdmin.getStatus === 'function') {
+            const st = await this.waAdmin.getStatus();
+            canRun = !!st.connected;
+          }
+        } catch (_) {}
+
+        if (!canRun && this.isFallbackEnabled) {
+          const wa = this.getClient({ create: false });
+          canRun = !!(wa?.isConnected);
+        }
+
+        if (canRun) {
+          await runOnce(this.app);
+        }
+      } catch (e) {
+        console.error('[winner] cron error:', e?.message || e);
+      }
+    });
   }
 
   listen() {
