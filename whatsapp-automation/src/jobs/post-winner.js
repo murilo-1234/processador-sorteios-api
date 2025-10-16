@@ -52,9 +52,6 @@ const DEBUG_JOB = String(process.env.DEBUG_JOB || '').trim() === '1';
 const GROUP_ORDER = String(process.env.GROUP_ORDER || 'shuffle').toLowerCase();
 const MAX_AGE_H = Number(process.env.POST_MAX_AGE_HOURS || 48);
 
-// 🆕 Intervalo entre grupos (padrão: 5 minutos)
-const GROUP_INTERVAL_MINUTES = Number(process.env.GROUP_POST_INTERVAL_MINUTES || 5);
-
 const DISABLE_LINK_PREVIEW = String(process.env.DISABLE_LINK_PREVIEW || '1') === '1';
 const SEND_RESULT_URL_SEPARATE = false;
 const BAILEYS_LINK_PREVIEW_OFF = String(process.env.BAILEYS_LINK_PREVIEW_OFF || '1') === '1';
@@ -234,6 +231,11 @@ function IK(rowId, kind, whenIso, groupJid) {
   return `${rowId}|${kind}|${whenIso}|${groupJid}`;
 }
 
+// ✅ Função auxiliar de sleep
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function runOnce(app, opts = {}) {
   const lock = await acquireJobLock('post-winner');
   if (!lock) return { ok: false, reason: 'job_locked' };
@@ -378,6 +380,14 @@ async function runOnce(app, opts = {}) {
       return { ok: true, processed: 0, sent: 0, note: 'sem linhas prontas', skipped };
     }
 
+    // 🔥 Processa APENAS 1 sorteio por vez
+    if (pending.length > 1) {
+      console.log(`⚠️ [post-winner] Encontrados ${pending.length} sorteios prontos. Processando apenas o primeiro.`);
+      console.log(`📋 [post-winner] Sorteios: ${pending.map(p => p.id).join(', ')}`);
+    }
+    
+    const sorteioPraProcessar = pending.slice(0, 1);
+
     let coupon;
     try {
       if (typeof fetchTopCoupons === 'function') {
@@ -396,17 +406,9 @@ async function runOnce(app, opts = {}) {
     let sent = 0;
     const errors = [];
 
-    // 🔥 SOLUÇÃO A: Processa APENAS 1 sorteio por vez
-    if (pending.length > 1) {
-      console.log(`⚠️ [post-winner] Encontrados ${pending.length} sorteios prontos. Processando apenas o primeiro para evitar sobreposição.`);
-      console.log(`📋 [post-winner] Sorteios encontrados: ${pending.map(p => p.id).join(', ')}`);
-      console.log(`✅ [post-winner] Processando: ${pending[0].id}`);
-    }
-
-    // Processa APENAS o primeiro sorteio
-    const sorteioPraProcessar = pending.slice(0, 1);
-
     for (const p of sorteioPraProcessar) {
+      let anySentForThisRow = false;
+
       try {
         let info;
         try {
@@ -520,119 +522,98 @@ async function runOnce(app, opts = {}) {
           continue;
         }
 
-        // 🔥 NOVO SISTEMA DE AGENDAMENTO COM setTimeout
+        // ✅ CÓDIGO SIMPLES: Posta grupo por grupo COM DELAY FIXO
         const orderedJids = (GROUP_ORDER === 'shuffle') ? shuffle(p.remainingJids) : p.remainingJids;
+        const successfulGroups = [];
         
-        console.log(`\n🗓️ [post-winner] Agendando ${orderedJids.length} grupos com intervalo de ${GROUP_INTERVAL_MINUTES} minutos`);
-        console.log(`⏰ [post-winner] Hora atual: ${new Date().toLocaleTimeString('pt-BR')}`);
-        console.log(`🎯 [post-winner] Sorteio: ${p.id}`);
+        console.log(`\n🚀 [post-winner] Iniciando postagem nos grupos (sorteio: ${p.id})`);
 
-        // Agenda cada grupo
-        orderedJids.forEach((rawJid, idx) => {
+        for (let idx = 0; idx < orderedJids.length; idx++) {
+          const rawJid = orderedJids[idx];
           const jid = safeStr(rawJid).trim();
-          const delayMs = (idx + 1) * GROUP_INTERVAL_MINUTES * 60 * 1000; // +5min, +10min, +15min...
-          const scheduledTime = new Date(Date.now() + delayMs);
-          
-          console.log(`📅 [post-winner] Grupo ${idx + 1}/${orderedJids.length} (${jid.slice(0, 15)}...) agendado para: ${scheduledTime.toLocaleTimeString('pt-BR')} (+${(idx + 1) * GROUP_INTERVAL_MINUTES}min)`);
 
-          // Agenda a postagem
-          setTimeout(async () => {
-            try {
-              console.log(`\n🚀 [post-winner] Iniciando postagem agendada - Grupo ${idx + 1}/${orderedJids.length}`);
-              console.log(`⏰ [post-winner] Hora real: ${new Date().toLocaleTimeString('pt-BR')}`);
-              
-              if (!jid || !jid.endsWith('@g.us')) {
-                throw new Error(`JID inválido: "${jid}"`);
-              }
+          try {
+            if (!jid || !jid.endsWith('@g.us')) throw new Error(`JID inválido: "${jid}"`);
 
-              // Dedupe
-              const ik = IK(p.id, 'RES', p.whenIso, jid);
-              const res = await ledger.reserve(ik, { rowId: p.id, kind: 'RES', whenIso: p.whenIso, jid });
-              
-              if (res.status !== 'ok') {
-                console.log(`⚠️ [post-winner] Grupo ${idx + 1} já foi postado (dedupe): ${res.reason}`);
-                return;
-              }
-
-              // Pega texto específico do grupo
-              const tpl = groupTextMap[jid] || tpls[0];
-              
-              let captionFull = mergeText(tpl, {
-                WINNER: winnerName || 'Ganhador(a)',
-                WINNER_DT: metaDateTime,
-                WINNER_CH: metaChannel,
-                RESULT_URL: resultUrlStr,
-                COUPON: coupon
-              });
-
-              captionFull = ensureLinkInsideCaption(captionFull, resultUrlStr);
-
-              const payload = { ...media, caption: safeStr(captionFull) };
-              const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
-
-              // POSTA!
-              await sock.sendMessage(jid, payload, opts);
-              await ledger.commit(ik, { message: 'sent' });
-              
-              sent++;
-              
-              console.log(`✅ [post-winner] Grupo ${idx + 1}/${orderedJids.length} postado com sucesso: ${jid}`);
-
-              // 🔥 MARCA NA PLANILHA IMEDIATAMENTE APÓS POSTAR
-              try {
-                // Adiciona o grupo ao set de postados
-                p.postedSet.add(jid);
-                
-                // Atualiza a coluna WA_POST_GROUPS com os grupos já postados
-                if (usePerGroupMode && H_WA_GROUPS) {
-                  await updateCellByHeader(
-                    sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_GROUPS,
-                    setToCsv(p.postedSet)
-                  );
-                  console.log(`📝 [post-winner] Grupos postados atualizados na planilha: ${setToCsv(p.postedSet)}`);
-                }
-                
-                // 🆕 MARCA WA_POST = "Postado" IMEDIATAMENTE após o PRIMEIRO post bem-sucedido
-                // Isso evita que o sistema continue tentando processar o mesmo sorteio
-                const postAt = new Date().toISOString();
-                await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_POST || 'WA_POST', 'Postado');
-                await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_AT || 'WA_POST_AT', postAt);
-                
-                console.log(`✅ [post-winner] Sorteio ${p.id} marcado como "Postado" na planilha (grupo ${idx + 1}/${orderedJids.length})`);
-                
-                if (!usePerGroupMode) settings.addPosted(p.id);
-                
-              } catch (e) {
-                console.error(`❌ [post-winner] Erro ao atualizar planilha:`, e.message);
-                errors.push({ id: p.id, stage: 'updateSheet', jid, error: e?.message || String(e) });
-              }
-
-            } catch (e) {
-              console.error(`❌ [post-winner] Erro ao postar grupo ${idx + 1}:`, e.message);
-              errors.push({
-                id: p.id, stage: 'sendMessage', jid,
-                error: e?.message || String(e)
-              });
+            const ik = IK(p.id, 'RES', p.whenIso, jid);
+            const res = await ledger.reserve(ik, { rowId: p.id, kind: 'RES', whenIso: p.whenIso, jid });
+            
+            if (res.status !== 'ok') {
+              console.log(`⚠️ [post-winner] Grupo ${idx + 1} já postado (dedupe): ${res.reason}`);
+              continue;
             }
-          }, delayMs);
-        });
 
-        console.log(`✅ [post-winner] ${orderedJids.length} grupos do sorteio ${p.id} agendados com sucesso!\n`);
-        console.log(`⏰ [post-winner] Último grupo será postado às: ${new Date(Date.now() + orderedJids.length * GROUP_INTERVAL_MINUTES * 60 * 1000).toLocaleTimeString('pt-BR')}`);
-        console.log(`🔄 [post-winner] Próxima execução do cron processará outros sorteios (se houver)\n`);
+            const tpl = groupTextMap[jid] || tpls[0];
+            
+            let captionFull = mergeText(tpl, {
+              WINNER: winnerName || 'Ganhador(a)',
+              WINNER_DT: metaDateTime,
+              WINNER_CH: metaChannel,
+              RESULT_URL: resultUrlStr,
+              COUPON: coupon
+            });
+
+            captionFull = ensureLinkInsideCaption(captionFull, resultUrlStr);
+
+            const payload = { ...media, caption: safeStr(captionFull) };
+            const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
+
+            await sock.sendMessage(jid, payload, opts);
+            await ledger.commit(ik, { message: 'sent' });
+            
+            anySentForThisRow = true;
+            successfulGroups.push(jid);
+            sent++;
+            
+            console.log(`✅ [post-winner] Grupo ${idx + 1}/${orderedJids.length} postado: ${jid.slice(0,20)}...`);
+
+            // 🔥 Delay FIXO de 5 minutos entre grupos (300000ms = 5min)
+            if (idx < orderedJids.length - 1) {
+              const delayMs = 5 * 60 * 1000; // 5 minutos fixo
+              console.log(`⏳ [post-winner] Aguardando 5 minutos antes do próximo grupo...`);
+              await sleep(delayMs);
+              console.log(`✅ [post-winner] Delay concluído. Próximo grupo.`);
+            }
+
+          } catch (e) {
+            console.error(`❌ [post-winner] Erro no grupo ${idx + 1}:`, e.message);
+            errors.push({
+              id: p.id, stage: 'sendMessage', jid,
+              error: e?.message || String(e)
+            });
+          }
+        }
+
+        // 🔥 MARCA NA PLANILHA APÓS TODOS OS POSTS
+        try {
+          if (!dryRun && anySentForThisRow) {
+            const postAt = new Date().toISOString();
+            
+            // Marca WA_POST = Postado
+            await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_POST || 'WA_POST', 'Postado');
+            await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_AT || 'WA_POST_AT', postAt);
+            
+            // Marca grupos postados
+            if (usePerGroupMode && successfulGroups.length > 0) {
+              successfulGroups.forEach(jid => p.postedSet.add(jid));
+              await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_GROUPS || 'WA_POST_GROUPS', setToCsv(p.postedSet));
+              console.log(`📝 [post-winner] Planilha atualizada - Grupos: ${setToCsv(p.postedSet)}`);
+            }
+            
+            console.log(`✅ [post-winner] Sorteio ${p.id} marcado como Postado`);
+            
+            if (!usePerGroupMode) settings.addPosted(p.id);
+          }
+        } catch (e) {
+          errors.push({ id: p.id, stage: 'updateSheet', error: e?.message || String(e) });
+        }
 
       } catch (e) {
         errors.push({ id: p.id, stage: 'unknown', error: e?.message || String(e) });
       }
     }
 
-    dlog('tick end', { 
-      processed: sorteioPraProcessar.length, 
-      scheduled: sent, 
-      pendingTotal: pending.length,
-      errorsCount: errors.length, 
-      skippedCount: skipped.length 
-    });
+    dlog('tick end', { processed: sorteioPraProcessar.length, sent, errorsCount: errors.length, skippedCount: skipped.length });
 
     return { ok: true, processed: sorteioPraProcessar.length, sent, errors, skipped, dryRun };
 
