@@ -1,18 +1,19 @@
 /**
  * group-throttle.js
  * 
- * MUDANÇA PRINCIPAL:
- * - ANTES: Delay fixo de 2 minutos
- * - AGORA: Delay aleatório entre 4-6 minutos (configurável via .env)
- * 
- * POR QUÊ: Parecer mais humano e evitar detecção de bot
+ * CORREÇÃO: Implementa sleep direto aqui para evitar problemas de dependência
  */
 
-const { sleep } = require('./sleep-util');
+// Função sleep embutida (não depende de sleep-util.js)
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
-// Lê as variáveis de ambiente (com fallback para 4-6 min)
-const MIN_DELAY_MINUTES = parseInt(process.env.GROUP_POST_DELAY_MINUTES || '4', 10);
-const MAX_DELAY_MINUTES = parseInt(process.env.GROUP_POST_DELAY_MAX_MINUTES || '6', 10);
+// Lê as variáveis de ambiente
+const MIN_DELAY_MINUTES = parseInt(process.env.GROUP_POST_DELAY_MINUTES || '3', 10);
+const MAX_DELAY_MINUTES = parseInt(process.env.GROUP_POST_DELAY_MAX_MINUTES || '5', 10);
+
+console.log(`🔧 [group-throttle] Inicializado com delay: ${MIN_DELAY_MINUTES}-${MAX_DELAY_MINUTES} minutos`);
 
 /**
  * Gera um delay aleatório entre min e max minutos
@@ -25,28 +26,16 @@ function getRandomDelay() {
   // Gera número aleatório entre min e max
   const randomMs = minMs + Math.random() * (maxMs - minMs);
   
-  // Log para acompanhar
+  // Log detalhado
   const minutes = (randomMs / 60000).toFixed(2);
-  console.log(`⏱️ [group-throttle] Delay sorteado: ${minutes} minutos`);
+  const seconds = Math.floor(randomMs / 1000);
+  console.log(`⏱️ [group-throttle] Delay sorteado: ${minutes} minutos (${seconds} segundos)`);
   
   return Math.floor(randomMs);
 }
 
 /**
  * Processa grupos com delay aleatório entre cada um
- * 
- * @param {Array} groups - Lista de grupos para processar
- * @param {Function} processFn - Função async que processa cada grupo
- * @returns {Promise<Array>} - Resultados de cada processamento
- * 
- * EXEMPLO DE USO:
- * await throttleGroupProcessing(
- *   ['grupo1@g.us', 'grupo2@g.us', 'grupo3@g.us'],
- *   async (group) => {
- *     console.log(`Postando em ${group}`);
- *     await enviarMensagem(group, texto);
- *   }
- * );
  */
 async function throttleGroupProcessing(groups, processFn) {
   const results = [];
@@ -60,7 +49,6 @@ async function throttleGroupProcessing(groups, processFn) {
     try {
       console.log(`\n📤 [group-throttle] Processando grupo ${i + 1}/${groups.length}: ${group}`);
       
-      // Executa a função de processamento
       const result = await processFn(group, i);
       results.push({ success: true, group, result });
       
@@ -70,9 +58,17 @@ async function throttleGroupProcessing(groups, processFn) {
       if (i < groups.length - 1) {
         const delayMs = getRandomDelay();
         const delayMinutes = (delayMs / 60000).toFixed(2);
+        const startTime = Date.now();
         
         console.log(`⏳ [group-throttle] Aguardando ${delayMinutes} minutos antes do próximo grupo...`);
+        console.log(`⏰ [group-throttle] Início do delay: ${new Date().toLocaleTimeString('pt-BR')}`);
+        
         await sleep(delayMs);
+        
+        const endTime = Date.now();
+        const actualDelay = ((endTime - startTime) / 60000).toFixed(2);
+        console.log(`✅ [group-throttle] Delay concluído. Esperou: ${actualDelay} minutos reais`);
+        console.log(`⏰ [group-throttle] Fim do delay: ${new Date().toLocaleTimeString('pt-BR')}`);
       }
       
     } catch (error) {
@@ -103,16 +99,28 @@ async function throttleGroupProcessing(groups, processFn) {
 
 /**
  * Aguarda um delay aleatório simples
- * (Útil se você só quer o delay sem processar grupos)
+ * (Usado por post-winner.js e post-promo.js)
  */
 async function waitRandomDelay() {
   const delayMs = getRandomDelay();
+  const startTime = Date.now();
+  
+  console.log(`⏰ [group-throttle] Início da espera: ${new Date().toLocaleTimeString('pt-BR')}`);
+  
   await sleep(delayMs);
+  
+  const endTime = Date.now();
+  const actualMs = endTime - startTime;
+  const actualMinutes = (actualMs / 60000).toFixed(2);
+  
+  console.log(`⏰ [group-throttle] Fim da espera: ${new Date().toLocaleTimeString('pt-BR')}`);
+  console.log(`✅ [group-throttle] Tempo real esperado: ${actualMinutes} minutos (${Math.floor(actualMs / 1000)} segundos)`);
+  
+  return actualMs;
 }
 
 /**
  * Alias para waitRandomDelay() - usado pelos jobs
- * (post-promo.js e post-winner.js chamam `throttleWait()`)
  */
 async function wait() {
   return waitRandomDelay();
@@ -121,6 +129,6 @@ async function wait() {
 module.exports = {
   throttleGroupProcessing,
   waitRandomDelay,
-  wait,              // ← IMPORTANTE: exporta wait() para os jobs
+  wait,
   getRandomDelay
 };
