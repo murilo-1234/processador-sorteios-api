@@ -301,9 +301,14 @@ async function runOnce(app, opts = {}) {
         return;
       }
 
+      // 🔥 SEMPRE verifica se WA_POST = "Postado", mesmo com WA_POST_GROUPS
+      const flagPosted = coerceStr(row[H_WA_POST]).toLowerCase() === 'postado';
+      if (flagPosted) { 
+        skipped.push({ row: rowIndex1, id, reason: 'WA_POST=Postado' }); 
+        return; 
+      }
+
       if (!usePerGroupMode) {
-        const flagPosted = coerceStr(row[H_WA_POST]).toLowerCase() === 'postado';
-        if (flagPosted) { skipped.push({ row: rowIndex1, id, reason: 'WA_POST=Postado' }); return; }
         if (settings.hasPosted(id)) { skipped.push({ row: rowIndex1, id, reason: 'settings.hasPosted' }); return; }
       }
 
