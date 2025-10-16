@@ -396,7 +396,17 @@ async function runOnce(app, opts = {}) {
     let sent = 0;
     const errors = [];
 
-    for (const p of pending) {
+    // 🔥 SOLUÇÃO A: Processa APENAS 1 sorteio por vez
+    if (pending.length > 1) {
+      console.log(`⚠️ [post-winner] Encontrados ${pending.length} sorteios prontos. Processando apenas o primeiro para evitar sobreposição.`);
+      console.log(`📋 [post-winner] Sorteios encontrados: ${pending.map(p => p.id).join(', ')}`);
+      console.log(`✅ [post-winner] Processando: ${pending[0].id}`);
+    }
+
+    // Processa APENAS o primeiro sorteio
+    const sorteioPraProcessar = pending.slice(0, 1);
+
+    for (const p of sorteioPraProcessar) {
       try {
         let info;
         try {
