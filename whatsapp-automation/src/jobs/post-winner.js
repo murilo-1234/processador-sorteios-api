@@ -1,4 +1,5 @@
 // src/jobs/post-winner.js
+
 const fs = require('fs');
 const path = require('path');
 const { parse, format } = require('date-fns');
@@ -14,7 +15,7 @@ try {
 } catch (_) { /* ignora */ }
 
 if (typeof zonedTimeToUtcSafe !== 'function') {
-  const FALLBACK_OFFSET_MIN = Number(process.env.TZ_OFFSET_MINUTES || -180); // SP = -180
+  const FALLBACK_OFFSET_MIN = Number(process.env.TZ_OFFSET_MINUTES || -180);
   zonedTimeToUtcSafe = (date /*, tz */) => {
     const d = date instanceof Date ? date : new Date(date);
     return new Date(d.getTime() + Math.abs(FALLBACK_OFFSET_MIN) * 60 * 1000);
@@ -24,14 +25,6 @@ if (typeof zonedTimeToUtcSafe !== 'function') {
 
 const settings = require('../services/settings');
 const { getRows, updateCellByHeader } = require('../services/sheets');
-// === preencher planilha (helpers) ===
-const nowISO = () => new Date().toISOString().replace('Z','');
-
-async function writeWinnerBack(rowNumber, jids) {
-  await updateCellByHeaderName(rowNumber, 'WA_POST', 'Postado');
-  await updateCellByHeaderName(rowNumber, 'WA_POST_AT', nowISO());
-  await updateCellByHeaderName(rowNumber, 'WA_POST_GROUPS', (jids||[]).join(','));
-}
 
 const { fetchResultInfo } = require('../services/result');
 const { fetchFirstCoupon, fetchTopCoupons } = require('../services/coupons');
@@ -41,18 +34,22 @@ const { makeOverlayVideo } = require('../services/video');
 // ====== OPCIONAIS (se existirem) ======
 let makeCreatomateVideo = null;
 try { ({ makeCreatomateVideo } = require('../services/creatomate')); } catch {}
+
 let pickHeadline = null;
 try { ({ pickHeadline } = require('../services/headlines')); } catch {}
+
 let pickBg = null, pickMusic = null;
 try { ({ pickBg, pickMusic } = require('../services/media-pool')); } catch {}
 
-// ===== Novos serviços =====
+// ===== 🆕 CORREÇÃO 1: Importa text-shuffler =====
+const { assignRandomTextsToGroups } = require('../services/text-shuffler');
+
+// ===== Serviços existentes =====
 const { wait: throttleWait } = require('../services/group-throttle');
 const { acquire: acquireJobLock } = require('../services/job-lock');
 const ledger = require('../services/send-ledger');
 
 // ==========================================================
-
 const TZ = process.env.TZ || 'America/Sao_Paulo';
 const DELAY_MIN = Number(process.env.POST_DELAY_MINUTES ?? 10);
 const DEBUG_JOB = String(process.env.DEBUG_JOB || '').trim() === '1';
@@ -63,7 +60,7 @@ const MAX_AGE_H = Number(process.env.POST_MAX_AGE_HOURS || 48);
 
 // === Flags ===
 const DISABLE_LINK_PREVIEW = String(process.env.DISABLE_LINK_PREVIEW || '1') === '1';
-const SEND_RESULT_URL_SEPARATE = false; // NUNCA enviar link em mensagem separada
+const SEND_RESULT_URL_SEPARATE = false;
 const BAILEYS_LINK_PREVIEW_OFF = String(process.env.BAILEYS_LINK_PREVIEW_OFF || '1') === '1';
 
 // ---------- utils ----------
@@ -80,6 +77,7 @@ function templatesList() {
   if (!_templates) _templates = ['🎉 Resultado: {{WINNER_BLOCK}}\n🔗 Detalhes: {{RESULT_URL}}\n💸 Cupom: {{COUPON}}'];
   return _templates;
 }
+
 function shuffle(arr) {
   const a = arr.slice();
   for (let i = a.length - 1; i > 0; i--) {
@@ -88,11 +86,11 @@ function shuffle(arr) {
   }
   return a;
 }
+
 function safeStr(v) {
   try { return v == null ? '' : String(v); } catch { return ''; }
 }
 
-// Constrói o bloco do vencedor (3 linhas)
 function buildWinnerBlock(name, metaDateTime, metaChannel, withLabel = true) {
   const line1 = withLabel ? `Ganhador(a): ${name || 'Ganhador(a)'}` : `${name || 'Ganhador(a)'}`;
   const line2 = metaDateTime ? `${metaDateTime}` : '';
@@ -100,10 +98,8 @@ function buildWinnerBlock(name, metaDateTime, metaChannel, withLabel = true) {
   return [line1, line2, line3].filter(Boolean).join('\n');
 }
 
-// Substituição com tratamento:
 function mergeText(tpl, vars) {
   let s = safeStr(tpl);
-
   const name = safeStr(vars.WINNER);
   const dt   = safeStr(vars.WINNER_DT);
   const ch   = safeStr(vars.WINNER_CH);
@@ -141,57 +137,43 @@ function findHeader(headers, candidates) {
   }
   return null;
 }
+
 function coerceStr(v) { try { return String(v ?? '').trim(); } catch { return ''; } }
-function localLooksLikeConfiguredTZ() {
-  try {
-    const tzEnv = safeStr(process.env.TZ).toLowerCase();
-    const offsetCfg = Math.abs(Number(process.env.TZ_OFFSET_MINUTES || -180));
-    const offsetLocal = Math.abs(new Date().getTimezoneOffset());
-    if (tzEnv.includes('sao_paulo') || tzEnv.includes('são_paulo')) return true;
-    if (offsetCfg && offsetCfg === offsetLocal) return true;
-  } catch {}
-  return false;
-}
+
 function toUtcFromSheet(spDate) {
   return zonedTimeToUtcSafe(spDate, TZ);
 }
+
 function pickOneCSV(listStr) {
   if (!listStr) return null;
   const arr = String(listStr).split(',').map(s => s.trim()).filter(Boolean);
   if (!arr.length) return null;
   return arr[Math.floor(Math.random() * arr.length)];
 }
+
 function pickHeadlineSafe() {
   if (typeof pickHeadline === 'function') return pickHeadline();
   return pickOneCSV(process.env.HEADLINES) || 'VEJA AQUI A GANHADORA!';
 }
+
 function pickBgSafe() {
   if (typeof pickBg === 'function') return pickBg();
   return pickOneCSV(process.env.VIDEO_BG_URLS) || '';
 }
+
 function pickMusicSafe() {
   if (typeof pickMusic === 'function') return pickMusic();
   return pickOneCSV(process.env.AUDIO_URLS) || '';
 }
 
-function stripSpecificUrls(text, urls = []) {
-  let out = safeStr(text);
-  for (const u of urls) {
-    if (!u) continue;
-    out = out.replaceAll(u, '');
-    if (u.endsWith('/')) out = out.replaceAll(u.slice(0, -1), '');
-    else out = out.replaceAll(u + '/', '');
-  }
-  return out;
-}
 function stripLeadingAvatarLetter(name = '') {
   const m = String(name).match(/^([A-ZÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ])\s+(.+)$/i);
   if (m && m[2] && m[2].length >= 2) return m[2].trim();
   return String(name).trim();
 }
+
 function parseWinnerDetailed(winnerStr = '') {
   const raw = String(winnerStr || '').replace(/\s+/g, ' ').trim();
-
   const dtMatch = raw.match(/\s(20\d{2}-\d{2}-\d{2})\s(\d{2}:\d{2}:\d{2})/);
   let name = raw;
   if (dtMatch) name = raw.slice(0, dtMatch.index).trim();
@@ -209,17 +191,19 @@ function parseWinnerDetailed(winnerStr = '') {
 
   return { name, metaDateTime, metaChannel };
 }
+
 function winnerLooksReady(info) {
   const raw = String(info?.winner || '');
   if (!raw) return false;
-  if (/ser[áa]\s+anunciado/i.test(raw)) return false;
+  if (/será\s+anunciado/i.test(raw)) return false;
+
   const { name, metaDateTime } = parseWinnerDetailed(raw);
   if (!name || name.length < 3) return false;
   if (!metaDateTime) return false;
+
   return true;
 }
 
-// --- preferir o socket do painel admin (/admin) ---
 async function getPreferredSock(app) {
   try {
     const waAdmin = app?.locals?.waAdmin || app?.waAdmin;
@@ -228,6 +212,7 @@ async function getPreferredSock(app) {
       if (st?.connected) return waAdmin.getSock();
     }
   } catch (_) {}
+
   const waClient = app?.locals?.whatsappClient || app?.whatsappClient;
   return waClient?.sock || null;
 }
@@ -237,25 +222,21 @@ function ensureLinkInsideCaption(caption, resultUrl) {
   const url = String(resultUrl || '').trim();
   if (!url) return cap;
   if (cap.includes(url)) return cap;
+
   const join = cap.trim().length ? `${cap.trim()}\n\n` : '';
   return `${join}Link resultado👇\n${url}`;
 }
 
-// ---- helpers para idempotência por grupo ----
 function parseCsvSet(csv) {
   const s = String(csv || '');
   if (!s.trim()) return new Set();
   return new Set(s.split(',').map(x => x.trim()).filter(Boolean));
 }
+
 function setToCsv(set) { return Array.from(set).join(','); }
 
 function IK(rowId, kind, whenIso, groupJid) {
   return `${rowId}|${kind}|${whenIso}|${groupJid}`;
-}
-
-function buildDeck(n) {
-  const idx = Array.from({ length: n }, (_, i) => i);
-  return shuffle(idx);
 }
 
 /**
@@ -271,6 +252,7 @@ async function runOnce(app, opts = {}) {
     const dryRun =
       !!opts.dryRun ||
       String(app?.locals?.reqDry || '').trim() === '1';
+
     dlog('tick start', { dryRun });
 
     // 0) grupos-alvo
@@ -278,6 +260,7 @@ async function runOnce(app, opts = {}) {
     let targetJids = Array.isArray(st.postGroupJids) && st.postGroupJids.length
       ? st.postGroupJids.filter(Boolean).map((x) => String(x).trim())
       : (st.resultGroupJid ? [String(st.resultGroupJid).trim()] : []);
+
     if (!targetJids.length) {
       dlog('skip: nenhum grupo selecionado');
       return {
@@ -287,6 +270,7 @@ async function runOnce(app, opts = {}) {
         errors: [{ stage: 'precheck', error: 'Nenhum grupo selecionado em /admin/groups' }]
       };
     }
+
     if (GROUP_ORDER === 'shuffle') targetJids = shuffle(targetJids);
     dlog('targets', targetJids);
 
@@ -301,7 +285,7 @@ async function runOnce(app, opts = {}) {
     const H_PROD     = findHeader(headers, ['nome_do_produto', 'nome', 'produto', 'produto_nome']);
     const H_WA_POST  = findHeader(headers, ['wa_post']);
     const H_WA_AT    = findHeader(headers, ['wa_post_at', 'wa_postado_em']);
-    const H_WA_GROUPS= findHeader(headers, ['wa_post_groups','wa_groups','wa_grupos']); // existente
+    const H_WA_GROUPS= findHeader(headers, ['wa_post_groups','wa_groups','wa_grupos']);
 
     // Opcionais (headline/bg/music por linha)
     const H_CUSTOM_HEADLINE = findHeader(headers, ['headline']);
@@ -324,7 +308,6 @@ async function runOnce(app, opts = {}) {
 
     items.forEach((row, i) => {
       const rowIndex1 = i + 2;
-
       const id      = coerceStr(row[H_ID]);
       const data    = coerceStr(row[H_DATA]);
       const hora    = coerceStr(row[H_HORA]);
@@ -336,7 +319,6 @@ async function runOnce(app, opts = {}) {
         return;
       }
 
-      // --- gating antigo (fallback) ---
       if (!usePerGroupMode) {
         const flagPosted = coerceStr(row[H_WA_POST]).toLowerCase() === 'postado';
         if (flagPosted) { skipped.push({ row: rowIndex1, id, reason: 'WA_POST=Postado' }); return; }
@@ -353,16 +335,9 @@ async function runOnce(app, opts = {}) {
         return;
       }
 
-      // ========================================
-      // 🐛 BUG 1 CORRIGIDO: FUSO HORÁRIO
-      // ========================================
-      // ANTES: Sistema convertia para UTC e causava +3h de erro
-      // AGORA: Trabalha direto com horário local da planilha
-      
-      const localDate = spDate; // já está no horário local correto (SP)
+      const localDate = spDate;
       const readyAt = new Date(localDate.getTime() + DELAY_MIN * 60000);
-      
-      // Log para debug (pode comentar depois)
+
       if (DEBUG_JOB) {
         dlog(`⏰ Linha ${rowIndex1}:`);
         dlog(`   Planilha: ${data} ${hora}`);
@@ -371,7 +346,6 @@ async function runOnce(app, opts = {}) {
         dlog(`   Agora: ${now.toLocaleString('pt-BR')}`);
       }
 
-      // ✅ Janela de segurança
       const tooOld = (now - localDate) > MAX_AGE_H * 60 * 60 * 1000;
       if (tooOld) {
         skipped.push({ row: rowIndex1, id, reason: 'older_than_window' });
@@ -388,12 +362,10 @@ async function runOnce(app, opts = {}) {
         return;
       }
 
-      // opcionais por linha
       const customHeadline = H_CUSTOM_HEADLINE ? coerceStr(row[H_CUSTOM_HEADLINE]) : '';
       const bgUrl          = H_BG_URL          ? coerceStr(row[H_BG_URL])          : '';
       const musicUrl       = H_MUSIC_URL       ? coerceStr(row[H_MUSIC_URL])       : '';
 
-      // grupos restantes
       let postedSet = new Set();
       if (usePerGroupMode) postedSet = parseCsvSet(row[H_WA_GROUPS]);
 
@@ -412,7 +384,7 @@ async function runOnce(app, opts = {}) {
         imgUrl, spDate,
         customHeadline, bgUrl, musicUrl,
         postedSet, remainingJids,
-        whenIso: localDate.toISOString() // usa localDate em vez de utcDate
+        whenIso: localDate.toISOString()
       });
     });
 
@@ -433,12 +405,9 @@ async function runOnce(app, opts = {}) {
         }
       }
     } catch (_) {}
+
     if (!coupon) coupon = await fetchFirstCoupon();
     dlog('coupon', coupon);
-
-    // baralho de templates para variação por grupo
-    const tpls = templatesList();
-    const deckTpl = (tpls.length > 1) ? buildDeck(tpls.length) : [0];
 
     // 5) Processa e posta
     let sent = 0;
@@ -456,6 +425,7 @@ async function runOnce(app, opts = {}) {
           errors.push({ id: p.id, stage: 'fetchResultInfo', error: e?.message || String(e) });
           continue;
         }
+
         const { url: resultUrl, winner, participants } = info;
         dlog('linha', p.id, { winner, participantsCount: Array.isArray(participants) ? participants.length : 0 });
 
@@ -463,12 +433,12 @@ async function runOnce(app, opts = {}) {
           skipped.push({ id: p.id, reason: 'winner_not_ready' });
           continue;
         }
+
         const { name: winnerName, metaDateTime, metaChannel } = parseWinnerDetailed(winner || '');
 
         // 5.2) gerar mídia
         let usedPath;
         let media;
-
         try {
           const wantVideo = (process.env.POST_MEDIA_TYPE || 'image').toLowerCase() === 'video';
           const mode = (process.env.VIDEO_MODE || 'overlay').toLowerCase();
@@ -480,7 +450,6 @@ async function runOnce(app, opts = {}) {
 
           if (wantVideo && mode === 'creatomate' && typeof makeCreatomateVideo === 'function') {
             const templateId = process.env.CREATOMATE_TEMPLATE_ID;
-
             usedPath = await makeCreatomateVideo({
               templateId,
               headline,
@@ -491,7 +460,6 @@ async function runOnce(app, opts = {}) {
               videoBgUrl,
               musicUrl,
             });
-
             const buf = fs.readFileSync(usedPath);
             media = { video: buf, mimetype: 'video/mp4' };
           } else {
@@ -539,14 +507,21 @@ async function runOnce(app, opts = {}) {
               media = { image: buf, mimetype: 'image/png' };
             }
           }
+
           dlog('midia pronta', { usedPath, keys: Object.keys(media || {}) });
         } catch (e) {
           errors.push({ id: p.id, stage: 'prepareMedia', error: e?.message || String(e) });
           continue;
         }
 
-        // 5.3) legenda base (template escolhido por grupo mais abaixo)
+        // 5.3) Pega todos os templates e sorteia 1 para cada grupo
+        const tpls = templatesList();
         const resultUrlStr = safeStr(resultUrl);
+
+        // 🆕 CORREÇÃO 2: Sorteia textos diferentes para cada grupo
+        const groupTextMap = assignRandomTextsToGroups(tpls, p.remainingJids);
+        
+        console.log(`📝 [post-winner] Textos sorteados para ${p.remainingJids.length} grupos`);
 
         // 5.4) enviar com fila e dedupe por grupo
         const sock = await getPreferredSock(app);
@@ -555,20 +530,32 @@ async function runOnce(app, opts = {}) {
         } else if (dryRun) {
           dlog('dry-run => NÃO enviou', { to: p.remainingJids, id: p.id, link: resultUrlStr });
         } else {
-          for (const rawJid of (GROUP_ORDER === 'shuffle' ? shuffle(p.remainingJids) : p.remainingJids)) {
+          
+          // 🆕 CORREÇÃO 3: Array para acumular grupos enviados
+          const successfulGroups = [];
+
+          // Embaralha ordem dos grupos se configurado
+          const orderedJids = (GROUP_ORDER === 'shuffle') ? shuffle(p.remainingJids) : p.remainingJids;
+
+          for (let idx = 0; idx < orderedJids.length; idx++) {
+            const rawJid = orderedJids[idx];
             const jid = safeStr(rawJid).trim();
+
             try {
               if (!jid || !jid.endsWith('@g.us')) throw new Error(`JID inválido: "${jid}"`);
 
-              // IK + reserva com índice de template por grupo
-              const tplIdxCand = (deckTpl.length ? deckTpl.shift() : 0);
+              // IK para dedupe
               const ik = IK(p.id, 'RES', p.whenIso, jid);
-              const res = await ledger.reserve(ik, { textIndex: tplIdxCand, rowId: p.id, kind: 'RES', whenIso: p.whenIso, jid });
-              if (res.status !== 'ok') { dlog('dedupe RES', { ik, reason: res.reason }); continue; }
-              const tplIdx = (res.record && res.record.data && Number.isInteger(res.record.data.textIndex))
-                ? res.record.data.textIndex : tplIdxCand;
+              const res = await ledger.reserve(ik, { rowId: p.id, kind: 'RES', whenIso: p.whenIso, jid });
+              
+              if (res.status !== 'ok') { 
+                dlog('dedupe RES', { ik, reason: res.reason }); 
+                continue; 
+              }
 
-              const tpl = templatesList()[tplIdx % templatesList().length];
+              // 🆕 Pega o texto específico deste grupo
+              const tpl = groupTextMap[jid] || tpls[0];
+              
               let captionFull = mergeText(tpl, {
                 WINNER: winnerName || 'Ganhador(a)',
                 WINNER_DT: metaDateTime,
@@ -576,38 +563,50 @@ async function runOnce(app, opts = {}) {
                 RESULT_URL: resultUrlStr,
                 COUPON: coupon
               });
+
               captionFull = ensureLinkInsideCaption(captionFull, resultUrlStr);
 
               const payload = { ...media, caption: safeStr(captionFull) };
               const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
 
-              await throttleWait(); // 4–6 min aleatório (configurável via .env)
+              // 🆕 CORREÇÃO 4: Delay ENTRE grupos (não antes do primeiro)
+              if (idx > 0) {
+                console.log(`⏳ [post-winner] Aguardando delay antes do grupo ${idx + 1}/${orderedJids.length}`);
+                await throttleWait(); // 3-5 min aleatório
+              }
+
               await sock.sendMessage(jid, payload, opts);
               await ledger.commit(ik, { message: 'sent' });
-
+              
               anySentForThisRow = true;
-              dlog('enviado', { jid, id: p.id });
-
-              // marca grupo imediatamente
-              if (usePerGroupMode) {
-                p.postedSet.add(jid);
-                const headerName = H_WA_GROUPS || 'WA_POST_GROUPS';
-                try {
-                  await updateCellByHeader(
-                    sheets, spreadsheetId, tab, headers, p.rowIndex1, headerName,
-                    setToCsv(p.postedSet)
-                  );
-                } catch (e) {
-                  errors.push({ id: p.id, stage: 'updateSheet(WA_POST_GROUPS)', error: e?.message || String(e) });
-                }
-              }
+              successfulGroups.push(jid); // Acumula grupo enviado
               sent++;
+              
+              dlog('✅ enviado', { jid, id: p.id, grupo: `${idx + 1}/${orderedJids.length}` });
+
             } catch (e) {
               errors.push({
                 id: p.id, stage: 'sendMessage', jid,
                 mediaKeys: Object.keys(media || {}), usedPath,
                 error: e?.message || String(e)
               });
+            }
+          }
+
+          // 🆕 CORREÇÃO 5: Marca TODOS os grupos de uma vez na planilha
+          if (usePerGroupMode && successfulGroups.length > 0) {
+            // Adiciona todos os grupos enviados ao set
+            successfulGroups.forEach(jid => p.postedSet.add(jid));
+            
+            const headerName = H_WA_GROUPS || 'WA_POST_GROUPS';
+            try {
+              await updateCellByHeader(
+                sheets, spreadsheetId, tab, headers, p.rowIndex1, headerName,
+                setToCsv(p.postedSet)
+              );
+              console.log(`✅ [post-winner] Marcou ${successfulGroups.length} grupos na planilha: ${Array.from(p.postedSet).join(', ')}`);
+            } catch (e) {
+              errors.push({ id: p.id, stage: 'updateSheet(WA_POST_GROUPS)', error: e?.message || String(e) });
             }
           }
         }
@@ -624,13 +623,16 @@ async function runOnce(app, opts = {}) {
         } catch (e) {
           errors.push({ id: p.id, stage: 'updateSheet', error: e?.message || String(e) });
         }
+
       } catch (e) {
         errors.push({ id: p.id, stage: 'unknown', error: e?.message || String(e) });
       }
     }
 
     dlog('tick end', { processed: pending.length, sent, errorsCount: errors.length, skippedCount: skipped.length });
+
     return { ok: true, processed: pending.length, sent, errors, skipped, dryRun };
+
   } finally {
     try { await lock.release(); } catch {}
   }
