@@ -42,8 +42,6 @@ let pickBg = null, pickMusic = null;
 try { ({ pickBg, pickMusic } = require('../services/media-pool')); } catch {}
 
 const { assignRandomTextsToGroups } = require('../services/text-shuffler');
-
-const { wait: throttleWait } = require('../services/group-throttle');
 const { acquire: acquireJobLock } = require('../services/job-lock');
 const ledger = require('../services/send-ledger');
 
@@ -52,8 +50,10 @@ const TZ = process.env.TZ || 'America/Sao_Paulo';
 const DELAY_MIN = Number(process.env.POST_DELAY_MINUTES ?? 10);
 const DEBUG_JOB = String(process.env.DEBUG_JOB || '').trim() === '1';
 const GROUP_ORDER = String(process.env.GROUP_ORDER || 'shuffle').toLowerCase();
-
 const MAX_AGE_H = Number(process.env.POST_MAX_AGE_HOURS || 48);
+
+// 🆕 Intervalo entre grupos (padrão: 5 minutos)
+const GROUP_INTERVAL_MINUTES = Number(process.env.GROUP_POST_INTERVAL_MINUTES || 5);
 
 const DISABLE_LINK_PREVIEW = String(process.env.DISABLE_LINK_PREVIEW || '1') === '1';
 const SEND_RESULT_URL_SEPARATE = false;
@@ -61,7 +61,6 @@ const BAILEYS_LINK_PREVIEW_OFF = String(process.env.BAILEYS_LINK_PREVIEW_OFF || 
 
 // ---------- utils ----------
 const dlog = (...a) => { if (DEBUG_JOB) console.log('[JOB]', ...a); };
-const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
 let _templates = null;
 function templatesList() {
@@ -398,8 +397,6 @@ async function runOnce(app, opts = {}) {
     const errors = [];
 
     for (const p of pending) {
-      let anySentForThisRow = false;
-
       try {
         let info;
         try {
@@ -498,7 +495,6 @@ async function runOnce(app, opts = {}) {
 
         const tpls = templatesList();
         const resultUrlStr = safeStr(resultUrl);
-
         const groupTextMap = assignRandomTextsToGroups(tpls, p.remainingJids);
         
         console.log(`📝 [post-winner] Textos sorteados para ${p.remainingJids.length} grupos`);
@@ -506,36 +502,48 @@ async function runOnce(app, opts = {}) {
         const sock = await getPreferredSock(app);
         if (!sock) {
           errors.push({ id: p.id, stage: 'sendMessage', error: 'WhatsApp não conectado (admin/cliente)' });
-        } else if (dryRun) {
+          continue;
+        }
+
+        if (dryRun) {
           dlog('dry-run => NÃO enviou', { to: p.remainingJids, id: p.id, link: resultUrlStr });
-        } else {
+          continue;
+        }
+
+        // 🔥 NOVO SISTEMA DE AGENDAMENTO COM setTimeout
+        const orderedJids = (GROUP_ORDER === 'shuffle') ? shuffle(p.remainingJids) : p.remainingJids;
+        
+        console.log(`\n🗓️ [post-winner] Agendando ${orderedJids.length} grupos com intervalo de ${GROUP_INTERVAL_MINUTES} minutos`);
+        console.log(`⏰ [post-winner] Hora atual: ${new Date().toLocaleTimeString('pt-BR')}`);
+
+        // Agenda cada grupo
+        orderedJids.forEach((rawJid, idx) => {
+          const jid = safeStr(rawJid).trim();
+          const delayMs = (idx + 1) * GROUP_INTERVAL_MINUTES * 60 * 1000; // +5min, +10min, +15min...
+          const scheduledTime = new Date(Date.now() + delayMs);
           
-          const successfulGroups = [];
+          console.log(`📅 [post-winner] Grupo ${idx + 1}/${orderedJids.length} agendado para: ${scheduledTime.toLocaleTimeString('pt-BR')} (+${(idx + 1) * GROUP_INTERVAL_MINUTES}min)`);
 
-          const orderedJids = (GROUP_ORDER === 'shuffle') ? shuffle(p.remainingJids) : p.remainingJids;
-
-          // 🔥 CORREÇÃO DEFINITIVA: Loop com try/catch/finally
-          for (let idx = 0; idx < orderedJids.length; idx++) {
-            const rawJid = orderedJids[idx];
-            const jid = safeStr(rawJid).trim();
-
-            // Flags de controle para o finally
-            let didReserve = false;
-            const isLast = idx === orderedJids.length - 1;
-
+          // Agenda a postagem
+          setTimeout(async () => {
             try {
-              if (!jid || !jid.endsWith('@g.us')) throw new Error(`JID inválido: "${jid}"`);
+              console.log(`\n🚀 [post-winner] Iniciando postagem agendada - Grupo ${idx + 1}/${orderedJids.length}`);
+              console.log(`⏰ [post-winner] Hora real: ${new Date().toLocaleTimeString('pt-BR')}`);
+              
+              if (!jid || !jid.endsWith('@g.us')) {
+                throw new Error(`JID inválido: "${jid}"`);
+              }
 
+              // Dedupe
               const ik = IK(p.id, 'RES', p.whenIso, jid);
               const res = await ledger.reserve(ik, { rowId: p.id, kind: 'RES', whenIso: p.whenIso, jid });
               
-              if (res.status !== 'ok') { 
-                dlog('dedupe RES', { ik, reason: res.reason }); 
-                continue; 
+              if (res.status !== 'ok') {
+                console.log(`⚠️ [post-winner] Grupo ${idx + 1} já foi postado (dedupe): ${res.reason}`);
+                return;
               }
 
-              didReserve = true; // Marca que houve tentativa real
-
+              // Pega texto específico do grupo
               const tpl = groupTextMap[jid] || tpls[0];
               
               let captionFull = mergeText(tpl, {
@@ -551,70 +559,62 @@ async function runOnce(app, opts = {}) {
               const payload = { ...media, caption: safeStr(captionFull) };
               const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
 
+              // POSTA!
               await sock.sendMessage(jid, payload, opts);
               await ledger.commit(ik, { message: 'sent' });
               
-              anySentForThisRow = true;
-              successfulGroups.push(jid);
               sent++;
               
-              console.log(`✅ [post-winner] Enviado para grupo ${idx + 1}/${orderedJids.length}: ${jid}`);
+              console.log(`✅ [post-winner] Grupo ${idx + 1}/${orderedJids.length} postado com sucesso: ${jid}`);
 
-            } catch (e) {
-              console.error(`❌ [post-winner] Erro no grupo ${jid}:`, e.message);
-              errors.push({
-                id: p.id, stage: 'sendMessage', jid,
-                mediaKeys: Object.keys(media || {}), usedPath,
-                error: e?.message || String(e)
-              });
-            } finally {
-              // 🔥 BLOCO FINALLY - SEMPRE EXECUTA (mesmo com erro!)
-              if (!dryRun && didReserve && !isLast) {
+              // 🔥 MARCA NA PLANILHA IMEDIATAMENTE APÓS POSTAR
+              if (usePerGroupMode) {
                 try {
-                  console.log(`⏳ [post-winner] Grupo ${idx + 1}/${orderedJids.length} finalizado. Aguardando intervalo...`);
-                  await throttleWait();
-                  console.log(`✅ [post-winner] Intervalo concluído. Próximo grupo.`);
-                } catch (delayErr) {
-                  console.error(`❌ [post-winner] Erro no delay:`, delayErr.message);
+                  p.postedSet.add(jid);
+                  const headerName = H_WA_GROUPS || 'WA_POST_GROUPS';
+                  
+                  await updateCellByHeader(
+                    sheets, spreadsheetId, tab, headers, p.rowIndex1, headerName,
+                    setToCsv(p.postedSet)
+                  );
+                  
+                  console.log(`📝 [post-winner] Planilha atualizada - Grupos postados: ${setToCsv(p.postedSet)}`);
+                  
+                  // Se foi o último grupo, marca WA_POST = Postado
+                  if (p.postedSet.size === orderedJids.length) {
+                    const postAt = new Date().toISOString();
+                    await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_POST || 'WA_POST', 'Postado');
+                    await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_AT || 'WA_POST_AT', postAt);
+                    
+                    console.log(`✅ [post-winner] Todos os grupos postados! Marcado WA_POST=Postado`);
+                    
+                    if (!usePerGroupMode) settings.addPosted(p.id);
+                  }
+                  
+                } catch (e) {
+                  console.error(`❌ [post-winner] Erro ao atualizar planilha:`, e.message);
+                  errors.push({ id: p.id, stage: 'updateSheet(WA_POST_GROUPS)', error: e?.message || String(e) });
                 }
               }
-            }
-          }
 
-          if (usePerGroupMode && successfulGroups.length > 0) {
-            successfulGroups.forEach(jid => p.postedSet.add(jid));
-            
-            const headerName = H_WA_GROUPS || 'WA_POST_GROUPS';
-            try {
-              await updateCellByHeader(
-                sheets, spreadsheetId, tab, headers, p.rowIndex1, headerName,
-                setToCsv(p.postedSet)
-              );
-              console.log(`✅ [post-winner] Marcou ${successfulGroups.length} grupos na planilha`);
             } catch (e) {
-              errors.push({ id: p.id, stage: 'updateSheet(WA_POST_GROUPS)', error: e?.message || String(e) });
+              console.error(`❌ [post-winner] Erro ao postar grupo ${idx + 1}:`, e.message);
+              errors.push({
+                id: p.id, stage: 'sendMessage', jid,
+                error: e?.message || String(e)
+              });
             }
-          }
-        }
+          }, delayMs);
+        });
 
-        try {
-          if (!dryRun && anySentForThisRow) {
-            const postAt = new Date().toISOString();
-            await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_POST || 'WA_POST', 'Postado');
-            await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_AT   || 'WA_POST_AT', postAt);
-
-            if (!usePerGroupMode) settings.addPosted(p.id);
-          }
-        } catch (e) {
-          errors.push({ id: p.id, stage: 'updateSheet', error: e?.message || String(e) });
-        }
+        console.log(`✅ [post-winner] ${orderedJids.length} grupos agendados com sucesso para o sorteio ${p.id}\n`);
 
       } catch (e) {
         errors.push({ id: p.id, stage: 'unknown', error: e?.message || String(e) });
       }
     }
 
-    dlog('tick end', { processed: pending.length, sent, errorsCount: errors.length, skippedCount: skipped.length });
+    dlog('tick end', { processed: pending.length, scheduled: sent, errorsCount: errors.length, skippedCount: skipped.length });
 
     return { ok: true, processed: pending.length, sent, errors, skipped, dryRun };
 
