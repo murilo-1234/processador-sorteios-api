@@ -569,8 +569,8 @@ async function runOnce(app, opts = {}) {
 
             // 🔥 Delay FIXO de 5 minutos entre grupos (300000ms = 5min)
             if (idx < orderedJids.length - 1) {
-              const delayMs = 5 * 60 * 1000; // 5 minutos fixo
-              console.log(`⏳ [post-winner] Aguardando 5 minutos antes do próximo grupo...`);
+              const delayMs = 15 * 60 * 1000; // 15 minutos fixo
+              console.log(`⏳ [post-winner] Aguardando 15 minutos antes do próximo grupo...`);
               await sleep(delayMs);
               console.log(`✅ [post-winner] Delay concluído. Próximo grupo.`);
             }
