@@ -520,7 +520,6 @@ async function runOnce(app, opts = {}) {
 
         // 🆕 CORREÇÃO 2: Sorteia textos diferentes para cada grupo
         const groupTextMap = assignRandomTextsToGroups(tpls, p.remainingJids);
-        
         console.log(`📝 [post-winner] Textos sorteados para ${p.remainingJids.length} grupos`);
 
         // 5.4) enviar com fila e dedupe por grupo
@@ -530,7 +529,7 @@ async function runOnce(app, opts = {}) {
         } else if (dryRun) {
           dlog('dry-run => NÃO enviou', { to: p.remainingJids, id: p.id, link: resultUrlStr });
         } else {
-          
+
           // 🆕 CORREÇÃO 3: Array para acumular grupos enviados
           const successfulGroups = [];
 
@@ -541,21 +540,26 @@ async function runOnce(app, opts = {}) {
             const rawJid = orderedJids[idx];
             const jid = safeStr(rawJid).trim();
 
+            // flags para o finally
+            let didReserve = false;
+            const isLast = idx === orderedJids.length - 1;
+
             try {
               if (!jid || !jid.endsWith('@g.us')) throw new Error(`JID inválido: "${jid}"`);
 
               // IK para dedupe
               const ik = IK(p.id, 'RES', p.whenIso, jid);
               const res = await ledger.reserve(ik, { rowId: p.id, kind: 'RES', whenIso: p.whenIso, jid });
-              
-              if (res.status !== 'ok') { 
-                dlog('dedupe RES', { ik, reason: res.reason }); 
-                continue; 
+
+              if (res.status !== 'ok') {
+                dlog('dedupe RES', { ik, reason: res.reason });
+                continue;
               }
+              didReserve = true; // houve tentativa real de envio para este grupo
 
               // 🆕 Pega o texto específico deste grupo
               const tpl = groupTextMap[jid] || tpls[0];
-              
+
               let captionFull = mergeText(tpl, {
                 WINNER: winnerName || 'Ganhador(a)',
                 WINNER_DT: metaDateTime,
@@ -572,35 +576,33 @@ async function runOnce(app, opts = {}) {
               // Envia a mensagem
               await sock.sendMessage(jid, payload, opts);
               await ledger.commit(ik, { message: 'sent' });
-              
+
               anySentForThisRow = true;
-              successfulGroups.push(jid); // Acumula grupo enviado
+              successfulGroups.push(jid);
               sent++;
-              
+
               dlog('✅ enviado', { jid, id: p.id, grupo: `${idx + 1}/${orderedJids.length}` });
-
-              // 🆕 CORREÇÃO 4: Delay APÓS enviar (não antes do próximo)
-              // Se não for o último grupo, aguarda o delay
-              if (idx < orderedJids.length - 1) {
-                console.log(`⏳ [post-winner] Grupo ${idx + 1}/${orderedJids.length} enviado. Aguardando delay antes do próximo...`);
-                await throttleWait(); // 3-5 min aleatório
-                console.log(`✅ [post-winner] Delay concluído. Enviando próximo grupo...`);
-              }
-
             } catch (e) {
               errors.push({
                 id: p.id, stage: 'sendMessage', jid,
                 mediaKeys: Object.keys(media || {}), usedPath,
                 error: e?.message || String(e)
               });
+            } finally {
+              // ⏳ GARANTE INTERVALO ENTRE GRUPOS MESMO COM ERRO
+              if (!dryRun && didReserve && !isLast) {
+                try {
+                  console.log(`⏳ [post-winner] Grupo ${idx + 1}/${orderedJids.length} finalizado. Aguardando intervalo antes do próximo...`);
+                  await throttleWait(); // 4–6 min (ou min..max definidos pelas EVs)
+                  console.log(`✅ [post-winner] Intervalo concluído. Prosseguindo para o próximo grupo.`);
+                } catch { /* nunca derrube o loop por erro no delay */ }
+              }
             }
           }
 
           // 🆕 CORREÇÃO 5: Marca TODOS os grupos de uma vez na planilha
           if (usePerGroupMode && successfulGroups.length > 0) {
-            // Adiciona todos os grupos enviados ao set
             successfulGroups.forEach(jid => p.postedSet.add(jid));
-            
             const headerName = H_WA_GROUPS || 'WA_POST_GROUPS';
             try {
               await updateCellByHeader(
@@ -617,7 +619,7 @@ async function runOnce(app, opts = {}) {
         // 5.5) marcar planilha (linha) após qualquer sucesso
         try {
           if (!dryRun && anySentForThisRow) {
-            const postAt = new Date().toISOString();
+            const postAt = new Date().toISOString(); // mantido como está para não afetar outros consumidores
             await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_POST || 'WA_POST', 'Postado');
             await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_AT   || 'WA_POST_AT', postAt);
 
