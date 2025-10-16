@@ -569,12 +569,7 @@ async function runOnce(app, opts = {}) {
               const payload = { ...media, caption: safeStr(captionFull) };
               const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
 
-              // 🆕 CORREÇÃO 4: Delay ENTRE grupos (não antes do primeiro)
-              if (idx > 0) {
-                console.log(`⏳ [post-winner] Aguardando delay antes do grupo ${idx + 1}/${orderedJids.length}`);
-                await throttleWait(); // 3-5 min aleatório
-              }
-
+              // Envia a mensagem
               await sock.sendMessage(jid, payload, opts);
               await ledger.commit(ik, { message: 'sent' });
               
@@ -583,6 +578,14 @@ async function runOnce(app, opts = {}) {
               sent++;
               
               dlog('✅ enviado', { jid, id: p.id, grupo: `${idx + 1}/${orderedJids.length}` });
+
+              // 🆕 CORREÇÃO 4: Delay APÓS enviar (não antes do próximo)
+              // Se não for o último grupo, aguarda o delay
+              if (idx < orderedJids.length - 1) {
+                console.log(`⏳ [post-winner] Grupo ${idx + 1}/${orderedJids.length} enviado. Aguardando delay antes do próximo...`);
+                await throttleWait(); // 3-5 min aleatório
+                console.log(`✅ [post-winner] Delay concluído. Enviando próximo grupo...`);
+              }
 
             } catch (e) {
               errors.push({
@@ -638,4 +641,4 @@ async function runOnce(app, opts = {}) {
   }
 }
 
-module.exports = { runOnce };
+module.exports = { runOnce }
