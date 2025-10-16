@@ -525,6 +525,7 @@ async function runOnce(app, opts = {}) {
         
         console.log(`\n🗓️ [post-winner] Agendando ${orderedJids.length} grupos com intervalo de ${GROUP_INTERVAL_MINUTES} minutos`);
         console.log(`⏰ [post-winner] Hora atual: ${new Date().toLocaleTimeString('pt-BR')}`);
+        console.log(`🎯 [post-winner] Sorteio: ${p.id}`);
 
         // Agenda cada grupo
         orderedJids.forEach((rawJid, idx) => {
@@ -532,7 +533,7 @@ async function runOnce(app, opts = {}) {
           const delayMs = (idx + 1) * GROUP_INTERVAL_MINUTES * 60 * 1000; // +5min, +10min, +15min...
           const scheduledTime = new Date(Date.now() + delayMs);
           
-          console.log(`📅 [post-winner] Grupo ${idx + 1}/${orderedJids.length} agendado para: ${scheduledTime.toLocaleTimeString('pt-BR')} (+${(idx + 1) * GROUP_INTERVAL_MINUTES}min)`);
+          console.log(`📅 [post-winner] Grupo ${idx + 1}/${orderedJids.length} (${jid.slice(0, 15)}...) agendado para: ${scheduledTime.toLocaleTimeString('pt-BR')} (+${(idx + 1) * GROUP_INTERVAL_MINUTES}min)`);
 
           // Agenda a postagem
           setTimeout(async () => {
@@ -578,33 +579,32 @@ async function runOnce(app, opts = {}) {
               console.log(`✅ [post-winner] Grupo ${idx + 1}/${orderedJids.length} postado com sucesso: ${jid}`);
 
               // 🔥 MARCA NA PLANILHA IMEDIATAMENTE APÓS POSTAR
-              if (usePerGroupMode) {
-                try {
-                  p.postedSet.add(jid);
-                  const headerName = H_WA_GROUPS || 'WA_POST_GROUPS';
-                  
+              try {
+                // Adiciona o grupo ao set de postados
+                p.postedSet.add(jid);
+                
+                // Atualiza a coluna WA_POST_GROUPS com os grupos já postados
+                if (usePerGroupMode && H_WA_GROUPS) {
                   await updateCellByHeader(
-                    sheets, spreadsheetId, tab, headers, p.rowIndex1, headerName,
+                    sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_GROUPS,
                     setToCsv(p.postedSet)
                   );
-                  
-                  console.log(`📝 [post-winner] Planilha atualizada - Grupos postados: ${setToCsv(p.postedSet)}`);
-                  
-                  // Se foi o último grupo, marca WA_POST = Postado
-                  if (p.postedSet.size === orderedJids.length) {
-                    const postAt = new Date().toISOString();
-                    await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_POST || 'WA_POST', 'Postado');
-                    await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_AT || 'WA_POST_AT', postAt);
-                    
-                    console.log(`✅ [post-winner] Todos os grupos postados! Marcado WA_POST=Postado`);
-                    
-                    if (!usePerGroupMode) settings.addPosted(p.id);
-                  }
-                  
-                } catch (e) {
-                  console.error(`❌ [post-winner] Erro ao atualizar planilha:`, e.message);
-                  errors.push({ id: p.id, stage: 'updateSheet(WA_POST_GROUPS)', error: e?.message || String(e) });
+                  console.log(`📝 [post-winner] Grupos postados atualizados na planilha: ${setToCsv(p.postedSet)}`);
                 }
+                
+                // 🆕 MARCA WA_POST = "Postado" IMEDIATAMENTE após o PRIMEIRO post bem-sucedido
+                // Isso evita que o sistema continue tentando processar o mesmo sorteio
+                const postAt = new Date().toISOString();
+                await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_POST || 'WA_POST', 'Postado');
+                await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_AT || 'WA_POST_AT', postAt);
+                
+                console.log(`✅ [post-winner] Sorteio ${p.id} marcado como "Postado" na planilha (grupo ${idx + 1}/${orderedJids.length})`);
+                
+                if (!usePerGroupMode) settings.addPosted(p.id);
+                
+              } catch (e) {
+                console.error(`❌ [post-winner] Erro ao atualizar planilha:`, e.message);
+                errors.push({ id: p.id, stage: 'updateSheet', jid, error: e?.message || String(e) });
               }
 
             } catch (e) {
@@ -617,16 +617,24 @@ async function runOnce(app, opts = {}) {
           }, delayMs);
         });
 
-        console.log(`✅ [post-winner] ${orderedJids.length} grupos agendados com sucesso para o sorteio ${p.id}\n`);
+        console.log(`✅ [post-winner] ${orderedJids.length} grupos do sorteio ${p.id} agendados com sucesso!\n`);
+        console.log(`⏰ [post-winner] Último grupo será postado às: ${new Date(Date.now() + orderedJids.length * GROUP_INTERVAL_MINUTES * 60 * 1000).toLocaleTimeString('pt-BR')}`);
+        console.log(`🔄 [post-winner] Próxima execução do cron processará outros sorteios (se houver)\n`);
 
       } catch (e) {
         errors.push({ id: p.id, stage: 'unknown', error: e?.message || String(e) });
       }
     }
 
-    dlog('tick end', { processed: pending.length, scheduled: sent, errorsCount: errors.length, skippedCount: skipped.length });
+    dlog('tick end', { 
+      processed: sorteioPraProcessar.length, 
+      scheduled: sent, 
+      pendingTotal: pending.length,
+      errorsCount: errors.length, 
+      skippedCount: skipped.length 
+    });
 
-    return { ok: true, processed: pending.length, sent, errors, skipped, dryRun };
+    return { ok: true, processed: sorteioPraProcessar.length, sent, errors, skipped, dryRun };
 
   } finally {
     try { await lock.release(); } catch {}
