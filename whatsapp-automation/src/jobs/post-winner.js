@@ -41,10 +41,8 @@ try { ({ pickHeadline } = require('../services/headlines')); } catch {}
 let pickBg = null, pickMusic = null;
 try { ({ pickBg, pickMusic } = require('../services/media-pool')); } catch {}
 
-// ===== 🆕 CORREÇÃO 1: Importa text-shuffler =====
 const { assignRandomTextsToGroups } = require('../services/text-shuffler');
 
-// ===== Serviços existentes =====
 const { wait: throttleWait } = require('../services/group-throttle');
 const { acquire: acquireJobLock } = require('../services/job-lock');
 const ledger = require('../services/send-ledger');
@@ -55,10 +53,8 @@ const DELAY_MIN = Number(process.env.POST_DELAY_MINUTES ?? 10);
 const DEBUG_JOB = String(process.env.DEBUG_JOB || '').trim() === '1';
 const GROUP_ORDER = String(process.env.GROUP_ORDER || 'shuffle').toLowerCase();
 
-// Janela de segurança para não varrer histórico
 const MAX_AGE_H = Number(process.env.POST_MAX_AGE_HOURS || 48);
 
-// === Flags ===
 const DISABLE_LINK_PREVIEW = String(process.env.DISABLE_LINK_PREVIEW || '1') === '1';
 const SEND_RESULT_URL_SEPARATE = false;
 const BAILEYS_LINK_PREVIEW_OFF = String(process.env.BAILEYS_LINK_PREVIEW_OFF || '1') === '1';
@@ -239,11 +235,6 @@ function IK(rowId, kind, whenIso, groupJid) {
   return `${rowId}|${kind}|${whenIso}|${groupJid}`;
 }
 
-/**
- * Executa o job 1x.
- * @param {*} app  express app com locals.whatsappClient/waAdmin
- * @param {*} opts { dryRun?: boolean }
- */
 async function runOnce(app, opts = {}) {
   const lock = await acquireJobLock('post-winner');
   if (!lock) return { ok: false, reason: 'job_locked' };
@@ -255,7 +246,6 @@ async function runOnce(app, opts = {}) {
 
     dlog('tick start', { dryRun });
 
-    // 0) grupos-alvo
     const st = settings.get();
     let targetJids = Array.isArray(st.postGroupJids) && st.postGroupJids.length
       ? st.postGroupJids.filter(Boolean).map((x) => String(x).trim())
@@ -274,10 +264,8 @@ async function runOnce(app, opts = {}) {
     if (GROUP_ORDER === 'shuffle') targetJids = shuffle(targetJids);
     dlog('targets', targetJids);
 
-    // 1) Lê a planilha
     const { headers, items, spreadsheetId, tab, sheets } = await getRows();
 
-    // 2) Mapeia cabeçalhos
     const H_ID       = findHeader(headers, ['id', 'codigo', 'código']);
     const H_DATA     = findHeader(headers, ['data', 'date']);
     const H_HORA     = findHeader(headers, ['horario', 'hora', 'horário', 'time']);
@@ -287,7 +275,6 @@ async function runOnce(app, opts = {}) {
     const H_WA_AT    = findHeader(headers, ['wa_post_at', 'wa_postado_em']);
     const H_WA_GROUPS= findHeader(headers, ['wa_post_groups','wa_groups','wa_grupos']);
 
-    // Opcionais (headline/bg/music por linha)
     const H_CUSTOM_HEADLINE = findHeader(headers, ['headline']);
     const H_BG_URL          = findHeader(headers, ['video_bg_url', 'bg_url']);
     const H_MUSIC_URL       = findHeader(headers, ['music_url', 'audio_url']);
@@ -301,7 +288,6 @@ async function runOnce(app, opts = {}) {
 
     const usePerGroupMode = !!H_WA_GROUPS;
 
-    // 3) Seleciona linhas "prontas"
     const now = new Date();
     const pending = [];
     const skipped = [];
@@ -393,7 +379,6 @@ async function runOnce(app, opts = {}) {
       return { ok: true, processed: 0, sent: 0, note: 'sem linhas prontas', skipped };
     }
 
-    // 4) Cupom
     let coupon;
     try {
       if (typeof fetchTopCoupons === 'function') {
@@ -409,7 +394,6 @@ async function runOnce(app, opts = {}) {
     if (!coupon) coupon = await fetchFirstCoupon();
     dlog('coupon', coupon);
 
-    // 5) Processa e posta
     let sent = 0;
     const errors = [];
 
@@ -417,7 +401,6 @@ async function runOnce(app, opts = {}) {
       let anySentForThisRow = false;
 
       try {
-        // 5.1) buscar resultado
         let info;
         try {
           info = await fetchResultInfo(p.id);
@@ -436,7 +419,6 @@ async function runOnce(app, opts = {}) {
 
         const { name: winnerName, metaDateTime, metaChannel } = parseWinnerDetailed(winner || '');
 
-        // 5.2) gerar mídia
         let usedPath;
         let media;
         try {
@@ -514,16 +496,13 @@ async function runOnce(app, opts = {}) {
           continue;
         }
 
-        // 5.3) Pega todos os templates e sorteia 1 para cada grupo
         const tpls = templatesList();
         const resultUrlStr = safeStr(resultUrl);
 
-        // 🆕 CORREÇÃO 2: Sorteia textos diferentes para cada grupo
         const groupTextMap = assignRandomTextsToGroups(tpls, p.remainingJids);
         
         console.log(`📝 [post-winner] Textos sorteados para ${p.remainingJids.length} grupos`);
 
-        // 5.4) enviar com fila e dedupe por grupo
         const sock = await getPreferredSock(app);
         if (!sock) {
           errors.push({ id: p.id, stage: 'sendMessage', error: 'WhatsApp não conectado (admin/cliente)' });
@@ -531,20 +510,22 @@ async function runOnce(app, opts = {}) {
           dlog('dry-run => NÃO enviou', { to: p.remainingJids, id: p.id, link: resultUrlStr });
         } else {
           
-          // 🆕 CORREÇÃO 3: Array para acumular grupos enviados
           const successfulGroups = [];
 
-          // Embaralha ordem dos grupos se configurado
           const orderedJids = (GROUP_ORDER === 'shuffle') ? shuffle(p.remainingJids) : p.remainingJids;
 
+          // 🔥 CORREÇÃO DEFINITIVA: Loop com try/catch/finally
           for (let idx = 0; idx < orderedJids.length; idx++) {
             const rawJid = orderedJids[idx];
             const jid = safeStr(rawJid).trim();
 
+            // Flags de controle para o finally
+            let didReserve = false;
+            const isLast = idx === orderedJids.length - 1;
+
             try {
               if (!jid || !jid.endsWith('@g.us')) throw new Error(`JID inválido: "${jid}"`);
 
-              // IK para dedupe
               const ik = IK(p.id, 'RES', p.whenIso, jid);
               const res = await ledger.reserve(ik, { rowId: p.id, kind: 'RES', whenIso: p.whenIso, jid });
               
@@ -553,7 +534,8 @@ async function runOnce(app, opts = {}) {
                 continue; 
               }
 
-              // 🆕 Pega o texto específico deste grupo
+              didReserve = true; // Marca que houve tentativa real
+
               const tpl = groupTextMap[jid] || tpls[0];
               
               let captionFull = mergeText(tpl, {
@@ -569,36 +551,37 @@ async function runOnce(app, opts = {}) {
               const payload = { ...media, caption: safeStr(captionFull) };
               const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
 
-              // Envia a mensagem
               await sock.sendMessage(jid, payload, opts);
               await ledger.commit(ik, { message: 'sent' });
               
               anySentForThisRow = true;
-              successfulGroups.push(jid); // Acumula grupo enviado
+              successfulGroups.push(jid);
               sent++;
               
-              dlog('✅ enviado', { jid, id: p.id, grupo: `${idx + 1}/${orderedJids.length}` });
-
-              // 🆕 CORREÇÃO 4: Delay APÓS enviar (não antes do próximo)
-              // Se não for o último grupo, aguarda o delay
-              if (idx < orderedJids.length - 1) {
-                console.log(`⏳ [post-winner] Grupo ${idx + 1}/${orderedJids.length} enviado. Aguardando delay antes do próximo...`);
-                await throttleWait(); // 3-5 min aleatório
-                console.log(`✅ [post-winner] Delay concluído. Enviando próximo grupo...`);
-              }
+              console.log(`✅ [post-winner] Enviado para grupo ${idx + 1}/${orderedJids.length}: ${jid}`);
 
             } catch (e) {
+              console.error(`❌ [post-winner] Erro no grupo ${jid}:`, e.message);
               errors.push({
                 id: p.id, stage: 'sendMessage', jid,
                 mediaKeys: Object.keys(media || {}), usedPath,
                 error: e?.message || String(e)
               });
+            } finally {
+              // 🔥 BLOCO FINALLY - SEMPRE EXECUTA (mesmo com erro!)
+              if (!dryRun && didReserve && !isLast) {
+                try {
+                  console.log(`⏳ [post-winner] Grupo ${idx + 1}/${orderedJids.length} finalizado. Aguardando intervalo...`);
+                  await throttleWait();
+                  console.log(`✅ [post-winner] Intervalo concluído. Próximo grupo.`);
+                } catch (delayErr) {
+                  console.error(`❌ [post-winner] Erro no delay:`, delayErr.message);
+                }
+              }
             }
           }
 
-          // 🆕 CORREÇÃO 5: Marca TODOS os grupos de uma vez na planilha
           if (usePerGroupMode && successfulGroups.length > 0) {
-            // Adiciona todos os grupos enviados ao set
             successfulGroups.forEach(jid => p.postedSet.add(jid));
             
             const headerName = H_WA_GROUPS || 'WA_POST_GROUPS';
@@ -607,14 +590,13 @@ async function runOnce(app, opts = {}) {
                 sheets, spreadsheetId, tab, headers, p.rowIndex1, headerName,
                 setToCsv(p.postedSet)
               );
-              console.log(`✅ [post-winner] Marcou ${successfulGroups.length} grupos na planilha: ${Array.from(p.postedSet).join(', ')}`);
+              console.log(`✅ [post-winner] Marcou ${successfulGroups.length} grupos na planilha`);
             } catch (e) {
               errors.push({ id: p.id, stage: 'updateSheet(WA_POST_GROUPS)', error: e?.message || String(e) });
             }
           }
         }
 
-        // 5.5) marcar planilha (linha) após qualquer sucesso
         try {
           if (!dryRun && anySentForThisRow) {
             const postAt = new Date().toISOString();
@@ -641,4 +623,4 @@ async function runOnce(app, opts = {}) {
   }
 }
 
-module.exports = { runOnce }
+module.exports = { runOnce };
