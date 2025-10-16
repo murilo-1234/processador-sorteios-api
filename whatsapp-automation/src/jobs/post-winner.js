@@ -375,10 +375,18 @@ async function runOnce(app, opts = {}) {
       return { ok: true, processed: 0, sent: 0, note: 'sem linhas prontas', skipped };
     }
 
-    // 🔥 PLANO B: Processa APENAS 1 sorteio por vez
+    // 🔥 ORDENA POR HORÁRIO DO SORTEIO (mais recente primeiro)
+    pending.sort((a, b) => b.spDate - a.spDate);
+    
+    console.log(`📋 [post-winner] Sorteios encontrados (ordenados por horário):`);
+    pending.forEach(p => {
+      const horario = p.spDate.toLocaleString('pt-BR');
+      console.log(`   ${p.id} - ${horario}`);
+    });
+
+    // 🔥 PLANO B: Processa APENAS 1 sorteio por vez (o mais recente)
     if (pending.length > 1) {
-      console.log(`⚠️ [post-winner] Encontrados ${pending.length} sorteios prontos. Processando apenas o primeiro.`);
-      console.log(`📋 [post-winner] Sorteios: ${pending.map(p => p.id).join(', ')}`);
+      console.log(`⚠️ [post-winner] Processando apenas o mais recente: ${pending[0].id}`);
     }
     
     const sorteioPraProcessar = pending.slice(0, 1);
