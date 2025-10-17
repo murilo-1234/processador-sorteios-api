@@ -1,8 +1,8 @@
-// src/jobs/post-winner.js
+// src/jobs/post-winner.js - VERSÃO COM TIMESTAMP PARA DELAY GARANTIDO
 
 const fs = require('fs');
 const path = require('path');
-const { parse, format } = require('date-fns');
+const { parse, format, addMinutes } = require('date-fns');
 
 // ==== IMPORT RESILIENTE + FALLBACK PARA zonedTimeToUtc ====
 let zonedTimeToUtcSafe;
@@ -51,6 +51,9 @@ const DELAY_MIN = Number(process.env.POST_DELAY_MINUTES ?? 10);
 const DEBUG_JOB = String(process.env.DEBUG_JOB || '').trim() === '1';
 const GROUP_ORDER = String(process.env.GROUP_ORDER || 'shuffle').toLowerCase();
 const MAX_AGE_H = Number(process.env.POST_MAX_AGE_HOURS || 48);
+
+// 🔥 NOVO: Delay entre grupos (em MINUTOS)
+const GROUP_POST_DELAY_MIN = Number(process.env.GROUP_POST_DELAY_MINUTES || 5);
 
 const DISABLE_LINK_PREVIEW = String(process.env.DISABLE_LINK_PREVIEW || '1') === '1';
 const SEND_RESULT_URL_SEPARATE = false;
@@ -231,6 +234,16 @@ function IK(rowId, kind, whenIso, groupJid) {
   return `${rowId}|${kind}|${whenIso}|${groupJid}`;
 }
 
+// 🔥 NOVA FUNÇÃO: Parse timestamp da planilha
+function parseTimestamp(val) {
+  if (!val) return null;
+  try {
+    const d = new Date(val);
+    if (!isNaN(d.getTime())) return d;
+  } catch {}
+  return null;
+}
+
 async function runOnce(app, opts = {}) {
   const lock = await acquireJobLock('post-winner');
   if (!lock) return { ok: false, reason: 'job_locked' };
@@ -270,6 +283,9 @@ async function runOnce(app, opts = {}) {
     const H_WA_POST  = findHeader(headers, ['wa_post']);
     const H_WA_AT    = findHeader(headers, ['wa_post_at', 'wa_postado_em']);
     const H_WA_GROUPS= findHeader(headers, ['wa_post_groups','wa_groups','wa_grupos']);
+    
+    // 🔥 NOVA COLUNA: Timestamp do próximo post
+    const H_NEXT_AT  = findHeader(headers, ['wa_post_next_at', 'next_post_at', 'proximo_post']) || 'WA_POST_NEXT_AT';
 
     const H_CUSTOM_HEADLINE = findHeader(headers, ['headline']);
     const H_BG_URL          = findHeader(headers, ['video_bg_url', 'bg_url']);
@@ -301,7 +317,7 @@ async function runOnce(app, opts = {}) {
         return;
       }
 
-      // 🔥 SEMPRE verifica se WA_POST = "Postado", mesmo com WA_POST_GROUPS
+      // 🔥 SEMPRE verifica se WA_POST = "Postado"
       const flagPosted = coerceStr(row[H_WA_POST]).toLowerCase() === 'postado';
       if (flagPosted) { 
         skipped.push({ row: rowIndex1, id, reason: 'WA_POST=Postado' }); 
@@ -349,6 +365,22 @@ async function runOnce(app, opts = {}) {
         return;
       }
 
+      // 🔥 NOVO: Verifica timestamp do próximo post
+      const nextAtStr = row[H_NEXT_AT];
+      const nextAt = parseTimestamp(nextAtStr);
+      
+      if (nextAt && now < nextAt) {
+        const waitMin = Math.ceil((nextAt - now) / 60000);
+        skipped.push({ 
+          row: rowIndex1, 
+          id, 
+          reason: 'aguardando_delay', 
+          nextAt: nextAt.toISOString(),
+          waitMinutes: waitMin
+        });
+        return;
+      }
+
       const customHeadline = H_CUSTOM_HEADLINE ? coerceStr(row[H_CUSTOM_HEADLINE]) : '';
       const bgUrl          = H_BG_URL          ? coerceStr(row[H_BG_URL])          : '';
       const musicUrl       = H_MUSIC_URL       ? coerceStr(row[H_MUSIC_URL])       : '';
@@ -380,21 +412,29 @@ async function runOnce(app, opts = {}) {
       return { ok: true, processed: 0, sent: 0, note: 'sem linhas prontas', skipped };
     }
 
-    // 🔥 ORDENA POR HORÁRIO DO SORTEIO (mais recente primeiro)
-    pending.sort((a, b) => b.spDate - a.spDate);
+    // 🔥 ORDENA POR HORÁRIO (mais antigo primeiro = FIFO)
+    pending.sort((a, b) => a.spDate - b.spDate);
     
     console.log(`📋 [post-winner] Sorteios encontrados (ordenados por horário):`);
     pending.forEach(p => {
       const horario = p.spDate.toLocaleString('pt-BR');
-      console.log(`   ${p.id} - ${horario}`);
+      const totalGrupos = targetJids.length;
+      const postados = p.postedSet.size;
+      const restantes = totalGrupos - postados;
+      console.log(`   ${p.id} - ${horario} | Grupos: ${postados}/${totalGrupos} postados (${restantes} restantes)`);
     });
 
-    // 🔥 PLANO B: Processa APENAS 1 sorteio por vez (o mais recente)
-    if (pending.length > 1) {
-      console.log(`⚠️ [post-winner] Processando apenas o mais recente: ${pending[0].id}`);
-    }
+    // 🔥 Processa APENAS o primeiro sorteio com grupos pendentes
+    const sorteioComPendentes = pending.find(p => p.remainingJids.length > 0);
     
-    const sorteioPraProcessar = pending.slice(0, 1);
+    if (!sorteioComPendentes) {
+      console.log(`✅ [post-winner] Todos os sorteios já foram completamente postados!`);
+      return { ok: true, processed: 0, sent: 0, note: 'todos completos', skipped };
+    }
+
+    console.log(`⚠️ [post-winner] Processando: ${sorteioComPendentes.id}`);
+    
+    const sorteioPraProcessar = [sorteioComPendentes];
 
     let coupon;
     try {
@@ -514,15 +554,15 @@ async function runOnce(app, opts = {}) {
         const tpls = templatesList();
         const resultUrlStr = safeStr(resultUrl);
         
-        // Sorteia textos para TODOS os grupos (mesmo que vá postar só 1 agora)
-        const orderedJids = (GROUP_ORDER === 'shuffle') ? shuffle(p.remainingJids) : p.remainingJids;
+        // Mantém ordem original dos grupos (não embaralha novamente)
+        const orderedJids = targetJids;
         const groupTextMap = assignRandomTextsToGroups(tpls, orderedJids);
         
         console.log(`📝 [post-winner] Textos sorteados para ${orderedJids.length} grupos`);
 
         const sock = await getPreferredSock(app);
         if (!sock) {
-          errors.push({ id: p.id, stage: 'sendMessage', error: 'WhatsApp não conectado (admin/cliente)' });
+          errors.push({ id: p.id, stage: 'sendMessage', error: 'WhatsApp não conectado' });
           continue;
         }
 
@@ -531,20 +571,23 @@ async function runOnce(app, opts = {}) {
           continue;
         }
 
-        // 🔥 PLANO B: Posta APENAS O PRÓXIMO GRUPO DA FILA
-        console.log(`\n📊 [post-winner] FILA - Sorteio: ${p.id}`);
-        console.log(`   Total de grupos: ${orderedJids.length}`);
-        console.log(`   Já postados: ${p.postedSet.size}`);
-        console.log(`   Restantes: ${orderedJids.length - p.postedSet.size}`);
+        const totalGrupos = orderedJids.length;
+        const jaPostados = p.postedSet.size;
+        const restantes = totalGrupos - jaPostados;
         
-        // Descobre qual é o próximo grupo que ainda não foi postado
+        console.log(`\n📊 [post-winner] FILA - Sorteio: ${p.id}`);
+        console.log(`   Total de grupos: ${totalGrupos}`);
+        console.log(`   Já postados: ${jaPostados}`);
+        console.log(`   Restantes: ${restantes}`);
+        
+        // Próximo grupo (mantém ordem original)
         const proximoGrupo = orderedJids.find(jid => !p.postedSet.has(jid));
         
         if (!proximoGrupo) {
           console.log(`✅ [post-winner] Todos os grupos já foram postados para ${p.id}`);
           
-          // Marca como Postado se ainda não estiver
-          const flagPosted = coerceStr(items[p.rowIndex1 - 2][H_WA_POST]).toLowerCase();
+          const row = items[p.rowIndex1 - 2];
+          const flagPosted = coerceStr(row[H_WA_POST]).toLowerCase();
           if (flagPosted !== 'postado') {
             const postAt = new Date().toISOString();
             await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_POST || 'WA_POST', 'Postado');
@@ -556,7 +599,9 @@ async function runOnce(app, opts = {}) {
         }
         
         const idx = orderedJids.indexOf(proximoGrupo);
-        console.log(`🎯 [post-winner] Próximo grupo a postar: ${idx + 1}/${orderedJids.length}`);
+        const numeroAtual = idx + 1;
+        
+        console.log(`🎯 [post-winner] Próximo grupo: ${numeroAtual}/${totalGrupos} (${restantes} restantes)`);
         console.log(`   JID: ${proximoGrupo.slice(0, 20)}...`);
 
         try {
@@ -565,12 +610,10 @@ async function runOnce(app, opts = {}) {
           const res = await ledger.reserve(ik, { rowId: p.id, kind: 'RES', whenIso: p.whenIso, jid: proximoGrupo });
           
           if (res.status !== 'ok') {
-            console.log(`⚠️ [post-winner] Grupo já foi postado (dedupe): ${res.reason}`);
-            // Adiciona ao set para não tentar de novo
+            console.log(`⚠️ [post-winner] Grupo ${numeroAtual}/${totalGrupos} já foi postado (dedupe): ${res.reason}`);
             p.postedSet.add(proximoGrupo);
             await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_GROUPS || 'WA_POST_GROUPS', setToCsv(p.postedSet));
           } else {
-            // Pega o texto específico deste grupo
             const tpl = groupTextMap[proximoGrupo] || tpls[0];
             
             let captionFull = mergeText(tpl, {
@@ -592,28 +635,45 @@ async function runOnce(app, opts = {}) {
             
             sent++;
             
-            console.log(`✅ [post-winner] Grupo ${idx + 1}/${orderedJids.length} postado com sucesso!`);
+            console.log(`✅ [post-winner] Grupo ${numeroAtual}/${totalGrupos} postado com sucesso!`);
 
-            // Atualiza a planilha IMEDIATAMENTE
+            // 🔥 ATUALIZA PLANILHA IMEDIATAMENTE
             p.postedSet.add(proximoGrupo);
             await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_GROUPS || 'WA_POST_GROUPS', setToCsv(p.postedSet));
-            console.log(`📝 [post-winner] Planilha atualizada - Grupos postados: ${p.postedSet.size}/${orderedJids.length}`);
+            
+            const novosPostados = p.postedSet.size;
+            const novosRestantes = totalGrupos - novosPostados;
+            
+            console.log(`📝 [post-winner] Planilha atualizada - Grupos postados: ${novosPostados}/${totalGrupos} (${novosRestantes} restantes)`);
+            
+            // 🔥 NOVO: Salva timestamp do próximo post
+            if (novosPostados < totalGrupos) {
+              // Ainda tem grupos pendentes - calcula próximo horário
+              const nextPostAt = addMinutes(now, GROUP_POST_DELAY_MIN);
+              await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_NEXT_AT, nextPostAt.toISOString());
+              
+              const nextPostTime = nextPostAt.toLocaleTimeString('pt-BR');
+              console.log(`⏰ [post-winner] Próximo post agendado para: ${nextPostTime} (${GROUP_POST_DELAY_MIN} minutos)`);
+              console.log(`⏳ [post-winner] Próxima execução do cron vai verificar e postar grupo ${numeroAtual + 1}/${totalGrupos}`);
+            }
             
             // Se foi o último grupo, marca WA_POST = Postado
-            if (p.postedSet.size === orderedJids.length) {
+            if (novosPostados === totalGrupos) {
               const postAt = new Date().toISOString();
               await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_POST || 'WA_POST', 'Postado');
               await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_WA_AT || 'WA_POST_AT', postAt);
+              
+              // Limpa o timestamp (não precisa mais)
+              await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_NEXT_AT, '');
+              
               console.log(`🎉 [post-winner] TODOS OS GRUPOS POSTADOS! Sorteio ${p.id} completo!`);
               
               if (!usePerGroupMode) settings.addPosted(p.id);
-            } else {
-              console.log(`⏳ [post-winner] Aguardando próxima execução do cron para postar grupo ${idx + 2}/${orderedJids.length}`);
             }
           }
 
         } catch (e) {
-          console.error(`❌ [post-winner] Erro ao postar grupo ${idx + 1}:`, e.message);
+          console.error(`❌ [post-winner] Erro ao postar grupo ${numeroAtual}/${totalGrupos}:`, e.message);
           errors.push({
             id: p.id, stage: 'sendMessage', jid: proximoGrupo,
             error: e?.message || String(e)
