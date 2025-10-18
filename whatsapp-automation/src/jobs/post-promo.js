@@ -57,16 +57,19 @@ const { getRows, updateCellByHeader } = require('../services/sheets');
 const { fetchFirstCoupon } = require('../services/coupons'); // compat
 const couponsSvc = require('../services/coupons');            // para top2
 const { beforeTexts, dayTexts } = require('../services/promo-texts');
-const { wait: throttleWait } = require('../services/group-throttle');
 const { acquire: acquireJobLock } = require('../services/job-lock');
 const ledger = require('../services/send-ledger');
 
 const DEBUG_JOB = String(process.env.DEBUG_JOB || '').trim() === '1';
 const PROMO_BEFORE_DAYS = Number(process.env.PROMO_BEFORE_DAYS || 2);
 const PROMO_POST_HOUR  = Number(process.env.PROMO_POST_START_HOUR || 9);
-const PROMO_POST_MAX_HOUR = Number(process.env.PROMO_POST_MAX_HOUR || 22); // 🔥 NOVA CONSTANTE
+const PROMO_POST_MAX_HOUR = Number(process.env.PROMO_POST_MAX_HOUR || 22);
 const BAILEYS_LINK_PREVIEW_OFF = String(process.env.BAILEYS_LINK_PREVIEW_OFF || '1') === '1';
 const GROUP_ORDER = String(process.env.GROUP_ORDER || 'shuffle').toLowerCase();
+
+// 🔥 DELAY entre posts (igual post-winner)
+const GROUP_POST_DELAY_MIN = Number(process.env.GROUP_POST_DELAY_MINUTES || 3);
+const GROUP_POST_DELAY_MAX = Number(process.env.GROUP_POST_DELAY_MAX_MINUTES || 5);
 
 const dlog = (...a) => { if (DEBUG_JOB) console.log('[PROMO]', ...a); };
 const coerceStr = (v) => { try { return String(v ?? '').trim(); } catch { return ''; } };
@@ -116,6 +119,13 @@ async function getPreferredSock(app) {
   } catch (_) {}
   const waClient = app?.locals?.whatsappClient || app?.whatsappClient;
   return waClient?.sock || null;
+}
+
+// 🔥 Calcular delay aleatório (igual post-winner)
+function getRandomDelay() {
+  const minMs = GROUP_POST_DELAY_MIN * 60 * 1000;
+  const maxMs = GROUP_POST_DELAY_MAX * 60 * 1000;
+  return minMs + Math.random() * (maxMs - minMs);
 }
 
 // === Cupom (mesma regra do post-winner) ===
@@ -214,10 +224,12 @@ async function runOnce(app, opts = {}) {
     const H_P1   = findHeader(headers, ['wa_promo1','wa_promocao1','promo1','wa_promo_1']) || 'WA_PROMO1';
     const H_P1AT = findHeader(headers, ['wa_promo1_at','wa_promocao1_at','promo1_at'])     || 'WA_PROMO1_AT';
     const H_P1G  = findHeader(headers, ['wa_promo1_groups','wa_promocao1_groups','promo1_groups']) || 'WA_PROMO1_GROUPS';
+    const H_P1_NEXT = findHeader(headers, ['wa_promo1_next_at','promo1_next_at']) || 'WA_PROMO1_NEXT_AT'; // 🔥 NOVO
 
     const H_P2   = findHeader(headers, ['wa_promo2','wa_promocao2','promo2','wa_promo_2']) || 'WA_PROMO2';
     const H_P2AT = findHeader(headers, ['wa_promo2_at','wa_promocao2_at','promo2_at'])     || 'WA_PROMO2_AT';
     const H_P2G  = findHeader(headers, ['wa_promo2_groups','wa_promocao2_groups','promo2_groups']) || 'WA_PROMO2_GROUPS';
+    const H_P2_NEXT = findHeader(headers, ['wa_promo2_next_at','promo2_next_at']) || 'WA_PROMO2_NEXT_AT'; // 🔥 NOVO
 
     // Resultado
     const H_WINNER     = findHeader(headers, ['ganhador','ganhadora','vencedor','winner','nome_ganhador']);
@@ -280,7 +292,7 @@ async function runOnce(app, opts = {}) {
       if (spDate < todayLocalDateOnly) { skipped.push({ row: rowIndex1, id, reason: 'past_draw' }); continue; }
       if (hasResultForRow(row, hdrs))  { skipped.push({ row: rowIndex1, id, reason: 'has_result' }); continue; }
 
-      // 🔥 NOVA VALIDAÇÃO: Janela horária (9h-22h)
+      // 🔥 Validação: Janela horária (9h-22h)
       const horaAtual = now.getHours();
       if (horaAtual < PROMO_POST_HOUR || horaAtual >= PROMO_POST_MAX_HOUR) {
         skipped.push({ row: rowIndex1, id, reason: 'fora_janela_horaria', hora: horaAtual, janela: `${PROMO_POST_HOUR}h-${PROMO_POST_MAX_HOUR}h` });
@@ -306,6 +318,15 @@ async function runOnce(app, opts = {}) {
             await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P1AT, new Date().toISOString());
           }
         } else {
+          // 🔥 VERIFICAR TIMESTAMP antes de processar
+          const nextAt = row[H_P1_NEXT];
+          const nowMs = Date.now();
+          if (nextAt && nowMs < Number(nextAt)) {
+            const waitMin = Math.ceil((Number(nextAt) - nowMs) / 60000);
+            dlog(`aguardando P1 delay`, { id, row: rowIndex1, aguardar: `${waitMin}min` });
+            continue;
+          }
+
           // mídia preparada 1x
           let imageBuf = null;
           try { imageBuf = await downloadToBuffer(imgUrl); } catch {}
@@ -339,15 +360,21 @@ async function runOnce(app, opts = {}) {
             const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
 
             if (!dryRun) {
-              await throttleWait(); // atraso aleatório 3–5 min
               await sock.sendMessage(jid, payload, opts);
               await ledger.commit(ik, { message: 'sent' });
 
               alreadyP1.add(jid);
               await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P1G, groupsToCell(alreadyP1));
+              
+              // 🔥 CALCULAR E SALVAR PRÓXIMO TIMESTAMP
+              const delayMs = getRandomDelay();
+              const nextTimestamp = Date.now() + delayMs;
+              await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P1_NEXT, String(nextTimestamp));
+              
               anySent = true;
               sent++;
-              dlog('P1 enviado', { jid, id });
+              const delayMin = (delayMs / 60000).toFixed(1);
+              dlog('P1 enviado', { jid, id, proximoEm: `${delayMin}min` });
             } else {
               dlog('DRY-RUN P1 =>', { row: rowIndex1, id, jid, at: whenIso, textIndex });
             }
@@ -366,7 +393,7 @@ async function runOnce(app, opts = {}) {
       // ===== Promo 2 — no dia =====
       if (!p2Canceled && now >= p2At) {
         
-        // 🔥 NOVA VALIDAÇÃO: Não postar "do dia" após horário do sorteio
+        // 🔥 Validação: Não postar "do dia" após horário do sorteio
         try {
           const horaParts = horaStr.split(':');
           if (horaParts.length >= 2) {
@@ -401,6 +428,15 @@ async function runOnce(app, opts = {}) {
             await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P2AT, new Date().toISOString());
           }
         } else {
+          // 🔥 VERIFICAR TIMESTAMP antes de processar
+          const nextAt = row[H_P2_NEXT];
+          const nowMs = Date.now();
+          if (nextAt && nowMs < Number(nextAt)) {
+            const waitMin = Math.ceil((Number(nextAt) - nowMs) / 60000);
+            dlog(`aguardando P2 delay`, { id, row: rowIndex1, aguardar: `${waitMin}min` });
+            continue;
+          }
+
           let imageBuf = null;
           try { imageBuf = await downloadToBuffer(imgUrl); } catch {}
 
@@ -431,15 +467,21 @@ async function runOnce(app, opts = {}) {
             const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
 
             if (!dryRun) {
-              await throttleWait();
               await sock.sendMessage(jid, payload, opts);
               await ledger.commit(ik, { message: 'sent' });
 
               alreadyP2.add(jid);
               await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P2G, groupsToCell(alreadyP2));
+              
+              // 🔥 CALCULAR E SALVAR PRÓXIMO TIMESTAMP
+              const delayMs = getRandomDelay();
+              const nextTimestamp = Date.now() + delayMs;
+              await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P2_NEXT, String(nextTimestamp));
+              
               anySent = true;
               sent++;
-              dlog('P2 enviado', { jid, id });
+              const delayMin = (delayMs / 60000).toFixed(1);
+              dlog('P2 enviado', { jid, id, proximoEm: `${delayMin}min` });
             } else {
               dlog('DRY-RUN P2 =>', { row: rowIndex1, id, jid, at: whenIso, textIndex });
             }
