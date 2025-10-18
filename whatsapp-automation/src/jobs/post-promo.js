@@ -289,12 +289,25 @@ async function runOnce(app, opts = {}) {
         continue;
       }
 
-      if (spDate < todayLocalDateOnly) { skipped.push({ row: rowIndex1, id, reason: 'past_draw' }); continue; }
-      if (hasResultForRow(row, hdrs))  { skipped.push({ row: rowIndex1, id, reason: 'has_result' }); continue; }
+      if (spDate < todayLocalDateOnly) { 
+        dlog('skip: past_draw', { id, row: rowIndex1 });
+        skipped.push({ row: rowIndex1, id, reason: 'past_draw' }); 
+        continue; 
+      }
+      
+      // 🔥 CORREÇÃO: Só bloqueia se JÁ TEM GANHADOR (sorteio já aconteceu)
+      // NÃO bloqueia por status "Processado" - isso é normal!
+      const winner = safeStr(hdrs.H_WINNER ? row[hdrs.H_WINNER] : '').trim();
+      if (winner) {
+        dlog('skip: has_winner', { id, row: rowIndex1, winner });
+        skipped.push({ row: rowIndex1, id, reason: 'has_winner' }); 
+        continue; 
+      }
 
       // 🔥 Validação: Janela horária (9h-22h)
       const horaAtual = now.getHours();
       if (horaAtual < PROMO_POST_HOUR || horaAtual >= PROMO_POST_MAX_HOUR) {
+        dlog('skip: fora_janela', { id, row: rowIndex1, hora: horaAtual, janela: `${PROMO_POST_HOUR}h-${PROMO_POST_MAX_HOUR}h` });
         skipped.push({ row: rowIndex1, id, reason: 'fora_janela_horaria', hora: horaAtual, janela: `${PROMO_POST_HOUR}h-${PROMO_POST_MAX_HOUR}h` });
         continue;
       }
