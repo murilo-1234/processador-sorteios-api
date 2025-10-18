@@ -1,4 +1,4 @@
-// src/jobs/post-promo.js - VERSÃO COMPLETA COM TODAS AS LÓGICAS DO POST-WINNER
+// src/jobs/post-promo.js - VERSÃO COM DEBUG PARA g188/g190
 'use strict';
 
 const axios = require('axios');
@@ -238,6 +238,12 @@ async function runOnce(app, opts = {}) {
     items.forEach((row, i) => {
       const rowIndex1 = i + 2;
       const id      = coerceStr(row[H_ID]);
+      
+      // 🔥 DEBUG: Início do processamento
+      if (id === 'g188' || id === 'g190') {
+        console.log(`🔍 [DEBUG] Iniciando processamento de ${id} (linha ${rowIndex1})`);
+      }
+      
       const product = coerceStr(row[H_PROD]);
       const dateStr = coerceStr(row[H_DATA]);
       const horaStr = coerceStr(row[H_HORA]);
@@ -253,6 +259,9 @@ async function runOnce(app, opts = {}) {
       if (!planUrl) missing.push('url_planilha');
       
       if (missing.length) {
+        if (id === 'g188' || id === 'g190') {
+          console.log(`❌ [DEBUG] ${id} BLOQUEADO: faltando_campos - ${JSON.stringify(missing)}`);
+        }
         skipped.push({ row: rowIndex1, id, reason: 'faltando_campos', missing });
         return;
       }
@@ -262,11 +271,19 @@ async function runOnce(app, opts = {}) {
         spDate = parse(dateStr, 'dd/MM/yyyy', new Date());
         if (isNaN(spDate?.getTime?.())) throw new Error('data inválida');
       } catch {
+        if (id === 'g188' || id === 'g190') {
+          console.log(`❌ [DEBUG] ${id} BLOQUEADO: parseDateFail - ${dateStr}`);
+        }
         skipped.push({ row: rowIndex1, id, reason: 'parseDateFail', raw: dateStr });
         return;
       }
 
       if (spDate < todayLocalDateOnly) {
+        if (id === 'g188' || id === 'g190') {
+          console.log(`❌ [DEBUG] ${id} BLOQUEADO: past_draw`);
+          console.log(`   spDate: ${spDate.toLocaleString('pt-BR')}`);
+          console.log(`   today: ${todayLocalDateOnly.toLocaleString('pt-BR')}`);
+        }
         skipped.push({ row: rowIndex1, id, reason: 'past_draw' });
         return;
       }
@@ -274,13 +291,21 @@ async function runOnce(app, opts = {}) {
       // Só bloqueia se JÁ TEM GANHADOR
       const winner = safeStr(H_WINNER ? row[H_WINNER] : '').trim();
       if (winner) {
+        if (id === 'g188' || id === 'g190') {
+          console.log(`❌ [DEBUG] ${id} BLOQUEADO: has_winner - "${winner}"`);
+        }
         skipped.push({ row: rowIndex1, id, reason: 'has_winner' });
         return;
       }
 
-      // Janela horária (9h-22h)
+      // Janela horária
       const horaAtual = now.getHours();
       if (horaAtual < PROMO_POST_HOUR || horaAtual >= PROMO_POST_MAX_HOUR) {
+        if (id === 'g188' || id === 'g190') {
+          console.log(`❌ [DEBUG] ${id} BLOQUEADO: fora_janela_horaria`);
+          console.log(`   Hora atual: ${horaAtual}h`);
+          console.log(`   Janela: ${PROMO_POST_HOUR}h-${PROMO_POST_MAX_HOUR}h`);
+        }
         skipped.push({ 
           row: rowIndex1, 
           id, 
@@ -301,11 +326,20 @@ async function runOnce(app, opts = {}) {
 
       // === PROMO 1 (2 dias antes) ===
       if (!p1Canceled && now >= p1At) {
+        if (id === 'g188' || id === 'g190') {
+          console.log(`✅ [DEBUG] ${id} passou validação P1 - verificando grupos...`);
+        }
+        
         const alreadyP1 = parseGroups(row[H_P1G]);
         const p1Posted = String(row[H_P1] || '').toLowerCase() === 'postado';
         
         if (p1Posted || isSuperset(alreadyP1, targetSet)) {
-          // Já completou todos os grupos
+          if (id === 'g188' || id === 'g190') {
+            console.log(`❌ [DEBUG] ${id} BLOQUEADO P1: já completou todos os grupos`);
+            console.log(`   p1Posted: ${p1Posted}`);
+            console.log(`   alreadyP1: ${Array.from(alreadyP1).length} grupos`);
+            console.log(`   targetSet: ${targetSet.size} grupos`);
+          }
           return;
         }
 
@@ -315,6 +349,9 @@ async function runOnce(app, opts = {}) {
         
         if (nextAt && now < nextAt) {
           const waitMin = Math.ceil((nextAt - now) / 60000);
+          if (id === 'g188' || id === 'g190') {
+            console.log(`⏳ [DEBUG] ${id} BLOQUEADO P1: aguardando_delay - ${waitMin} minutos`);
+          }
           skipped.push({
             row: rowIndex1,
             id,
@@ -328,6 +365,9 @@ async function runOnce(app, opts = {}) {
         const remainingJids = targetJids.filter(j => !alreadyP1.has(j));
         
         if (remainingJids.length > 0) {
+          if (id === 'g188' || id === 'g190') {
+            console.log(`🎯 [DEBUG] ${id} ADICIONADO a pendingP1! Grupos restantes: ${remainingJids.length}`);
+          }
           pendingP1.push({
             rowIndex1,
             id,
@@ -339,6 +379,18 @@ async function runOnce(app, opts = {}) {
             postedSet: alreadyP1,
             remainingJids
           });
+        } else {
+          if (id === 'g188' || id === 'g190') {
+            console.log(`❌ [DEBUG] ${id} P1: remainingJids.length = 0`);
+          }
+        }
+      } else {
+        if (id === 'g188' || id === 'g190') {
+          console.log(`⏸️ [DEBUG] ${id} ainda não chegou P1`);
+          console.log(`   p1Canceled: ${p1Canceled}`);
+          console.log(`   now >= p1At: ${now >= p1At}`);
+          console.log(`   now: ${now.toLocaleString('pt-BR')}`);
+          console.log(`   p1At: ${p1At.toLocaleString('pt-BR')}`);
         }
       }
 
@@ -356,6 +408,9 @@ async function runOnce(app, opts = {}) {
               horarioSorteio.setHours(hora, minuto, 0, 0);
               
               if (now >= horarioSorteio) {
+                if (id === 'g188' || id === 'g190') {
+                  console.log(`❌ [DEBUG] ${id} BLOQUEADO P2: sorteio_ja_aconteceu`);
+                }
                 skipped.push({
                   row: rowIndex1,
                   id,
