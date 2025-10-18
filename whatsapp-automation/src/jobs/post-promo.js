@@ -318,15 +318,6 @@ async function runOnce(app, opts = {}) {
             await updateCellByHeader(sheets, spreadsheetId, tab, headers, rowIndex1, H_P1AT, new Date().toISOString());
           }
         } else {
-          // 🔥 VERIFICAR TIMESTAMP antes de processar
-          const nextAt = row[H_P1_NEXT];
-          const nowMs = Date.now();
-          if (nextAt && nowMs < Number(nextAt)) {
-            const waitMin = Math.ceil((Number(nextAt) - nowMs) / 60000);
-            dlog(`aguardando P1 delay`, { id, row: rowIndex1, aguardar: `${waitMin}min` });
-            continue;
-          }
-
           // mídia preparada 1x
           let imageBuf = null;
           try { imageBuf = await downloadToBuffer(imgUrl); } catch {}
@@ -343,6 +334,15 @@ async function runOnce(app, opts = {}) {
             const jid = String(rawJid || '').trim();
             if (!jid.endsWith('@g.us')) continue;
             if (alreadyP1.has(jid)) { dlog('skip P1 já enviado', { jid, row: rowIndex1, id }); continue; }
+
+            // 🔥 VERIFICAR TIMESTAMP PARA ESTE GRUPO ESPECÍFICO
+            const nextAt = row[H_P1_NEXT];
+            const nowMs = Date.now();
+            if (nextAt && nowMs < Number(nextAt)) {
+              const waitMin = Math.ceil((Number(nextAt) - nowMs) / 60000);
+              dlog(`aguardando P1 delay`, { id, row: rowIndex1, jid, aguardar: `${waitMin}min` });
+              break; // ← Para de processar este sorteio, aguarda próximo ciclo
+            }
 
             // IK + reserva
             const ik = IK(id, 'P1', whenIso, jid);
