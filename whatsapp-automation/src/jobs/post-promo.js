@@ -63,7 +63,7 @@ const ledger = require('../services/send-ledger');
 
 const DEBUG_JOB = String(process.env.DEBUG_JOB || '').trim() === '1';
 const PROMO_BEFORE_DAYS = Number(process.env.PROMO_BEFORE_DAYS || 2);
-const PROMO_POST_HOUR  = Number(process.env.PROMO_POST_HOUR || 9);
+const PROMO_POST_HOUR  = Number(process.env.PROMO_POST_START_HOUR || 9);
 const PROMO_POST_MAX_HOUR = Number(process.env.PROMO_POST_MAX_HOUR || 22); // 🔥 NOVA CONSTANTE
 const BAILEYS_LINK_PREVIEW_OFF = String(process.env.BAILEYS_LINK_PREVIEW_OFF || '1') === '1';
 const GROUP_ORDER = String(process.env.GROUP_ORDER || 'shuffle').toLowerCase();
