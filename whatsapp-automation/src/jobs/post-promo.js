@@ -64,6 +64,7 @@ const ledger = require('../services/send-ledger');
 const DEBUG_JOB = String(process.env.DEBUG_JOB || '').trim() === '1';
 const PROMO_BEFORE_DAYS = Number(process.env.PROMO_BEFORE_DAYS || 2);
 const PROMO_POST_HOUR  = Number(process.env.PROMO_POST_HOUR || 9);
+const PROMO_POST_MAX_HOUR = Number(process.env.PROMO_POST_MAX_HOUR || 22); // 🔥 NOVA CONSTANTE
 const BAILEYS_LINK_PREVIEW_OFF = String(process.env.BAILEYS_LINK_PREVIEW_OFF || '1') === '1';
 const GROUP_ORDER = String(process.env.GROUP_ORDER || 'shuffle').toLowerCase();
 
@@ -279,6 +280,13 @@ async function runOnce(app, opts = {}) {
       if (spDate < todayLocalDateOnly) { skipped.push({ row: rowIndex1, id, reason: 'past_draw' }); continue; }
       if (hasResultForRow(row, hdrs))  { skipped.push({ row: rowIndex1, id, reason: 'has_result' }); continue; }
 
+      // 🔥 NOVA VALIDAÇÃO: Janela horária (9h-22h)
+      const horaAtual = now.getHours();
+      if (horaAtual < PROMO_POST_HOUR || horaAtual >= PROMO_POST_MAX_HOUR) {
+        skipped.push({ row: rowIndex1, id, reason: 'fora_janela_horaria', hora: horaAtual, janela: `${PROMO_POST_HOUR}h-${PROMO_POST_MAX_HOUR}h` });
+        continue;
+      }
+
       const p1Posted   = String(row[H_P1] || '').toLowerCase() === 'postado';
       const p2Posted   = String(row[H_P2] || '').toLowerCase() === 'postado';
       const p1Canceled = isCanceledFlag(row[H_P1]);
@@ -331,7 +339,7 @@ async function runOnce(app, opts = {}) {
             const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
 
             if (!dryRun) {
-              await throttleWait(); // atraso aleatório 2–5 min
+              await throttleWait(); // atraso aleatório 3–5 min
               await sock.sendMessage(jid, payload, opts);
               await ledger.commit(ik, { message: 'sent' });
 
@@ -357,6 +365,35 @@ async function runOnce(app, opts = {}) {
 
       // ===== Promo 2 — no dia =====
       if (!p2Canceled && now >= p2At) {
+        
+        // 🔥 NOVA VALIDAÇÃO: Não postar "do dia" após horário do sorteio
+        try {
+          const horaParts = horaStr.split(':');
+          if (horaParts.length >= 2) {
+            const hora = parseInt(horaParts[0].trim(), 10);
+            const minuto = parseInt(horaParts[1].trim(), 10);
+            
+            if (!isNaN(hora) && !isNaN(minuto)) {
+              const horarioSorteio = new Date(spDate);
+              horarioSorteio.setHours(hora, minuto, 0, 0);
+              
+              if (now >= horarioSorteio) {
+                skipped.push({ 
+                  row: rowIndex1, 
+                  id, 
+                  reason: 'sorteio_ja_aconteceu', 
+                  horarioSorteio: horarioSorteio.toISOString(),
+                  agora: now.toISOString()
+                });
+                dlog('P2 skip: sorteio já aconteceu', { id, horarioSorteio: horarioSorteio.toISOString() });
+                continue;
+              }
+            }
+          }
+        } catch (err) {
+          dlog('Erro ao validar horário do sorteio P2:', err);
+        }
+
         const alreadyP2 = parseGroups(row[H_P2G]);
         if (isSuperset(alreadyP2, targetSet)) {
           if (!p2Posted && !dryRun) {
