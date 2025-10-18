@@ -338,7 +338,8 @@ async function runOnce(app, opts = {}) {
           const whenIso = p1At.toISOString();
 
           let anySent = false;
-          for (const rawJid of (GROUP_ORDER === 'shuffle' ? shuffle(targetJids) : targetJids)) {
+          // 🔥 CORREÇÃO: Usar lista já embaralhada, NÃO embaralhar de novo
+          for (const rawJid of targetJids) {
             const jid = String(rawJid || '').trim();
             if (!jid.endsWith('@g.us')) continue;
             if (alreadyP1.has(jid)) { dlog('skip P1 já enviado', { jid, row: rowIndex1, id }); continue; }
@@ -446,7 +447,8 @@ async function runOnce(app, opts = {}) {
           const whenIso = p2At.toISOString();
 
           let anySent = false;
-          for (const rawJid of (GROUP_ORDER === 'shuffle' ? shuffle(targetJids) : targetJids)) {
+          // 🔥 CORREÇÃO: Usar lista já embaralhada, NÃO embaralhar de novo
+          for (const rawJid of targetJids) {
             const jid = String(rawJid || '').trim();
             if (!jid.endsWith('@g.us')) continue;
             if (alreadyP2.has(jid)) { dlog('skip P2 já enviado', { jid, row: rowIndex1, id }); continue; }
