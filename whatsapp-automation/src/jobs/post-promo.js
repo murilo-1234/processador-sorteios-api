@@ -325,7 +325,7 @@ async function runOnce(app, opts = {}) {
       const p2At = toUtcFromLocal(dayLocal);
 
       // === PROMO 1 (2 dias antes) ===
-      if (!p1Canceled && now >= p1At) {
+      if (!p1Canceled && now >= beforeLocal) {
         if (id === 'g188' || id === 'g190') {
           console.log(`✅ [DEBUG] ${id} passou validação P1 - verificando grupos...`);
         }
@@ -395,7 +395,7 @@ async function runOnce(app, opts = {}) {
       }
 
       // === PROMO 2 (no dia) ===
-      if (!p2Canceled && now >= p2At) {
+      if (!p2Canceled && now >= dayLocal) {
         // Não postar após horário do sorteio
         try {
           const horaParts = horaStr.split(':');
