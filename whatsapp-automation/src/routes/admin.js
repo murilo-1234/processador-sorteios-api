@@ -3,7 +3,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const database = require('../config/database');
 const logger = require('../config/logger');
-const SorteiosModule = require('../modules/sorteios');
+const settings = require('../services/settings'); // 🔥 NOVO: Import do settings
 
 const router = express.Router();
 
@@ -300,7 +300,32 @@ router.put('/api/grupos/:jid', authenticateAdmin, async (req, res) => {
 });
 
 // API: Sincronizar grupos do WhatsApp
-router.post('/api/grupos/sync', authenticateAdmin, async (req, res) => {
+// 🔥 NOVA ROTA: Salvar grupos selecionados para posts
+router.post('/api/grupos/save-selection', authenticateAdmin, async (req, res) => {
+  try {
+    const { selectedJids } = req.body;
+    
+    if (!Array.isArray(selectedJids)) {
+      return res.status(400).json({ error: 'selectedJids deve ser um array' });
+    }
+    
+    // Salvar a seleção usando a função setPostGroups do settings.js
+    settings.setPostGroups(selectedJids);
+    
+    logger.audit('grupos_selection_saved', `${selectedJids.length} grupos selecionados salvos`, 'admin', req.ip);
+    
+    res.json({ 
+      success: true, 
+      totalGrupos: selectedJids.length,
+      grupos: selectedJids,
+      message: `${selectedJids.length} grupos salvos com sucesso!`
+    });
+    
+  } catch (error) {
+    logger.error('❌ Erro ao salvar seleção de grupos:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
   try {
     const whatsappClient = req.app.locals.whatsappClient;
     
