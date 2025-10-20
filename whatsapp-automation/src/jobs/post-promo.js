@@ -36,6 +36,9 @@ const ledger = require('../services/send-ledger');
 // 🔥 IGUAL POST-WINNER: Sistema de textos diferentes por grupo
 const { assignRandomTextsToGroups } = require('../services/text-shuffler');
 
+// 🔥 NOVO: Importa getRandomDelay para delay aleatório
+const { getRandomDelay } = require('../services/group-throttle');
+
 const DEBUG_JOB = String(process.env.DEBUG_JOB || '').trim() === '1';
 const PROMO_BEFORE_DAYS = Number(process.env.PROMO_BEFORE_DAYS || 2);
 const PROMO_POST_HOUR  = Number(process.env.PROMO_POST_START_HOUR || 9);
@@ -43,7 +46,7 @@ const PROMO_POST_MAX_HOUR = Number(process.env.PROMO_POST_MAX_HOUR || 22);
 const BAILEYS_LINK_PREVIEW_OFF = String(process.env.BAILEYS_LINK_PREVIEW_OFF || '1') === '1';
 const GROUP_ORDER = String(process.env.GROUP_ORDER || 'shuffle').toLowerCase();
 
-// 🔥 DELAY entre posts (minutos)
+// 🔥 DELAY entre posts (minutos) - mantido para fallback
 const GROUP_POST_DELAY_MIN = Number(process.env.GROUP_POST_DELAY_MINUTES || 3);
 
 const dlog = (...a) => { if (DEBUG_JOB) console.log('[PROMO]', ...a); };
@@ -632,14 +635,16 @@ async function runOnce(app, opts = {}) {
             
             console.log(`📝 [post-promo] Planilha atualizada - Grupos postados: ${novosPostados}/${totalGrupos} (${novosRestantes} restantes)`);
 
-            // 🔥 IGUAL POST-WINNER: SALVA TIMESTAMP DO PRÓXIMO POST
+            // 🔥 NOVO: USA DELAY ALEATÓRIO (getRandomDelay)
             if (novosPostados < totalGrupos) {
-              const nextPostAt = addMinutes(now, GROUP_POST_DELAY_MIN);
+              const delayMs = getRandomDelay();
+              const nextPostAt = new Date(now.getTime() + delayMs);
               const H_NEXT = isP1 ? H_P1_NEXT : H_P2_NEXT;
               await updateCellByHeader(sheets, spreadsheetId, tab, headers, p.rowIndex1, H_NEXT, nextPostAt.toISOString());
               
+              const delayMinutes = (delayMs / 60000).toFixed(2);
               const nextPostTime = nextPostAt.toLocaleTimeString('pt-BR');
-              console.log(`⏰ [post-promo] Próximo post agendado para: ${nextPostTime} (${GROUP_POST_DELAY_MIN} minutos)`);
+              console.log(`⏰ [post-promo] Próximo post agendado para: ${nextPostTime} (~${delayMinutes} minutos - aleatório)`);
               console.log(`⏳ [post-promo] Próxima execução do cron vai verificar e postar grupo ${numeroAtual + 1}/${totalGrupos}`);
             }
 
