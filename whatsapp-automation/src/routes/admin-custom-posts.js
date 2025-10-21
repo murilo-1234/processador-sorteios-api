@@ -73,7 +73,8 @@ router.post('/criar', upload.single('media'), async (req, res) => {
       texto2: texto_2,
       texto3: texto_3,
       texto4: texto_4,
-      texto5: texto_5
+      texto5: texto_5,
+      duplicadoDe: null
     });
     
     res.redirect('/admin/agendamentos');
@@ -95,8 +96,8 @@ router.get('/editar/:id', async (req, res) => {
       return res.status(404).send('Post não encontrado');
     }
     
-    if (post.STATUS !== 'Agendado') {
-      return res.status(400).send('Só é possível editar posts "Agendado"');
+    if (!['Agendado', 'Duplicado'].includes(post.STATUS)) {
+      return res.status(400).send('Só é possível editar posts com status "Agendado" ou "Duplicado"');
     }
     
     const today = new Date().toISOString().split('T')[0];
@@ -115,6 +116,7 @@ router.post('/editar/:id', async (req, res) => {
     const { texto_1, texto_2, texto_3, texto_4, texto_5, data, hora } = req.body;
     
     await updateCustomPost(id, {
+      STATUS: 'Agendado',  // 🔥 Muda STATUS para Agendado ao salvar
       TEXTO_1: texto_1,
       TEXTO_2: texto_2,
       TEXTO_3: texto_3,
@@ -146,8 +148,10 @@ router.post('/duplicar/:id', async (req, res) => {
     
     const newId = await getNextId();
     
+    // 🔥 Cria com STATUS: Duplicado
     await createCustomPost({
       id: newId,
+      status: 'Duplicado',
       data: '',
       hora: '',
       mediaPath: post.MEDIA_PATH,
@@ -156,7 +160,8 @@ router.post('/duplicar/:id', async (req, res) => {
       texto2: post.TEXTO_2,
       texto3: post.TEXTO_3,
       texto4: post.TEXTO_4,
-      texto5: post.TEXTO_5
+      texto5: post.TEXTO_5,
+      duplicadoDe: id
     });
     
     res.json({ ok: true, newId });
