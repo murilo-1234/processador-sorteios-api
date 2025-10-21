@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Editar Post - <%= post.ID %></title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; padding: 20px; background: #f5f5f5; }
+    .container { max-width: 800px; margin: 0 auto; }
+    h1 { color: #333; margin-bottom: 10px; }
+    .back-link { display: inline-block; margin-bottom: 20px; color: #3b82f6; text-decoration: none; }
+    .back-link:hover { text-decoration: underline; }
+    .form-section { background: white; padding: 20px; border-radius: 8px; 
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    .form-group { margin-bottom: 15px; }
+    label { display: block; margin-bottom: 5px; font-weight: bold; color: #555; }
+    input[type="date"], input[type="time"] { 
+      width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; 
+    }
+    textarea { width: 100%; min-height: 80px; padding: 8px; border: 1px solid #ddd; 
+               border-radius: 4px; font-family: Arial; resize: vertical; }
+    .textarea-counter { float: right; color: #666; font-size: 12px; margin-top: 2px; }
+    button { padding: 10px 20px; cursor: pointer; border: none; border-radius: 4px; 
+             font-size: 14px; }
+    .btn-primary { background: #3b82f6; color: white; }
+    .btn-primary:hover { background: #2563eb; }
+    .btn-secondary { background: #6b7280; color: white; margin-left: 10px; }
+    .btn-secondary:hover { background: #4b5563; }
+    .info-box { background: #dbeafe; padding: 15px; border-radius: 6px; margin-bottom: 20px;
+                border-left: 4px solid #3b82f6; }
+    .media-preview { max-width: 300px; max-height: 200px; margin: 10px 0; 
+                     border-radius: 4px; border: 1px solid #ddd; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <a href="/admin/agendamentos" class="back-link">← Voltar para Agendamentos</a>
+    
+    <h1>✏️ Editar Post <%= post.ID %></h1>
+    
+    <div class="info-box">
+      <strong>📷 Mídia atual:</strong> <%= post.MEDIA_PATH %><br>
+      <small>A imagem/vídeo não pode ser alterada. Para usar outra mídia, duplique e crie um novo post.</small>
+    </div>
+    
+    <div class="form-section">
+      <form action="/admin/agendamentos/editar/<%= post.ID %>" method="POST">
+        
+        <div class="form-group">
+          <label>✍️ TEXTO 1 (obrigatório):</label>
+          <textarea name="texto_1" maxlength="650" required 
+                    oninput="updateCounter(this, 'counter1')"><%= post.TEXTO_1 %></textarea>
+          <span id="counter1" class="textarea-counter"><%= post.TEXTO_1.length %>/650</span>
+        </div>
+        
+        <div class="form-group">
+          <label>✍️ TEXTO 2 (obrigatório):</label>
+          <textarea name="texto_2" maxlength="650" required 
+                    oninput="updateCounter(this, 'counter2')"><%= post.TEXTO_2 %></textarea>
+          <span id="counter2" class="textarea-counter"><%= post.TEXTO_2.length %>/650</span>
+        </div>
+        
+        <div class="form-group">
+          <label>✍️ TEXTO 3 (obrigatório):</label>
+          <textarea name="texto_3" maxlength="650" required 
+                    oninput="updateCounter(this, 'counter3')"><%= post.TEXTO_3 %></textarea>
+          <span id="counter3" class="textarea-counter"><%= post.TEXTO_3.length %>/650</span>
+        </div>
+        
+        <div class="form-group">
+          <label>✍️ TEXTO 4 (obrigatório):</label>
+          <textarea name="texto_4" maxlength="650" required 
+                    oninput="updateCounter(this, 'counter4')"><%= post.TEXTO_4 %></textarea>
+          <span id="counter4" class="textarea-counter"><%= post.TEXTO_4.length %>/650</span>
+        </div>
+        
+        <div class="form-group">
+          <label>✍️ TEXTO 5 (obrigatório):</label>
+          <textarea name="texto_5" maxlength="650" required 
+                    oninput="updateCounter(this, 'counter5')"><%= post.TEXTO_5 %></textarea>
+          <span id="counter5" class="textarea-counter"><%= post.TEXTO_5.length %>/650</span>
+        </div>
+        
+        <div class="form-group">
+          <label>📅 Data:</label>
+          <input type="date" name="data" required min="<%= today %>" value="<%= post.DATA %>">
+        </div>
+        
+        <div class="form-group">
+          <label>⏰ Hora:</label>
+          <input type="time" name="hora" required value="<%= post.HORA %>">
+        </div>
+        
+        <button type="submit" class="btn-primary">💾 Salvar Alterações</button>
+        <button type="button" onclick="window.location.href='/admin/agendamentos'" class="btn-secondary">❌ Cancelar</button>
+      </form>
+    </div>
+  </div>
+  
+  <script>
+    function updateCounter(textarea, counterId) {
+      document.getElementById(counterId).textContent = textarea.value.length + '/650';
+    }
+  </script>
+</body>
+</html>
