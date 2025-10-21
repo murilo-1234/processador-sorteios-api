@@ -133,6 +133,7 @@ async function runOnce(app, opts = {}) {
         return;
       }
 
+      // 🔥 IGNORA STATUS: Duplicado, Concluído, Cancelado, Expirado
       if (!['Agendado', 'Postando'].includes(status)) {
         skipped.push({ row: rowIndex1, id, reason: 'status_invalido', status });
         return;
