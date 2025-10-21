@@ -42,7 +42,7 @@ async function getCustomPostsRows() {
   try {
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: GOOGLE_SHEETS_ID,
-      range: `${CUSTOM_TAB}!A1:O1000`,
+      range: `${CUSTOM_TAB}!A1:P1000`,  // 🔥 Aumentei para coluna P (DUPLICADO_DE)
     });
     
     const rows = response.data.values || [];
@@ -125,27 +125,29 @@ async function createCustomPost(data) {
   try {
     const now = new Date().toISOString();
     
+    // 🔥 Linha atualizada com 16 colunas (A-P)
     const row = [
-      data.id,
-      'Agendado',
-      data.data,
-      data.hora,
-      data.mediaPath,
-      data.mediaType,
-      data.texto1,
-      data.texto2,
-      data.texto3,
-      data.texto4,
-      data.texto5,
-      '',
-      '',
-      now,
-      now
+      data.id,                          // A: ID
+      data.status || 'Agendado',        // B: STATUS
+      data.data,                        // C: DATA
+      data.hora,                        // D: HORA
+      data.mediaPath,                   // E: MEDIA_PATH
+      data.mediaType,                   // F: MEDIA_TYPE
+      data.texto1,                      // G: TEXTO_1
+      data.texto2,                      // H: TEXTO_2
+      data.texto3,                      // I: TEXTO_3
+      data.texto4,                      // J: TEXTO_4
+      data.texto5,                      // K: TEXTO_5
+      '',                               // L: WA_CUSTOM_GROUPS
+      '',                               // M: WA_POST_NEXT_AT
+      now,                              // N: CRIADO_EM
+      now,                              // O: ATUALIZADO_EM
+      data.duplicadoDe || ''            // P: DUPLICADO_DE 🔥 NOVO
     ];
     
     await sheets.spreadsheets.values.append({
       spreadsheetId: GOOGLE_SHEETS_ID,
-      range: `${CUSTOM_TAB}!A:O`,
+      range: `${CUSTOM_TAB}!A:P`,       // 🔥 Range até P
       valueInputOption: 'RAW',
       requestBody: {
         values: [row],
