@@ -135,6 +135,13 @@ class App {
 
     const tp = process.env.TRUST_PROXY === '1' ? 1 : false;
     this.app.set('trust proxy', tp);
+    // 🔥 ADICIONAR AQUI (linha ~144):
+    this.app.set('view engine', 'ejs');
+    this.app.set('views', path.join(__dirname, 'views'));
+
+    // 🔥 CONFIGURAR VIEW ENGINE EJS
+    this.app.set('view engine', 'ejs');
+    this.app.set('views', path.join(__dirname, 'views'));
 
     // === PAINEL ADMIN (WhatsApp) ===
     try {
