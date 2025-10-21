@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agendamentos de Posts</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; padding: 20px; background: #f5f5f5; }
+    h1 { color: #333; margin-bottom: 20px; }
+    .form-section { background: white; padding: 20px; border-radius: 8px; 
+                    margin-bottom: 30px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    .form-group { margin-bottom: 15px; }
+    label { display: block; margin-bottom: 5px; font-weight: bold; color: #555; }
+    input[type="file"], input[type="date"], input[type="time"] { 
+      width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; 
+    }
+    textarea { width: 100%; min-height: 80px; padding: 8px; border: 1px solid #ddd; 
+               border-radius: 4px; font-family: Arial; resize: vertical; }
+    .textarea-counter { float: right; color: #666; font-size: 12px; margin-top: 2px; }
+    button { padding: 10px 20px; cursor: pointer; border: none; border-radius: 4px; 
+             font-size: 14px; }
+    .btn-primary { background: #3b82f6; color: white; }
+    .btn-primary:hover { background: #2563eb; }
+    .btn-secondary { background: #6b7280; color: white; }
+    .btn-secondary:hover { background: #4b5563; }
+    .btn-danger { background: #ef4444; color: white; }
+    .btn-danger:hover { background: #dc2626; }
+    .post-card { background: white; border: 1px solid #ddd; padding: 15px; 
+                 margin: 10px 0; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .status-badge { display: inline-block; padding: 4px 12px; border-radius: 12px; 
+                    font-size: 12px; font-weight: bold; }
+    .status-agendado { background: #fef3c7; color: #92400e; }
+    .status-postando { background: #dbeafe; color: #1e40af; }
+    .status-concluído { background: #d1fae5; color: #065f46; }
+    .status-cancelado { background: #fee2e2; color: #991b1b; }
+    .status-expirado { background: #fecaca; color: #7f1d1d; }
+    .post-actions { margin-top: 10px; }
+    .post-actions button { margin-right: 5px; }
+  </style>
+</head>
+<body>
+  <h1>📅 Agendamentos de Posts</h1>
+  
+  <div class="form-section">
+    <h2>➕ Agendar Novo Post</h2>
+    <form action="/admin/agendamentos/criar" method="POST" enctype="multipart/form-data">
+      
+      <div class="form-group">
+        <label>📷 Imagem ou Vídeo:</label>
+        <input type="file" name="media" accept="image/*,video/*" required>
+        <small style="color: #666;">Máximo 16MB | JPG, PNG, MP4</small>
+      </div>
+      
+      <div class="form-group">
+        <label>✍️ TEXTO 1 (obrigatório):</label>
+        <textarea name="texto_1" maxlength="650" required 
+                  oninput="updateCounter(this, 'counter1')"></textarea>
+        <span id="counter1" class="textarea-counter">0/650</span>
+      </div>
+      
+      <div class="form-group">
+        <label>✍️ TEXTO 2 (obrigatório):</label>
+        <textarea name="texto_2" maxlength="650" required 
+                  oninput="updateCounter(this, 'counter2')"></textarea>
+        <span id="counter2" class="textarea-counter">0/650</span>
+      </div>
+      
+      <div class="form-group">
+        <label>✍️ TEXTO 3 (obrigatório):</label>
+        <textarea name="texto_3" maxlength="650" required 
+                  oninput="updateCounter(this, 'counter3')"></textarea>
+        <span id="counter3" class="textarea-counter">0/650</span>
+      </div>
+      
+      <div class="form-group">
+        <label>✍️ TEXTO 4 (obrigatório):</label>
+        <textarea name="texto_4" maxlength="650" required 
+                  oninput="updateCounter(this, 'counter4')"></textarea>
+        <span id="counter4" class="textarea-counter">0/650</span>
+      </div>
+      
+      <div class="form-group">
+        <label>✍️ TEXTO 5 (obrigatório):</label>
+        <textarea name="texto_5" maxlength="650" required 
+                  oninput="updateCounter(this, 'counter5')"></textarea>
+        <span id="counter5" class="textarea-counter">0/650</span>
+      </div>
+      
+      <div class="form-group">
+        <label>📅 Data:</label>
+        <input type="date" name="data" required min="<%= today %>">
+      </div>
+      
+      <div class="form-group">
+        <label>⏰ Hora:</label>
+        <input type="time" name="hora" required>
+      </div>
+      
+      <button type="submit" class="btn-primary">💾 Agendar Post</button>
+    </form>
+  </div>
+  
+  <h2>📋 Posts Agendados</h2>
+  
+  <% if (posts.length === 0) { %>
+    <p style="color: #666;">Nenhum post agendado ainda.</p>
+  <% } else { %>
+    <% posts.forEach(post => { %>
+      <div class="post-card">
+        <span class="status-badge status-<%= post.STATUS.toLowerCase() %>">
+          <%= post.STATUS %>
+        </span>
+        <strong><%= post.ID %></strong> - <%= post.DATA %> <%= post.HORA %>
+        <br>
+        <small>Texto 1: <%= post.TEXTO_1.substring(0, 50) %>...</small>
+        <br>
+        👥 <%= post.gruposPostados %>/<%= post.totalGrupos %> grupos
+        
+        <div class="post-actions">
+          <% if (post.STATUS === 'Agendado') { %>
+            <button onclick="editar('<%= post.ID %>')" class="btn-secondary">✏️ Editar</button>
+            <button onclick="duplicar('<%= post.ID %>')" class="btn-secondary">📋 Duplicar</button>
+            <button onclick="cancelar('<%= post.ID %>')" class="btn-danger">❌ Cancelar</button>
+          <% } else if (post.STATUS === 'Postando') { %>
+            <button onclick="cancelarRestante('<%= post.ID %>')" class="btn-danger">❌ Cancelar Resto</button>
+          <% } else if (['Concluído', 'Cancelado', 'Expirado'].includes(post.STATUS)) { %>
+            <button onclick="duplicar('<%= post.ID %>')" class="btn-secondary">📋 Duplicar</button>
+            <button onclick="deletar('<%= post.ID %>')" class="btn-danger">🗑️ Deletar</button>
+          <% } %>
+        </div>
+      </div>
+    <% }); %>
+  <% } %>
+  
+  <script>
+    function updateCounter(textarea, counterId) {
+      document.getElementById(counterId).textContent = textarea.value.length + '/650';
+    }
+    
+    function editar(id) {
+      window.location.href = '/admin/agendamentos/editar/' + id;
+    }
+    
+    function duplicar(id) {
+      if (confirm('Duplicar este post?')) {
+        fetch('/admin/agendamentos/duplicar/' + id, { method: 'POST' })
+          .then(() => location.reload());
+      }
+    }
+    
+    function cancelar(id) {
+      if (confirm('Cancelar este agendamento?')) {
+        fetch('/admin/agendamentos/cancelar/' + id, { method: 'POST' })
+          .then(() => location.reload());
+      }
+    }
+    
+    function cancelarRestante(id) {
+      if (confirm('Cancelar postagens restantes?')) {
+        fetch('/admin/agendamentos/cancelar/' + id, { method: 'POST' })
+          .then(() => location.reload());
+      }
+    }
+    
+    function deletar(id) {
+      if (confirm('Deletar permanentemente?')) {
+        fetch('/admin/agendamentos/deletar/' + id, { method: 'DELETE' })
+          .then(() => location.reload());
+      }
+    }
+  </script>
+</body>
+</html>
