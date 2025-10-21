@@ -1452,5 +1452,22 @@ router.get('/', authenticateAdmin, (req, res) => {
   res.redirect('/admin/dashboard');
 });
 
-module.exports = router;
+// Rota para Posts Agendados (link no menu)
+router.get('/agendamentos', (req, res) => {
+  res.redirect('/admin/agendamentos');
+});
 
+// NO HTML DO MENU (dentro da função generateDashboardHTML), 
+// ADICIONAR ESTE LINK NA NAVEGAÇÃO:
+/*
+<div class="nav">
+  <a href="#" class="active" onclick="showSection('dashboard')">Dashboard</a>
+  <a href="#" onclick="showSection('grupos')">Grupos</a>
+  <a href="#" onclick="showSection('textos')">Textos</a>
+  <a href="#" onclick="showSection('configuracoes')">Configurações</a>
+  <a href="/admin/agendamentos">📅 Agendamentos</a>  <!-- 🔥 NOVO LINK -->
+  <a href="#" onclick="logout()">Sair</a>
+</div>
+*/
+
+module.exports = router;
