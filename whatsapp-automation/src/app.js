@@ -1,5 +1,34 @@
 // src/app.js
 
+// ======================= TRATAMENTO GLOBAL DE ERROS (NOVO) =======================
+// Previne crashes por erros não tratados do Baileys (Connection Closed)
+process.on('uncaughtException', (error) => {
+  console.error('❌ [UNCAUGHT EXCEPTION]', error?.message || error);
+  
+  // Se for erro do Baileys (Connection Closed), não crashar
+  if (error?.message?.includes('Connection Closed')) {
+    console.log('⚠️ WhatsApp desconectou temporariamente. Sistema continua rodando...');
+    return; // NÃO CRASHA
+  }
+  
+  // Outros erros críticos devem crashar
+  console.error('🔥 Erro crítico não tratado:', error);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ [UNHANDLED REJECTION]', reason);
+  
+  // Se for erro do Baileys, não crashar
+  if (reason?.message?.includes('Connection Closed')) {
+    console.log('⚠️ WhatsApp desconectou temporariamente. Sistema continua rodando...');
+    return; // NÃO CRASHA
+  }
+  
+  console.error('🔥 Promise rejeitada não tratada:', reason);
+});
+// ==================================================================================
+
 // ======================= WebCrypto SHIM (antes de qualquer import do Baileys) =======================
 try {
   if (!globalThis.crypto || !globalThis.crypto.subtle) {
@@ -135,13 +164,6 @@ class App {
 
     const tp = process.env.TRUST_PROXY === '1' ? 1 : false;
     this.app.set('trust proxy', tp);
-    // 🔥 ADICIONAR AQUI (linha ~144):
-    this.app.set('view engine', 'ejs');
-    this.app.set('views', path.join(__dirname, 'views'));
-
-    // 🔥 CONFIGURAR VIEW ENGINE EJS
-    this.app.set('view engine', 'ejs');
-    this.app.set('views', path.join(__dirname, 'views'));
 
     // === PAINEL ADMIN (WhatsApp) ===
     try {
