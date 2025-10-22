@@ -1,5 +1,34 @@
 // src/app.js
 
+// ======================= TRATAMENTO GLOBAL DE ERROS (NOVO) =======================
+// Previne crashes por erros não tratados do Baileys (Connection Closed)
+process.on('uncaughtException', (error) => {
+  console.error('❌ [UNCAUGHT EXCEPTION]', error?.message || error);
+  
+  // Se for erro do Baileys (Connection Closed), não crashar
+  if (error?.message?.includes('Connection Closed')) {
+    console.log('⚠️ WhatsApp desconectou temporariamente. Sistema continua rodando...');
+    return; // NÃO CRASHA
+  }
+  
+  // Outros erros críticos devem crashar
+  console.error('🔥 Erro crítico não tratado:', error);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ [UNHANDLED REJECTION]', reason);
+  
+  // Se for erro do Baileys, não crashar
+  if (reason?.message?.includes('Connection Closed')) {
+    console.log('⚠️ WhatsApp desconectou temporariamente. Sistema continua rodando...');
+    return; // NÃO CRASHA
+  }
+  
+  console.error('🔥 Promise rejeitada não tratada:', reason);
+});
+// ==================================================================================
+
 // ======================= WebCrypto SHIM (antes de qualquer import do Baileys) =======================
 try {
   if (!globalThis.crypto || !globalThis.crypto.subtle) {
@@ -22,8 +51,11 @@ const cron = require('node-cron');
 const WhatsAppClient = require('./services/whatsapp-client');
 const settings = require('./services/settings');
 const { runOnce } = require('./jobs/post-winner');
-const { runOnce: runPromoOnce } = require('./jobs/post-promo'); // << NOVO
-const promoSchedule = require('./services/promo-schedule');     // << NOVO
+const { runOnce: runPromoOnce } = require('./jobs/post-promo');
+const promoSchedule = require('./services/promo-schedule');
+
+// 🔥 NOVO: Import do job de posts customizados
+const { runOnce: runCustomOnce } = require('./jobs/post-custom');
 
 // SSE hub
 const { addClient: sseAddClient, broadcast: sseBroadcast } = require('./services/wa-sse');
@@ -58,7 +90,7 @@ function phoneToJid(v) {
 function parsePhonesToJids(value) {
   if (!value) return [];
   return String(value)
-    .split(/[,\s;]+/) // vírgula, espaço ou ponto-e-vírgula
+    .split(/[,\s;]+/)
     .map(s => s.trim())
     .filter(Boolean)
     .map(v => (v.includes('@') ? v : phoneToJid(v)))
@@ -97,15 +129,15 @@ class App {
 
     // ======= CONFIG DE ALERTA (via WhatsApp) =======
     const alertJidsMerged = [
-      ...parsePhonesToJids(process.env.ALERT_WA_PHONES), // lista (novo)
-      ...parsePhonesToJids(process.env.ALERT_WA_PHONE),  // 1 número (compat)
-      ...parsePhonesToJids(process.env.ALERT_WA_JIDS),   // lista de JIDs (opcional)
-      ...parsePhonesToJids(process.env.ALERT_WA_JID),    // 1 JID (compat)
+      ...parsePhonesToJids(process.env.ALERT_WA_PHONES),
+      ...parsePhonesToJids(process.env.ALERT_WA_PHONE),
+      ...parsePhonesToJids(process.env.ALERT_WA_JIDS),
+      ...parsePhonesToJids(process.env.ALERT_WA_JID),
     ];
     const uniqJids = [...new Set(alertJidsMerged)];
 
     this.alertCfg = {
-      adminJids: uniqJids,                                         // agora é lista
+      adminJids: uniqJids,
       graceMs: (Number(process.env.ALERT_GRACE_SECONDS) || 120) * 1000,
       enabled: uniqJids.length > 0,
     };
@@ -142,12 +174,10 @@ class App {
     } catch (e) {
       console.warn('⚠️ Admin bundle indisponível:', e?.message || e);
     }
-    // === fim do bloco ===
 
     this.routes();
   }
 
-  // cria o cliente interno APENAS se fallback estiver habilitado
   initWhatsApp() {
     if (!this.isFallbackEnabled) return null;
     if (!this.whatsappClient) {
@@ -175,7 +205,6 @@ class App {
     return !!(wa?.isConnected && wa?.sock);
   }
 
-  // pega um socket conectado (prefere ADMIN; cai no fallback)
   async getConnectedSock() {
     try {
       if (this.waAdmin && typeof this.waAdmin.getStatus === 'function') {
@@ -192,7 +221,6 @@ class App {
     return null;
   }
 
-  // envio de alertas (para todos os destinos)
   async sendAlert(text) {
     if (!this.alertCfg.enabled || !this.alertCfg.adminJids?.length) return false;
     const sock = await this.getConnectedSock();
@@ -211,7 +239,6 @@ class App {
     return ok;
   }
 
-  // pega status consolidado (prioriza admin)
   async consolidatedStatus() {
     try {
       if (this.waAdmin && typeof this.waAdmin.getStatus === 'function') {
@@ -236,7 +263,6 @@ class App {
       }
     } catch (_) {}
 
-    // fallback
     if (this.isFallbackEnabled) {
       const wa = this.getClient({ create: false });
       if (wa) {
@@ -289,13 +315,11 @@ class App {
   }
 
   routes() {
-    // Health (inclui info da sessão no disco)
     this.app.get('/health', async (_req, res) => {
       const sess = await hasSavedSession();
       res.json({ ok: true, ts: new Date().toISOString(), sessionDir: sess.dir, sessionFiles: sess.files });
     });
 
-    // STATUS
     this.app.get('/api/whatsapp/status', async (_req, res) => {
       try {
         const st = await this.consolidatedStatus();
@@ -305,7 +329,6 @@ class App {
       }
     });
 
-    // Detalhe sessão (não cria fallback)
     this.app.get('/api/whatsapp/session-status', (req, res) => {
       const wa = this.getClient({ create: false });
       res.json({
@@ -324,7 +347,6 @@ class App {
       });
     });
 
-    // SSE
     this.app.get('/api/whatsapp/stream', async (req, res) => {
       const inst = (req.query.inst || 'default').toString();
       res.setHeader('Content-Type', 'text/event-stream');
@@ -340,7 +362,6 @@ class App {
       } catch (_) {}
     });
 
-    // DISCONNECT (proxy)
     this.app.post('/api/whatsapp/disconnect', async (_req, res) => {
       try {
         if (this.waAdmin?.disconnect) {
@@ -358,7 +379,6 @@ class App {
       }
     });
 
-    // RESET (fallback)
     this.app.get('/api/reset-whatsapp', async (req, res) => {
       if (!this.isFallbackEnabled) return res.status(503).json({ success: false, error: 'Fallback desabilitado (WA_CLIENT_AUTOSTART=0).' });
       const wa = this.initWhatsApp();
@@ -380,7 +400,6 @@ class App {
       }
     });
 
-    // Força QR (fallback)
     this.app.get('/api/force-qr', async (req, res) => {
       if (!this.isFallbackEnabled) return res.status(503).json({ success: false, error: 'Fallback desabilitado (WA_CLIENT_AUTOSTART=0).' });
       const wa = this.initWhatsApp();
@@ -396,7 +415,6 @@ class App {
       }
     });
 
-    // QR SVG (fallback)
     this.app.get('/qr', async (req, res) => {
       if (!this.isFallbackEnabled) return res.status(503).json({ error: 'Fallback desabilitado (WA_CLIENT_AUTOSTART=0).' });
       const wa = this.initWhatsApp();
@@ -419,7 +437,6 @@ class App {
       }
     });
 
-    // Pairing code (fallback)
     this.app.get('/code', (req, res) => {
       if (!this.isFallbackEnabled) return res.status(503).json({ error: 'Fallback desabilitado (WA_CLIENT_AUTOSTART=0).' });
       const wa = this.initWhatsApp();
@@ -428,7 +445,6 @@ class App {
       return res.json({ pairingCode: code });
     });
 
-    // ===== GRUPOS =====
     this.app.get('/admin/groups', (_req, res) => {
       res.sendFile(path.join(__dirname, '../public/admin/groups.html'));
     });
@@ -522,11 +538,9 @@ class App {
       }
     });
 
-    // ===== PROMO SCHEDULE (lista/cancelar) =====
     this.app.get('/api/promo/schedule', async (_req, res) => {
       try {
         const data = await promoSchedule.listScheduled();
-        // devolve separado para a página poder exibir em abas
         res.json({ ok: true, ...data });
       } catch (e) {
         res.status(500).json({ ok: false, error: e?.message || String(e) });
@@ -543,7 +557,6 @@ class App {
       }
     });
 
-    // job manual (POST)
     this.app.post('/api/jobs/run-once', async (req, res) => {
       try {
         const dry = ['1', 'true', 'yes'].includes(String(req.query.dry || '').toLowerCase());
@@ -572,7 +585,6 @@ class App {
       }
     });
 
-    // 🔹 alias GET do job manual (para você chamar no navegador)
     this.app.get('/api/jobs/run-once', async (req, res) => {
       try {
         const dry = ['1', 'true', 'yes'].includes(String(req.query.dry || '').toLowerCase());
@@ -601,7 +613,10 @@ class App {
       }
     });
 
-    // diagnóstico
+    // 🔥 NOVO: Rota para posts agendados
+    const adminCustomPosts = require('./routes/admin-custom-posts');
+    this.app.use('/admin/agendamentos', adminCustomPosts);
+
     this.app.get('/debug/wa', async (_req, res) => {
       let admin = { available: false };
       try {
@@ -633,7 +648,6 @@ class App {
     });
   }
 
-  // ==== helpers de autostart/watchdog por HTTP (usa fetch nativo do Node 18+) ====
   async callAdminStatus(baseUrl) {
     try {
       const r = await fetch(`${baseUrl}/admin/wa/status`, { method: 'GET' });
@@ -655,23 +669,19 @@ class App {
   }
 
   async afterListen() {
-    // Boot log útil
     const sess = await hasSavedSession();
     console.log(`🚀 Boot info -> Fallback: ${this.isFallbackEnabled ? 'ON' : 'OFF'} | sessionDir=${sess.dir || '(none)'} | files=${sess.files}`);
 
-    // Inicia fallback somente se habilitado
     if (this.isFallbackEnabled) {
       this.initWhatsApp();
     }
 
-    // ---- Atendente (liga listener se módulo existir e estiver habilitado por env) ----
     try {
       if (typeof attachAssistant === 'function') attachAssistant(this);
     } catch (e) {
       console.warn('[assistant] attach skipped:', e?.message || e);
     }
 
-    // === AUTOSTART do ADMIN via HTTP ===
     const wantAutoStart = envOn(process.env.WA_ADMIN_AUTOSTART, true);
     const autoStartDelay = Number(process.env.WA_AUTOSTART_DELAY_MS || 1500);
     const baseUrl = process.env.WA_SELF_BASE_URL || `http://127.0.0.1:${PORT}`;
@@ -700,7 +710,6 @@ class App {
       }, autoStartDelay);
     }
 
-    // === WATCHDOG: verifica a cada 30s e reconecta se houver sessão salva ===
     const watchdogOn = envOn(process.env.WA_ADMIN_WATCHDOG, true);
     if (watchdogOn) {
       setInterval(async () => {
@@ -711,21 +720,18 @@ class App {
           const connected = !!st.data?.connected;
           const now = Date.now();
 
-          // atualiza estado de alerta
           if (this.alertState.lastConnected === null) {
             this.alertState.lastConnected = connected;
             this.alertState.lastChangeAt = now;
           } else if (connected !== this.alertState.lastConnected) {
             this.alertState.lastConnected = connected;
             this.alertState.lastChangeAt = now;
-            // se voltou e já tínhamos avisado queda, manda "voltou"
             if (connected && this.alertState.downNotifiedAt && this.alertCfg.enabled) {
               await this.sendAlert('✅ WhatsApp (admin) reconectou e está online novamente.');
               this.alertState.downNotifiedAt = null;
             }
           }
 
-          // reconexão automática se há sessão salva
           if (!connected && !st.data?.connecting) {
             const s = await hasSavedSession();
             if (s.ok) {
@@ -734,7 +740,6 @@ class App {
             }
           }
 
-          // alerta de queda após grace
           if (!connected && this.alertCfg.enabled && !this.alertState.downNotifiedAt) {
             const elapsed = now - this.alertState.lastChangeAt;
             if (elapsed >= this.alertCfg.graceMs) {
@@ -748,9 +753,8 @@ class App {
       }, 30_000);
     }
 
-    // === (NOVO) Socket Watcher: detecta troca de socket e reanexa listeners ===
     try {
-      const wantWatcher = envOn(process.env.WA_SOCKET_WATCHER, true); // ON por padrão
+      const wantWatcher = envOn(process.env.WA_SOCKET_WATCHER, true);
       if (wantWatcher) {
         const { startSocketWatcher } = require('./services/socket-watcher');
         startSocketWatcher(this);
@@ -759,7 +763,7 @@ class App {
       console.warn('[socket-watcher] não iniciado:', e?.message || e);
     }
 
-    // Cron: só roda se houver sessão conectada (POST WINNER)
+    // Cron: Winner (resultados)
     cron.schedule('*/1 * * * *', async () => {
       try {
         let canRun = false;
@@ -784,7 +788,7 @@ class App {
       }
     });
 
-    // Cron: Divulgação 48h antes e no dia (09:00) — usa ENV PROMO_CRON ou padrão */10
+    // Cron: Promo
     const promoCron = process.env.PROMO_CRON || '*/10 * * * *';
     cron.schedule(promoCron, async () => {
       try {
@@ -809,7 +813,7 @@ class App {
       }
     });
 
-    // 🔥 NOVO: Cron para POST WINNER (resultados) — usa ENV WINNER_CRON ou padrão */2
+    // Cron: Winner (segundo cron)
     const winnerCron = process.env.WINNER_CRON || '*/2 * * * *';
     cron.schedule(winnerCron, async () => {
       try {
@@ -833,6 +837,37 @@ class App {
         console.error('[winner] cron error:', e?.message || e);
       }
     });
+
+    // 🔥 NOVO: Cron para posts customizados
+    const customCron = process.env.CUSTOM_CRON || '*/5 * * * *';
+    cron.schedule(customCron, async () => {
+      try {
+        let canRun = false;
+        try {
+          if (this.waAdmin && typeof this.waAdmin.getStatus === 'function') {
+            const st = await this.waAdmin.getStatus();
+            canRun = !!st.connected;
+          }
+        } catch (_) {}
+
+        if (!canRun && this.isFallbackEnabled) {
+          const wa = this.getClient({ create: false });
+          canRun = !!(wa?.isConnected);
+        }
+
+        if (canRun) {
+          await runCustomOnce(this.app);
+        }
+      } catch (e) {
+        console.error('[custom] cron error:', e?.message || e);
+      }
+    });
+
+    console.log('✅ Crons registrados:');
+    console.log(`   - Winner: */1 * * * *`);
+    console.log(`   - Promo: ${promoCron}`);
+    console.log(`   - Winner2: ${winnerCron}`);
+    console.log(`   - Custom: ${customCron}`);
   }
 
   listen() {
