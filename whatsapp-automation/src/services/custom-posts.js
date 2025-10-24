@@ -1,4 +1,5 @@
 // src/services/custom-posts.js
+// ✅ VERSÃO OTIMIZADA - BATCH UPDATE (1 requisição em vez de 9)
 'use strict';
 
 const { google } = require('googleapis');
@@ -42,7 +43,7 @@ async function getCustomPostsRows() {
   try {
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: GOOGLE_SHEETS_ID,
-      range: `${CUSTOM_TAB}!A1:P1000`,  // 🔥 Aumentei para coluna P (DUPLICADO_DE)
+      range: `${CUSTOM_TAB}!A1:P1000`,
     });
     
     const rows = response.data.values || [];
@@ -67,10 +68,12 @@ async function getCustomPostsRows() {
   }
 }
 
+// ✅ FUNÇÃO OTIMIZADA COM BATCH UPDATE
 async function updateCustomPost(id, updates) {
   const sheets = getSheets();
   
   try {
+    // 1. Encontrar linha do post
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: GOOGLE_SHEETS_ID,
       range: `${CUSTOM_TAB}!A:A`,
@@ -83,12 +86,16 @@ async function updateCustomPost(id, updates) {
       throw new Error(`Post ${id} não encontrado`);
     }
     
+    // 2. Buscar headers
     const headersResponse = await sheets.spreadsheets.values.get({
       spreadsheetId: GOOGLE_SHEETS_ID,
       range: `${CUSTOM_TAB}!1:1`,
     });
     
     const headers = headersResponse.data.values[0];
+    
+    // 3. ✅ PREPARAR BATCH UPDATE (todas as células de uma vez)
+    const batchData = [];
     
     for (const [key, value] of Object.entries(updates)) {
       const colIndex = headers.indexOf(key);
@@ -101,17 +108,24 @@ async function updateCustomPost(id, updates) {
       const colLetter = String.fromCharCode(65 + colIndex);
       const cellRange = `${CUSTOM_TAB}!${colLetter}${rowIndex + 1}`;
       
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: GOOGLE_SHEETS_ID,
+      batchData.push({
         range: cellRange,
-        valueInputOption: 'RAW',
-        requestBody: {
-          values: [[value]],
-        },
+        values: [[value]]
       });
     }
     
-    console.log(`[custom-posts] Post ${id} atualizado`);
+    // 4. ✅ UMA ÚNICA REQUISIÇÃO PARA TUDO!
+    if (batchData.length > 0) {
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: GOOGLE_SHEETS_ID,
+        requestBody: {
+          valueInputOption: 'RAW',
+          data: batchData
+        }
+      });
+      
+      console.log(`[custom-posts] ✅ Post ${id} atualizado (${batchData.length} campos em 1 requisição)`);
+    }
     
   } catch (e) {
     console.error('[custom-posts] Erro ao atualizar:', e.message);
@@ -125,7 +139,6 @@ async function createCustomPost(data) {
   try {
     const now = new Date().toISOString();
     
-    // 🔥 Linha atualizada com 16 colunas (A-P)
     const row = [
       data.id,                          // A: ID
       data.status || 'Agendado',        // B: STATUS
@@ -142,12 +155,12 @@ async function createCustomPost(data) {
       '',                               // M: WA_POST_NEXT_AT
       now,                              // N: CRIADO_EM
       now,                              // O: ATUALIZADO_EM
-      data.duplicadoDe || ''            // P: DUPLICADO_DE 🔥 NOVO
+      data.duplicadoDe || ''            // P: DUPLICADO_DE
     ];
     
     await sheets.spreadsheets.values.append({
       spreadsheetId: GOOGLE_SHEETS_ID,
-      range: `${CUSTOM_TAB}!A:P`,       // 🔥 Range até P
+      range: `${CUSTOM_TAB}!A:P`,
       valueInputOption: 'RAW',
       requestBody: {
         values: [row],
