@@ -328,7 +328,7 @@ async function runOnce(app, opts = {}) {
       const p2At = toUtcFromLocal(dayLocal);
 
       // === PROMO 1 (2 dias antes) ===
-      if (!p1Canceled && now >= beforeLocal) {
+      if (!p1Canceled && now >= beforeLocal && now < dayLocal) {
         if (id === 'g188' || id === 'g190') {
           console.log(`✅ [DEBUG] ${id} passou validação P1 - verificando grupos...`);
         }
