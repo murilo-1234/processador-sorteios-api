@@ -15,14 +15,17 @@ link: https://wa.me/554891021707?text=7
 *3x- ENVIE👉* " 7 " no Messenger👇
 http://m.me/murilocerqueiraconsultor
 
-🤩 *GANHE um BRINDE* da Natura. Veja👇
-https://www.natura.com.br/c/brinde?consultoria=clubemac
+🤩 *GANHE um BRINDE da Natura Friday*. É TOP! Veja👇
+https://swiy.co/brinde-natura
 
-*💳 Procure por Murilo Cerqueira* - cupons só valem aqui.
-🛍️ https://www.natura.com.br/consultoria/clubemac
-*🎟️ Cupom extra*: {{COUPON}}
-*🚚 Frete grátis* acima de R$99
-*🎯 Mais cupons*: https://bit.ly/cupons-murilo`,
+💳 *Procure por Murilo Cerqueira* - cupons só valem aqui.
+🛍️ *Natura:* https://swiy.co/promo-natura
+🧼 *Sabonetes:* https://swiy.co/promo-sabonetes
+📌 *AVON:* https://swiy.co/loja-avon
+❤️ *Disney:* https://swiy.co/disney-promos
+🎟️ *Cupom extra*: {{COUPON}}
+🚚 *Frete grátis* > R$99 ou R$149 (verificar)
+🎯 *Mais cupons*: https://swiy.co/cupons-murilo e https://swiy.co/cupons-extras`,
 
 `*🎁Olá!! Tem um presentão* Top te esperando… Entre no sorteio e descubra: {{PRODUTO}}.
 
@@ -35,14 +38,17 @@ link: https://wa.me/554891021707?text=7
 *3x- ENVIE👉* " 7 " no Messenger👇
 http://m.me/murilocerqueiraconsultor
 
-💥 *LIQUIDAÇÃO de SABONETES* Natura. Use meu cupom {{COUPON}}. Pega👇
-https://www.natura.com.br/c/corpo-e-banho-sabonete?consultoria=clubemac
+💥 *SABONETES na Natura Friday* com Cashback. Surreal! Use meu cupom {{COUPON}}. Pega👇
+https://swiy.co/liquida-sabonetes
 
-*💳 Procure por Murilo Cerqueira* - cupons só valem aqui.
-🛍️ https://www.natura.com.br/consultoria/clubemac
-*🎟️ Cupom extra*: {{COUPON}}
-*🚚 Frete grátis* acima de R$99
-*🎯 Mais cupons*: https://bit.ly/cupons-murilo`,
+💳 *Procure por Murilo Cerqueira* - cupons só valem aqui.
+🛍️ *Natura:* https://swiy.co/promo-natura
+🧼 *Sabonetes:* https://swiy.co/promo-sabonetes
+📌 *AVON:* https://swiy.co/loja-avon
+❤️ *Disney:* https://swiy.co/disney-promos
+🎟️ *Cupom extra*: {{COUPON}}
+🚚 *Frete grátis* > R$99 ou R$149 (verificar)
+🎯 *Mais cupons*: https://swiy.co/cupons-murilo e https://swiy.co/cupons-extras`,
 
 `*👀Viu!? Qual é o prêmio?* Curioso? Participe do sorteio e leve: {{PRODUTO}}.
 
@@ -55,14 +61,17 @@ link: https://wa.me/554891021707?text=7
 *3x- ENVIE👉* " 7 " no Messenger👇
 http://m.me/murilocerqueiraconsultor
 
-🧴 *Promo do dia*: use {{COUPON}} e ganhe até 60% OFF + frete grátis👇
-https://www.natura.com.br/c/promocoes?consultoria=clubemac
+🔥 *PROMO da BLACK FRIDAY do dia*: use {{COUPON}}. TOPs com 60% OFF + Cashback + frete grátis👇
+https://swiy.co/natura-70ou60off
 
-*💳 Procure por Murilo Cerqueira* - cupons só valem aqui.
-🛍️ https://www.natura.com.br/consultoria/clubemac
-*🎟️ Cupom extra*: {{COUPON}}
-*🚚 Frete grátis* acima de R$99
-*🎯 Mais cupons*: https://bit.ly/cupons-murilo`,
+💳 *Procure por Murilo Cerqueira* - cupons só valem aqui.
+🛍️ *Natura:* https://swiy.co/promo-natura
+🧼 *Sabonetes:* https://swiy.co/promo-sabonetes
+📌 *AVON:* https://swiy.co/loja-avon
+❤️ *Disney:* https://swiy.co/disney-promos
+🎟️ *Cupom extra*: {{COUPON}}
+🚚 *Frete grátis* > R$99 ou R$149 (verificar)
+🎯 *Mais cupons*: https://swiy.co/cupons-murilo e https://swiy.co/cupons-extras`,
 
 `*✨Oi... tem presente top* chegando pra vc! Entre no sorteio e concorra ao: {{PRODUTO}}.
 
@@ -75,14 +84,17 @@ link: https://wa.me/554891021707?text=7
 *3x- ENVIE👉* " 7 " no Messenger👇
 http://m.me/murilocerqueiraconsultor
 
-⚡ *LIQUIDA RELÂMPAGO - 39 itens com 60%Off* com meu cupom {{COUPON}}👇
-https://www.natura.com.br/c/promocoes?consultoria=clubemac
+⚡ *PROMO RELÂMPAGO Natura Friday - 39 itens com 60%Off +Cashback* com meu cupom {{COUPON}}👇
+https://swiy.co/natura-70ou60off
 
-*💳 Procure por Murilo Cerqueira* - cupons só valem aqui.
-🛍️ https://www.natura.com.br/consultoria/clubemac
-*🎟️ Cupom extra*: {{COUPON}}
-*🚚 Frete grátis* acima de R$99
-*🎯 Mais cupons*: https://bit.ly/cupons-murilo`,
+💳 *Procure por Murilo Cerqueira* - cupons só valem aqui.
+🛍️ *Natura:* https://swiy.co/promo-natura
+🧼 *Sabonetes:* https://swiy.co/promo-sabonetes
+📌 *AVON:* https://swiy.co/loja-avon
+❤️ *Disney:* https://swiy.co/disney-promos
+🎟️ *Cupom extra*: {{COUPON}}
+🚚 *Frete grátis* > R$99 ou R$149 (verificar)
+🎯 *Mais cupons*: https://swiy.co/cupons-murilo e https://swiy.co/cupons-extras`,
 
 `*🔥Olha! Tem um mimo premium* te esperando… Vem pro sorteio e concorra ao: {{PRODUTO}}.
 
@@ -95,14 +107,17 @@ link: https://wa.me/554891021707?text=7
 *3x- ENVIE👉* " 7 " no Messenger👇
 http://m.me/murilocerqueiraconsultor
 
-🚀 *GARANTO 40%Off com meu cupom* {{COUPON}} acima 3 itens do link👇
-https://www.natura.com.br/c/promocao-da-semana?consultoria=clubemac
+💪 *🚨GARANTO 50%Off +cashback com meu cupom* {{COUPON}} acima 3 ou 4 itens do link👇
+https://swiy.co/50a60off-natura
 
-*💳 Procure por Murilo Cerqueira* - cupons só valem aqui.
-🛍️ https://www.natura.com.br/consultoria/clubemac
-*🎟️ Cupom extra*: {{COUPON}}
-*🚚 Frete grátis* acima de R$99
-*🎯 Mais cupons*: https://bit.ly/cupons-murilo`,
+💳 *Procure por Murilo Cerqueira* - cupons só valem aqui.
+🛍️ *Natura:* https://swiy.co/promo-natura
+🧼 *Sabonetes:* https://swiy.co/promo-sabonetes
+📌 *AVON:* https://swiy.co/loja-avon
+❤️ *Disney:* https://swiy.co/disney-promos
+🎟️ *Cupom extra*: {{COUPON}}
+🚚 *Frete grátis* > R$99 ou R$149 (verificar)
+🎯 *Mais cupons*: https://swiy.co/cupons-murilo e https://swiy.co/cupons-extras`,
 
 `*🌟Pega! Tem prêmio te chamando!* Garanta sua vaga no sorteio e pode ser seu: {{PRODUTO}}.
 
@@ -115,14 +130,17 @@ link: https://wa.me/554891021707?text=7
 *3x- ENVIE👉* " 7 " no Messenger👇
 http://m.me/murilocerqueiraconsultor
 
-💥 *LIQUIDAÇÃO de SABONETES Natura*. Use meu cupom {{COUPON}}. Pega👇
-https://www.natura.com.br/c/corpo-e-banho-sabonete?consultoria=clubemac
+😱 *SABONETES só R$ 4 cada na Natura FRIDAY +cashback*. Use meu cupom {{COUPON}}. Pega👇
+https://swiy.co/liquida-sabonetes
 
-*💳 Procure por Murilo Cerqueira* - cupons só valem aqui.
-🛍️ https://www.natura.com.br/consultoria/clubemac
-*🎟️ Cupom extra*: {{COUPON}}
-*🚚 Frete grátis* acima de R$99
-*🎯 Mais cupons*: https://bit.ly/cupons-murilo`,
+💳 *Procure por Murilo Cerqueira* - cupons só valem aqui.
+🛍️ *Natura:* https://swiy.co/promo-natura
+🧼 *Sabonetes:* https://swiy.co/promo-sabonetes
+📌 *AVON:* https://swiy.co/loja-avon
+❤️ *Disney:* https://swiy.co/disney-promos
+🎟️ *Cupom extra*: {{COUPON}}
+🚚 *Frete grátis* > R$99 ou R$149 (verificar)
+🎯 *Mais cupons*: https://swiy.co/cupons-murilo e https://swiy.co/cupons-extras`,
 
 `*💫Oi, rápido! Tem presente* perfumado pra vc. Entra no sorteio e descubra: {{PRODUTO}}.
 
@@ -135,14 +153,17 @@ link: https://wa.me/554891021707?text=7
 *3x- ENVIE👉* " 7 " no Messenger👇
 http://m.me/murilocerqueiraconsultor
 
-🔥 *12 Perfumes e Cremes na LIQUIDA RELÂMPAGO*. Use meu cupom {{COUPON}}👇
-https://www.natura.com.br/c/relampago?consultoria=clubemac
+🔥 *17 Natura Friday RELÂMPAGO +cashback*. Use meu cupom {{COUPON}}👇
+https://swiy.co/relampago-natura
 
-*💳 Procure por Murilo Cerqueira* - cupons só valem aqui.
-🛍️ https://www.natura.com.br/consultoria/clubemac
-*🎟️ Cupom extra*: {{COUPON}}
-*🚚 Frete grátis* acima de R$99
-*🎯 Mais cupons*: https://bit.ly/cupons-murilo`,
+💳 *Procure por Murilo Cerqueira* - cupons só valem aqui.
+🛍️ *Natura:* https://swiy.co/promo-natura
+🧼 *Sabonetes:* https://swiy.co/promo-sabonetes
+📌 *AVON:* https://swiy.co/loja-avon
+❤️ *Disney:* https://swiy.co/disney-promos
+🎟️ *Cupom extra*: {{COUPON}}
+🚚 *Frete grátis* > R$99 ou R$149 (verificar)
+🎯 *Mais cupons*: https://swiy.co/cupons-murilo e https://swiy.co/cupons-extras`,
 
 `*🛍️Olá! Seu presente*, qual escolhi pra vc? Entre agora no sorteio e concorra ao: {{PRODUTO}}.
 
@@ -155,14 +176,17 @@ link: https://wa.me/554891021707?text=7
 *3x- ENVIE👉* " 7 " no Messenger👇
 http://m.me/murilocerqueiraconsultor
 
-🔥 *EKOS, KAIAK, UNA e ESSENCIAL até 70%Off* com meu cupom {{COUPON}}👇
-https://www.natura.com.br/c/promocoes?consultoria=clubemac
+🔥 *Tem alguns EKOS, KAIAK, UNA e ESSENCIAL com 70%Off +cashback* com meu cupom {{COUPON}}👇
+https://swiy.co/natura-70ou60off
 
-*💳 Procure por Murilo Cerqueira* - cupons só valem aqui.
-🛍️ https://www.natura.com.br/consultoria/clubemac
-*🎟️ Cupom extra*: {{COUPON}}
-*🚚 Frete grátis* acima de R$99
-*🎯 Mais cupons*: https://bit.ly/cupons-murilo`,
+💳 *Procure por Murilo Cerqueira* - cupons só valem aqui.
+🛍️ *Natura:* https://swiy.co/promo-natura
+🧼 *Sabonetes:* https://swiy.co/promo-sabonetes
+📌 *AVON:* https://swiy.co/loja-avon
+❤️ *Disney:* https://swiy.co/disney-promos
+🎟️ *Cupom extra*: {{COUPON}}
+🚚 *Frete grátis* > R$99 ou R$149 (verificar)
+🎯 *Mais cupons*: https://swiy.co/cupons-murilo e https://swiy.co/cupons-extras`,
 
 `*🎉Oi, veja! Tem presentão* surpresa! Participe do sorteio e você pode ganhar: {{PRODUTO}}.
 
@@ -175,14 +199,17 @@ link: https://wa.me/554891021707?text=7
 *3x- ENVIE👉* " 7 " no Messenger👇
 http://m.me/murilocerqueiraconsultor
 
-🔥 *PRESENTES até 70%Off* com meu cupom {{COUPON}}👇
-https://www.natura.com.br/c/presentes?consultoria=clubemac
+🎁 *👏PRESENTES até 70%Off na Natura Friday* com meu cupom {{COUPON}} +cashback. Compre Natal antes para economizar👇
+https://swiy.co/presentes-natura
 
-*💳 Procure por Murilo Cerqueira* - cupons só valem aqui.
-🛍️ https://www.natura.com.br/consultoria/clubemac
-*🎟️ Cupom extra*: {{COUPON}}
-*🚚 Frete grátis* acima de R$99
-*🎯 Mais cupons*: https://bit.ly/cupons-murilo`,
+💳 *Procure por Murilo Cerqueira* - cupons só valem aqui.
+🛍️ *Natura:* https://swiy.co/promo-natura
+🧼 *Sabonetes:* https://swiy.co/promo-sabonetes
+📌 *AVON:* https://swiy.co/loja-avon
+❤️ *Disney:* https://swiy.co/disney-promos
+🎟️ *Cupom extra*: {{COUPON}}
+🚚 *Frete grátis* > R$99 ou R$149 (verificar)
+🎯 *Mais cupons*: https://swiy.co/cupons-murilo e https://swiy.co/cupons-extras`,
 
 `*💎Oi, é seu? Um prêmio classe A* te espera… Entre no sorteio e o presente pode ser seu: {{PRODUTO}}.
 
@@ -195,14 +222,17 @@ link: https://wa.me/554891021707?text=7
 *3x- ENVIE👉* " 7 " no Messenger👇
 http://m.me/murilocerqueiraconsultor
 
-🚨 *O MELHOR do MUNDO em LIQUIDAÇÃO*. Use meu cupom {{COUPON}}👇
-https://www.natura.com.br/c/corpo-e-banho-sabonete-barra?consultoria=clubemac
+🚨 *O MELHOR do MUNDO em Natura Friday +cashback*. Use meu cupom {{COUPON}}👇
+https://swiy.co/liquida-sabonetes
 
-*💳 Procure por Murilo Cerqueira* - cupons só valem aqui.
-🛍️ https://www.natura.com.br/consultoria/clubemac
-*🎟️ Cupom extra*: {{COUPON}}
-*🚚 Frete grátis* acima de R$99
-*🎯 Mais cupons*: https://bit.ly/cupons-murilo`,
+💳 *Procure por Murilo Cerqueira* - cupons só valem aqui.
+🛍️ *Natura:* https://swiy.co/promo-natura
+🧼 *Sabonetes:* https://swiy.co/promo-sabonetes
+📌 *AVON:* https://swiy.co/loja-avon
+❤️ *Disney:* https://swiy.co/disney-promos
+🎟️ *Cupom extra*: {{COUPON}}
+🚚 *Frete grátis* > R$99 ou R$149 (verificar)
+🎯 *Mais cupons*: https://swiy.co/cupons-murilo e https://swiy.co/cupons-extras`,
 ];
 
 const dayTexts = [
@@ -216,14 +246,17 @@ https://ig.me/m/murilo_cerqueira_consultoria
 *3x- ENVIE👉* " 7 " no Messenger👇
 http://m.me/murilocerqueiraconsultor
 
-💥 *LIQUIDAÇÃO de SABONETES* Natura. Use meu cupom {{COUPON}}. Pega👇
-https://www.natura.com.br/c/corpo-e-banho-sabonete?consultoria=clubemac
+💥 *SABONETES na Natura Friday*. Muuuuito barato +cashback. Use meu cupom {{COUPON}}. Pega👇
+https://swiy.co/liquida-sabonetes
 
-*💳 Procure por Murilo Cerqueira* - cupons só valem aqui.
-🛍️ https://www.natura.com.br/consultoria/clubemac
-*🎟️ Cupom extra*: {{COUPON}}
-*🚚 Frete grátis* acima de R$99
-*🎯 Mais cupons*: https://bit.ly/cupons-murilo`,
+💳 *Procure por Murilo Cerqueira* - cupons só valem aqui.
+🛍️ *Natura:* https://swiy.co/promo-natura
+🧼 *Sabonetes:* https://swiy.co/promo-sabonetes
+📌 *AVON:* https://swiy.co/loja-avon
+❤️ *Disney:* https://swiy.co/disney-promos
+🎟️ *Cupom extra*: {{COUPON}}
+🚚 *Frete grátis* > R$99 ou R$149 (verificar)
+🎯 *Mais cupons*: https://swiy.co/cupons-murilo e https://swiy.co/cupons-extras`,
 
 `*🚨Olaáá!? 18h de hoje você ganha* esse {{PRODUTO}}! 
 
@@ -235,14 +268,17 @@ https://ig.me/m/murilo_cerqueira_consultoria
 *3x- ENVIE👉* " 7 " no Messenger👇
 http://m.me/murilocerqueiraconsultor
 
-🚀 *GARANTO 40%Off* com meu cupom {{COUPON}} acima 3 itens do link👇
-https://www.natura.com.br/c/promocao-da-semana?consultoria=clubemac
+🚀 *GARANTO 50%Off +cashback* com meu cupom {{COUPON}} acima 3 a 4 itens do link👇
+https://swiy.co/50a60off-natura
 
-*💳 Procure por Murilo Cerqueira* - cupons só valem aqui.
-🛍️ https://www.natura.com.br/consultoria/clubemac
-*🎟️ Cupom extra*: {{COUPON}}
-*🚚 Frete grátis* acima de R$99
-*🎯 Mais cupons*: https://bit.ly/cupons-murilo`,
+💳 *Procure por Murilo Cerqueira* - cupons só valem aqui.
+🛍️ *Natura:* https://swiy.co/promo-natura
+🧼 *Sabonetes:* https://swiy.co/promo-sabonetes
+📌 *AVON:* https://swiy.co/loja-avon
+❤️ *Disney:* https://swiy.co/disney-promos
+🎟️ *Cupom extra*: {{COUPON}}
+🚚 *Frete grátis* > R$99 ou R$149 (verificar)
+🎯 *Mais cupons*: https://swiy.co/cupons-murilo e https://swiy.co/cupons-extras`,
 
 `*🚀Olá. Última chamada!* Tem sorte pra você aqui! Ganhe esse {{PRODUTO}}!
 
@@ -254,14 +290,17 @@ https://ig.me/m/murilo_cerqueira_consultoria
 *3x- ENVIE👉* " 7 " no Messenger👇
 http://m.me/murilocerqueiraconsultor
 
-🔥 *12 Perfumes e Cremes na LIQUIDA RELÂMPAGO*. Use meu cupom {{COUPON}}👇
-https://www.natura.com.br/c/relampago?consultoria=clubemac
+🔥 *TOP Perfume Essencial, Luna por R$38 e R$46 +cashback na Natura Friday*. Use meu cupom {{COUPON}}👇
+https://swiy.co/relampago-natura
 
-*💳 Procure por Murilo Cerqueira* - cupons só valem aqui.
-🛍️ https://www.natura.com.br/consultoria/clubemac
-*🎟️ Cupom extra*: {{COUPON}}
-*🚚 Frete grátis* acima de R$99
-*🎯 Mais cupons*: https://bit.ly/cupons-murilo`,
+💳 *Procure por Murilo Cerqueira* - cupons só valem aqui.
+🛍️ *Natura:* https://swiy.co/promo-natura
+🧼 *Sabonetes:* https://swiy.co/promo-sabonetes
+📌 *AVON:* https://swiy.co/loja-avon
+❤️ *Disney:* https://swiy.co/disney-promos
+🎟️ *Cupom extra*: {{COUPON}}
+🚚 *Frete grátis* > R$99 ou R$149 (verificar)
+🎯 *Mais cupons*: https://swiy.co/cupons-murilo e https://swiy.co/cupons-extras`,
 
 `*⚡Oooi. Tá valendo!* Corre e Ganhe esse {{PRODUTO}}!
 
@@ -273,14 +312,17 @@ https://ig.me/m/murilo_cerqueira_consultoria
 *3x- ENVIE👉* " 7 " no Messenger👇
 http://m.me/murilocerqueiraconsultor
 
-🔥 *EKOS, KAIAK, UNA e ESSENCIAL até 70%Off* com meu cupom {{COUPON}}👇
-https://www.natura.com.br/c/promocoes?consultoria=clubemac
+🔥 *EKOS, KAIAK, UNA e ESSENCIAL até 70%Off +cashback* com meu cupom {{COUPON}}👇
+https://swiy.co/natura-70ou60off
 
-*💳 Procure por Murilo Cerqueira* - cupons só valem aqui.
-🛍️ https://www.natura.com.br/consultoria/clubemac
-*🎟️ Cupom extra*: {{COUPON}}
-*🚚 Frete grátis* acima de R$99
-*🎯 Mais cupons*: https://bit.ly/cupons-murilo`,
+💳 *Procure por Murilo Cerqueira* - cupons só valem aqui.
+🛍️ *Natura:* https://swiy.co/promo-natura
+🧼 *Sabonetes:* https://swiy.co/promo-sabonetes
+📌 *AVON:* https://swiy.co/loja-avon
+❤️ *Disney:* https://swiy.co/disney-promos
+🎟️ *Cupom extra*: {{COUPON}}
+🚚 *Frete grátis* > R$99 ou R$149 (verificar)
+🎯 *Mais cupons*: https://swiy.co/cupons-murilo e https://swiy.co/cupons-extras`,
 
 `*🎯Eeeii... sua chance hoje*! Não fica de fora! Ganhe esse {{PRODUTO}}!
 
@@ -292,14 +334,17 @@ https://ig.me/m/murilo_cerqueira_consultoria
 *3x- ENVIE👉* " 7 " no Messenger👇
 http://m.me/murilocerqueiraconsultor
 
-🔥 *PRESENTES até 65%Off* com meu cupom {{COUPON}}👇
-https://www.natura.com.br/c/presentes?consultoria=clubemac
+🔥 *🎁PRESENTES até 65%Off +cashback* com meu cupom {{COUPON}}. Compre Natal agora. É mais barato.👇
+https://swiy.co/presentes-natura
 
-*💳 Procure por Murilo Cerqueira* - cupons só valem aqui.
-🛍️ https://www.natura.com.br/consultoria/clubemac
-*🎟️ Cupom extra*: {{COUPON}}
-*🚚 Frete grátis* acima de R$99
-*🎯 Mais cupons*: https://bit.ly/cupons-murilo`,
+💳 *Procure por Murilo Cerqueira* - cupons só valem aqui.
+🛍️ *Natura:* https://swiy.co/promo-natura
+🧼 *Sabonetes:* https://swiy.co/promo-sabonetes
+📌 *AVON:* https://swiy.co/loja-avon
+❤️ *Disney:* https://swiy.co/disney-promos
+🎟️ *Cupom extra*: {{COUPON}}
+🚚 *Frete grátis* > R$99 ou R$149 (verificar)
+🎯 *Mais cupons*: https://swiy.co/cupons-murilo e https://swiy.co/cupons-extras`,
 
 `*🥳Opa... É agora! Última chamada!* Ganhe esse {{PRODUTO}}!
 
@@ -311,14 +356,17 @@ https://ig.me/m/murilo_cerqueira_consultoria
 *3x- ENVIE👉* " 7 " no Messenger👇
 http://m.me/murilocerqueiraconsultor
 
-🧴 *Promo do dia*: use {{COUPON}} e ganhe até 60% OFF + frete grátis👇
-https://www.natura.com.br/c/promocoes?consultoria=clubemac
+😱 *Promo do Dia da Natura Friday: use {{COUPON}} e ganhe até 60% OFF +cashback + frete grátis👇*
+https://swiy.co/natura-70ou60off
 
-*💳 Procure por Murilo Cerqueira* - cupons só valem aqui.
-🛍️ https://www.natura.com.br/consultoria/clubemac
-*🎟️ Cupom extra*: {{COUPON}}
-*🚚 Frete grátis* acima de R$99
-*🎯 Mais cupons*: https://bit.ly/cupons-murilo`,
+💳 *Procure por Murilo Cerqueira* - cupons só valem aqui.
+🛍️ *Natura:* https://swiy.co/promo-natura
+🧼 *Sabonetes:* https://swiy.co/promo-sabonetes
+📌 *AVON:* https://swiy.co/loja-avon
+❤️ *Disney:* https://swiy.co/disney-promos
+🎟️ *Cupom extra*: {{COUPON}}
+🚚 *Frete grátis* > R$99 ou R$149 (verificar)
+🎯 *Mais cupons*: https://swiy.co/cupons-murilo e https://swiy.co/cupons-extras`,
 
 `*🛎️Ei... atenção!* Ganhe esse {{PRODUTO}}!
 
@@ -330,14 +378,17 @@ https://ig.me/m/murilo_cerqueira_consultoria
 *3x- ENVIE👉* " 7 " no Messenger👇
 http://m.me/murilocerqueiraconsultor
 
-🚨 *O MELHOR do MUNDO em LIQUIDAÇÃO*. Use meu cupom {{COUPON}}👇
-https://www.natura.com.br/c/corpo-e-banho-sabonete-barra?consultoria=clubemac
+🚨 *O MELHOR do MUNDO em LIQUIDAÇÃO na Black Friday +cashback *. Use meu cupom {{COUPON}}👇
+https://swiy.co/liquida-sabonetes
 
-*💳 Procure por Murilo Cerqueira* - cupons só valem aqui.
-🛍️ https://www.natura.com.br/consultoria/clubemac
-*🎟️ Cupom extra*: {{COUPON}}
-*🚚 Frete grátis* acima de R$99
-*🎯 Mais cupons*: https://bit.ly/cupons-murilo`,
+💳 *Procure por Murilo Cerqueira* - cupons só valem aqui.
+🛍️ *Natura:* https://swiy.co/promo-natura
+🧼 *Sabonetes:* https://swiy.co/promo-sabonetes
+📌 *AVON:* https://swiy.co/loja-avon
+❤️ *Disney:* https://swiy.co/disney-promos
+🎟️ *Cupom extra*: {{COUPON}}
+🚚 *Frete grátis* > R$99 ou R$149 (verificar)
+🎯 *Mais cupons*: https://swiy.co/cupons-murilo e https://swiy.co/cupons-extras`,
 
 `*🌟Oi! Hoje tem! Sua chance chegou!* Ganhe esse {{PRODUTO}}!
 
@@ -349,14 +400,17 @@ https://ig.me/m/murilo_cerqueira_consultoria
 *3x- ENVIE👉* " 7 " no Messenger👇
 http://m.me/murilocerqueiraconsultor
 
-💥 *LIQUIDAÇÃO de SABONETES Natura*. Use meu cupom {{COUPON}}. Pega👇
-https://www.natura.com.br/c/corpo-e-banho-sabonete?consultoria=clubemac
+💥 *LIQUIDAÇÃO de SABONETES só R$4 +cashback (cada um) Natura Friday*. Use meu cupom {{COUPON}}. Pega👇
+https://swiy.co/liquida-sabonetes
 
-*💳 Procure por Murilo Cerqueira* - cupons só valem aqui.
-🛍️ https://www.natura.com.br/consultoria/clubemac
-*🎟️ Cupom extra*: {{COUPON}}
-*🚚 Frete grátis* acima de R$99
-*🎯 Mais cupons*: https://bit.ly/cupons-murilo`,
+💳 *Procure por Murilo Cerqueira* - cupons só valem aqui.
+🛍️ *Natura:* https://swiy.co/promo-natura
+🧼 *Sabonetes:* https://swiy.co/promo-sabonetes
+📌 *AVON:* https://swiy.co/loja-avon
+❤️ *Disney:* https://swiy.co/disney-promos
+🎟️ *Cupom extra*: {{COUPON}}
+🚚 *Frete grátis* > R$99 ou R$149 (verificar)
+🎯 *Mais cupons*: https://swiy.co/cupons-murilo e https://swiy.co/cupons-extras`,
 
 `*📣Olá. Chamada geral!* Participa já! Ganhe esse {{PRODUTO}}!
 
@@ -368,14 +422,17 @@ https://ig.me/m/murilo_cerqueira_consultoria
 *3x- ENVIE👉* " 7 " no Messenger👇
 http://m.me/murilocerqueiraconsultor
 
-🤩 *GANHE um BRINDE* da Natura. Veja👇
-https://www.natura.com.br/c/brinde?consultoria=clubemac
+🤩 *GANHE um BRINDE MUUUUITO TOP da NaturaFriday*. Veja👇
+https://swiy.co/brinde-natura
 
-*💳 Procure por Murilo Cerqueira* - cupons só valem aqui.
-🛍️ https://www.natura.com.br/consultoria/clubemac
-*🎟️ Cupom extra*: {{COUPON}}
-*🚚 Frete grátis* acima de R$99
-*🎯 Mais cupons*: https://bit.ly/cupons-murilo`,
+💳 *Procure por Murilo Cerqueira* - cupons só valem aqui.
+🛍️ *Natura:* https://swiy.co/promo-natura
+🧼 *Sabonetes:* https://swiy.co/promo-sabonetes
+📌 *AVON:* https://swiy.co/loja-avon
+❤️ *Disney:* https://swiy.co/disney-promos
+🎟️ *Cupom extra*: {{COUPON}}
+🚚 *Frete grátis* > R$99 ou R$149 (verificar)
+🎯 *Mais cupons*: https://swiy.co/cupons-murilo e https://swiy.co/cupons-extras`,
 
 `*🏁Eeei... partiu testar a sorte?* Último chamado! Ganhe esse {{PRODUTO}}!
 
@@ -387,14 +444,17 @@ https://ig.me/m/murilo_cerqueira_consultoria
 *3x- ENVIE👉* " 7 " no Messenger👇
 http://m.me/murilocerqueiraconsultor
 
-⚡ *LIQUIDA RELÂMPAGO - 39 itens* com 60%Off com meu cupom {{COUPON}}👇
-https://www.natura.com.br/c/promocoes?consultoria=clubemac
+⚡ *LIQUIDA RELÂMPAGO da BLACK FRIDAY - 39 itens com 70%Off + cashback* com meu cupom {{COUPON}}👇
+https://swiy.co/natura-70ou60off
 
-*💳 Procure por Murilo Cerqueira* - cupons só valem aqui.
-🛍️ https://www.natura.com.br/consultoria/clubemac
-*🎟️ Cupom extra*: {{COUPON}}
-*🚚 Frete grátis* acima de R$99
-*🎯 Mais cupons*: https://bit.ly/cupons-murilo`,
+💳 *Procure por Murilo Cerqueira* - cupons só valem aqui.
+🛍️ *Natura:* https://swiy.co/promo-natura
+🧼 *Sabonetes:* https://swiy.co/promo-sabonetes
+📌 *AVON:* https://swiy.co/loja-avon
+❤️ *Disney:* https://swiy.co/disney-promos
+🎟️ *Cupom extra*: {{COUPON}}
+🚚 *Frete grátis* > R$99 ou R$149 (verificar)
+🎯 *Mais cupons*: https://swiy.co/cupons-murilo e https://swiy.co/cupons-extras`,
 ];
 
 module.exports = { beforeTexts, dayTexts };
