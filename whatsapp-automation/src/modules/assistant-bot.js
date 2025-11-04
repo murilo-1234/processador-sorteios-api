@@ -36,12 +36,12 @@ const REWIRE_INTERVAL_MS = Math.max(5000, Number(process.env.ASSISTANT_REWIRE_IN
 
 // Links oficiais (mantidos para atalhos de intenção, se usados)
 const LINKS = {
-  promosProgressivo: 'swiy.co/50a60off-natura',
-  promosGerais:      'swiy.co/natura-70ou60off',
-  sabonetes:         'swiy.co/liquida-sabonetes',
-  cuponsSite:        'swiy.co/cupons-murilo',
-  avonPromos:        'swiy.co/loja-avon',
-  disneyPromos:      'swiy.co/disney-promos',
+  promosProgressivo: 'https://swiy.co/50a60off-natura',
+  promosGerais:      'https://swiy.co/natura-70ou60off',
+  sabonetes:         'https://swiy.co/liquida-sabonetes',
+  cuponsSite:        'https://swiy.co/cupons-murilo',
+  avonPromos:        'https://swiy.co/loja-avon',
+  disneyPromos:      'https://swiy.co/disney-promos',
   sorteioWhats:      'https://wa.me/5548991021707',
   sorteioInsta:      'https://ig.me/m/murilo_cerqueira_consultoria',
   sorteioMsg:        'http://m.me/murilocerqueiraconsultor',
@@ -245,9 +245,9 @@ function replyOrderSupport(sock, jid) {
   enqueueText(
     sock, jid,
     `Pagamentos, nota fiscal, pedido e entrega são tratados pelo suporte oficial da Natura:\n` +
-    `swiy.co/jyOY\n` +
+    `https://swiy.co/jyOY\n` +
     `Dica: no chat, digite 4x "Falar com atendente" para acelerar o atendimento humano.\n` +
-    `Visualizar seus pedidos: swiy.co/jyO-`
+    `Visualizar seus pedidos: https://swiy.co/jyO-`
   );
 }
 
