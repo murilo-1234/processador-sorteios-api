@@ -26,7 +26,7 @@ function securityReply() {
     '— *Não fazemos ligações* pedindo códigos, PIX ou dados sensíveis.',
     '— Desconfie de links encurtados ou que não sejam do site oficial.',
     '— Se recebeu cobrança estranha/PIX errado, *não pague* e fale com o suporte oficial:',
-    'https://www.natura.com.br/ajuda-e-contato ✨'
+    'swiy.co/jyOY ✨'
   ].join('\n');
 }
 module.exports = { hasSecurityRisk, securityReply };
