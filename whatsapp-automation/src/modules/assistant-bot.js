@@ -36,11 +36,12 @@ const REWIRE_INTERVAL_MS = Math.max(5000, Number(process.env.ASSISTANT_REWIRE_IN
 
 // Links oficiais (mantidos para atalhos de intenção, se usados)
 const LINKS = {
-  promosProgressivo: 'https://www.natura.com.br/c/promocao-da-semana?consultoria=clubemac',
-  promosGerais:      'https://www.natura.com.br/c/promocoes?consultoria=clubemac',
-  monteSeuKit:       'https://www.natura.com.br/c/monte-seu-kit?consultoria=clubemac',
-  sabonetes:         'https://www.natura.com.br/c/corpo-e-banho-sabonete-barra?consultoria=clubemac',
-  cuponsSite:        'https://bit.ly/cupons-murilo',
+  promosProgressivo: 'swiy.co/50a60off-natura',
+  promosGerais:      'swiy.co/natura-70ou60off',
+  sabonetes:         'swiy.co/liquida-sabonetes',
+  cuponsSite:        'swiy.co/cupons-murilo',
+  avonPromos:        'swiy.co/loja-avon',
+  disneyPromos:      'swiy.co/disney-promos',
   sorteioWhats:      'https://wa.me/5548991021707',
   sorteioInsta:      'https://ig.me/m/murilo_cerqueira_consultoria',
   sorteioMsg:        'http://m.me/murilocerqueiraconsultor',
@@ -102,7 +103,7 @@ function wantsOrderSupport(text) {
   return /(pedido|compra|encomenda|pacote|entrega|nota fiscal|pagamento|boleto).*(problema|atras|n[aã]o chegou|nao recebi|erro|sumiu|cad[eê])|rastre(i|ei)o|codigo de rastreio|transportadora/.test(s);
 }
 
-// tópico de produto (tolerante) – mantido para compat, embora não haja mais “append” automático
+// tópico de produto (tolerante) – mantido para compat, embora não haja mais "append" automático
 function wantsProductTopic(text) {
   const s = String(text || '').toLowerCase();
   return /(hidrat\w+|perfum\w+|desodorant\w+|sabonete\w*|cabel\w+|maquiag\w+|barb\w+|infantil\w*|present\w*|kit\w*|aura\b|ekos\b|kaiak\b|essencial\b|luna\b|tododia\b|mam[aã]e.*beb[eê]\b|una\b|faces\b|chronos\b|lumina\b|biome\b|bothanica\b)/i.test(s);
@@ -175,17 +176,20 @@ async function replyCoupons(sock, jid) {
 async function replyPromos(sock, jid) {
   const header =
     'Ofertas do dia (consultoria ativa):\n' +
-    `• Desconto progressivo ➡️ ${LINKS.promosProgressivo}\n` +
-    `  Observação: o desconto máximo (pode chegar a 50%) costuma exigir 3 a 4 produtos dentre 328 disponíveis e há frete grátis aplicando cupom.\n` +
+    `• Desconto progressivo Natura ➡️ ${LINKS.promosProgressivo}\n` +
+    `  Observação: o desconto máximo (pode chegar a 60% + Frete Grátis com cupom) acima de 3 a 4 produtos dentre 328 disponíveis.\n` +
     `• Produtos em promoção ➡️ ${LINKS.promosGerais}\n` +
     `  Observação: 723 itens com até 70% OFF e frete grátis aplicando cupom.\n` +
-    `• Monte seu kit ➡️ ${LINKS.monteSeuKit}\n` +
-    `  Observação: comprando 4 itens (dentre 182), ganha 40% OFF e frete grátis.`;
+    `• Sabonetes Natura em promoção ➡️ ${LINKS.sabonetes}\n` +
+    `• Promoções AVON ➡️ ${LINKS.avonPromos}\n` +
+    `  127 itens com 60% a 70%Off com cupom\n` +
+    `• Promoções Disney ➡️ ${LINKS.disneyPromos}\n` +
+    `  De 40% a 70%Off em Stitch, Mickey, Homem-aranha, Avengers e mais.`;
   if (USE_BUTTONS) {
     const ok = await sendUrlButtons(sock, jid, header, [
-      { index: 1, urlButton: { displayText: 'Ver promoções',        url: LINKS.promosGerais      } },
+      { index: 1, urlButton: { displayText: 'Ver promoções Natura', url: LINKS.promosGerais      } },
       { index: 2, urlButton: { displayText: 'Desconto progressivo', url: LINKS.promosProgressivo } },
-      { index: 3, urlButton: { displayText: 'Monte seu kit',        url: LINKS.monteSeuKit       } },
+      { index: 3, urlButton: { displayText: 'Ver promoções AVON',   url: LINKS.avonPromos        } },
     ]);
     await replyCoupons(sock, jid);
     if (ok) return;
@@ -241,9 +245,9 @@ function replyOrderSupport(sock, jid) {
   enqueueText(
     sock, jid,
     `Pagamentos, nota fiscal, pedido e entrega são tratados pelo suporte oficial da Natura:\n` +
-    `https://www.natura.com.br/ajuda-e-contato\n` +
-    `Dica: no chat, digite 4x “Falar com atendente” para acelerar o atendimento humano.\n` +
-    `Visualizar seus pedidos: https://www.natura.com.br/meus-dados/pedidos?consultoria=clubemac`
+    `swiy.co/jyOY\n` +
+    `Dica: no chat, digite 4x "Falar com atendente" para acelerar o atendimento humano.\n` +
+    `Visualizar seus pedidos: swiy.co/jyO-`
   );
 }
 
@@ -384,7 +388,7 @@ function buildUpsertHandler(getSock) {
           if (ctx.shouldGreet && !GREET_TEXT && !(RULE_GREETING_ON && nameUtils)) markGreeted(jid);
         }
 
-        // Sem “failsafe append” e sem menu extra — Playground controla todo o conteúdo
+        // Sem "failsafe append" e sem menu extra — Playground controla todo o conteúdo
         void hadMedia; void heuristics; void wantsProductTopic; // silencioso
       });
     } catch (e) {
@@ -462,4 +466,3 @@ function attachAssistant(appInstance) {
 }
 
 module.exports = { attachAssistant };
-
