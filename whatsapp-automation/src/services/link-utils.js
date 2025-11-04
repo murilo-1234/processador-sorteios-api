@@ -1,6 +1,6 @@
 // src/services/link-utils.js
 const ALLOWED_HOSTS = new Set([
-  'www.natura.com.br',
+  'swiy.co',
   'wa.me',
   'ig.me',
   'm.me',
@@ -10,29 +10,26 @@ const ALLOWED_HOSTS = new Set([
   'bit.ly'
 ]);
 
-function normalizeNaturaUrl(text) {
+function normalizeLinks(text) {
   let out = String(text || '');
-  out = out.replace(/https:\/\/www\.natura\.com[,\s]*br\//gi, 'https://www.natura.com.br/');
-  out = out.replace(/https?:\/\/wwwnatura\.com\.br/gi, 'https://www.natura.com.br');
-  out = out.replace(/https?:\/\/wwwnatura\.com\.br/gi, 'https://www.natura.com.br');
-  out = out.replace(/https?:\/\/(natura\.com\.br)/gi, 'https://www.$1');
-  out = out.replace(/https?:\/\/www\.\s*natura\.\s*com\s*\.\s*br/gi, 'https://www.natura.com.br');
+  
+  // Normaliza links swiy.co (remove espaços extras)
+  out = out.replace(/swiy\s*\.\s*co\//gi, 'swiy.co/');
+  
+  // Remove vírgulas/pontos/ponto-e-vírgula do final de qualquer link
   out = out.replace(/(https?:\/\/[^\s,.;]+)[,.;]+/g, '$1');
+  
   return out;
 }
+
 function isAllowedLink(url) {
-  try { const u = new URL(url); return ALLOWED_HOSTS.has(u.host); }
-  catch (_) { return false; }
+  try { 
+    const u = new URL(url); 
+    return ALLOWED_HOSTS.has(u.host); 
+  }
+  catch (_) { 
+    return false; 
+  }
 }
-function ensureConsultoriaParam(url) {
-  try {
-    const u = new URL(url);
-    if (u.host === 'www.natura.com.br') {
-      const p = u.searchParams;
-      if (!p.has('consultoria')) p.set('consultoria', 'clubemac');
-      u.search = p.toString();
-    }
-    return u.toString();
-  } catch (_) { return url; }
-}
-module.exports = { normalizeNaturaUrl, isAllowedLink, ensureConsultoriaParam, ALLOWED_HOSTS };
+
+module.exports = { normalizeLinks, isAllowedLink, ALLOWED_HOSTS };
