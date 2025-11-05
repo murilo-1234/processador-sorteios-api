@@ -41,6 +41,7 @@ const LINKS = {
   promosGerais:      'https://swiy.co/natura-70ou60off',
   sabonetes:         'https://swiy.co/liquida-sabonetes',
   cuponsSite:        'https://swiy.co/cupons-murilo',
+  cuponsExtras:      'https://swiy.co/cupons-extras',  // ADICIONADO: segundo link de cupons
   avonPromos:        'https://swiy.co/loja-avon',
   disneyPromos:      'https://swiy.co/disney-promos',
   sorteioWhats:      'https://wa.me/5548991021707',
@@ -180,20 +181,20 @@ async function replyCoupons(sock, jid) {
       if (ok) return true;
     }
     enqueueText(sock, jid, `${linha}\n${nota}`);
-    enqueueText(sock, jid, `Mais cupons: ${LINKS.cuponsSite}`);
+    enqueueText(sock, jid, `Mais cupons: ${LINKS.cuponsSite} e ${LINKS.cuponsExtras}`);
     enqueueText(sock, jid, promoLine);
     return true;
   }
 
   const header = 'No momento não consigo listar um código agora. Veja os cupons atuais aqui:';
   if (USE_BUTTONS) {
-    const ok = await sendUrlButtons(sock, jid, `${header}\n${LINKS.cuponsSite}\n${nota}`, [
+    const ok = await sendUrlButtons(sock, jid, `${header}\n${LINKS.cuponsSite} e ${LINKS.cuponsExtras}\n${nota}`, [
       { index: 1, urlButton: { displayText: 'Ver cupons',    url: LINKS.cuponsSite   } },
       { index: 2, urlButton: { displayText: 'Ver promoções', url: LINKS.promosGerais } },
     ]);
     if (ok) return true;
   }
-  enqueueText(sock, jid, `${header} ${LINKS.cuponsSite}\n${nota}`);
+  enqueueText(sock, jid, `${header} ${LINKS.cuponsSite} e ${LINKS.cuponsExtras}\n${nota}`);
   enqueueText(sock, jid, promoLine);
   return true;
 }
