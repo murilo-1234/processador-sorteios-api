@@ -24,7 +24,7 @@ try { heuristics = require('../services/heuristics'); } catch (_) {}
 const ASSISTANT_ENABLED = String(process.env.ASSISTANT_ENABLED || '0') === '1';
 const OPENAI_API_KEY    = process.env.OPENAI_API_KEY || '';
 const OPENAI_MODEL      = process.env.OPENAI_MODEL || 'gpt-4o';
-const ASSISTANT_TEMP    = Number(process.env.ASSISTANT_TEMPERATURE || 0.6);
+const ASSISTANT_TEMP    = Number(process.env.ASSISTANT_TEMPERATURE || 0.3);  // Reduzido para 0.3 (menos criatividade = menos invenção de links)
 
 // Saudação fixa opcional (se vazia, Playground saúda)
 const GREET_TEXT = (process.env.ASSISTANT_GREET_TEXT || '').trim();
@@ -294,23 +294,44 @@ async function askOpenAI({ prompt, userName, isNewTopic }) {
   const rules = [
     SYSTEM_TEXT,
     '',
-    '⚠️ REGRAS CRÍTICAS DE EXECUÇÃO (NUNCA VIOLAR):',
+    '⚠️⚠️⚠️ REGRAS CRÍTICAS - NUNCA VIOLAR ⚠️⚠️⚠️',
     `- Nome do cliente: ${userName || '(desconhecido)'}`,
     `- isNewTopic=${isNewTopic ? 'true' : 'false'} (se true, pode se apresentar; se false, evite nova saudação)`,
     '',
-    '🚨 LINKS - REGRAS ABSOLUTAS:',
-    '1. NUNCA invente, crie ou monte links. JAMAIS!',
-    '2. Use SOMENTE os links EXATOS das seções 3/4/5/6/8 do arquivo assistant-system.txt',
-    '3. TODOS os links Natura devem ter ?consultoria=clubemac (mas use os links swiy.co fornecidos)',
-    '4. Para Avon, use APENAS os links swiy.co fornecidos na seção 4.2',
-    '5. NUNCA use links diretos como www.avon.com.br ou www.natura.com.br',
-    '6. Se não houver link específico para o produto solicitado, NÃO FORNEÇA LINK NENHUM',
-    '7. Prefira sempre links swiy.co ao invés de links longos da Natura/Avon',
+    '🚨🚨🚨 LINKS - PROIBIÇÕES ABSOLUTAS 🚨🚨🚨',
+    '',
+    '❌ NUNCA FAÇA ISTO:',
+    '  - Inventar links como "swiy.co/avon-comprar" (NÃO EXISTE)',
+    '  - Usar "www.avon.com.br" ou "www.natura.com.br"',
+    '  - Criar links "parecidos" ou "lógicos"',
+    '  - Misturar swiy.co com parâmetros ?consultoria',
+    '',
+    '✅ SEMPRE FAÇA ISTO:',
+    '  - Use SOMENTE links das seções 3, 4.1, 4.2, 5, 6, 8',
+    '  - Copie o link EXATO do arquivo',
+    '  - Para Avon sem link específico: use https://swiy.co/jyYe',
+    '  - Para Natura sem link específico: use https://swiy.co/natura-70ou60off',
+    '',
+    '📋 LINKS AVON PERMITIDOS (COMPLETO):',
+    '  jyYe=loja, jyYl=promos, jyYY=desconto, jyYh=relampago,',
+    '  jyYV=cupons, jyYW=frete, jyYg=lancamentos, jyYf=presentes,',
+    '  jyYX=perfumes, jyYm=cabelos, jyYn=cuidados, jyYo=maquiagem,',
+    '  jyYp=rosto, jyYs=casa, jyYq=infantil, jyYr=disney,',
+    '  color-trend, power-stay, renew1, Avon-Care, Clearskin,',
+    '  Advance-Techniques, Far-Away, Segno, Avon-Encanto, loja-avon, disney-promos',
+    '',
+    '⚡ EXEMPLO CORRETO:',
+    '  Cliente: "quero comprar avon"',
+    '  Você: "Acesse a loja: https://swiy.co/jyYe 😊"',
+    '',
+    '❌ EXEMPLO ERRADO (NUNCA FAZER):',
+    '  Cliente: "quero comprar avon"',
+    '  Você: "Acesse: https://swiy.co/avon-comprar" ← ERRADO!',
+    '  Você: "Vá em www.avon.com.br/?consultoria=clubemac" ← ERRADO!',
     '',
     '📝 FORMATAÇÃO:',
-    '- Nunca formate link como markdown [texto](url) ou HTML <a>',
-    '- Exiba o texto exato e completo do link (copie-e-cole do arquivo)',
-    '- Para cupons, use o marcador {{CUPOM}} que será substituído automaticamente'
+    '- Nunca use markdown [texto](url) ou HTML',
+    '- Para cupons use {{CUPOM}} (será substituído automaticamente)'
   ].join('\n');
 
   try {
