@@ -201,14 +201,14 @@ async function replyCoupons(sock, jid) {
 async function replyPromos(sock, jid) {
   const header =
     'Ofertas do dia (consultoria ativa):\n' +
-    `• Desconto progressivo Natura ➡️ ${LINKS.promosProgressivo}\n` +
-    `  Observação: o desconto máximo (pode chegar a 60% + Frete Grátis com cupom) acima de 3 a 4 produtos dentre 328 disponíveis.\n` +
-    `• Produtos em promoção ➡️ ${LINKS.promosGerais}\n` +
-    `  Observação: 723 itens com até 70% OFF e frete grátis aplicando cupom.\n` +
-    `• Sabonetes Natura em promoção ➡️ ${LINKS.sabonetes}\n` +
-    `• Promoções AVON ➡️ ${LINKS.avonPromos}\n` +
+    `🔥 Desconto progressivo Natura ➡️ ${LINKS.promosProgressivo}\n` +
+    `  O desconto máximo (pode chegar a 60% + Frete Grátis com cupom) acima de 3 a 4 produtos dentre 328 disponíveis.\n` +
+    `🔥 Produtos em promoção ➡️ ${LINKS.promosGerais}\n` +
+    `  723 itens com até 70% OFF e frete grátis aplicando cupom.\n` +
+    `🔥 Sabonetes Natura em promoção ➡️ ${LINKS.sabonetes}\n` +
+    `🔥 Promoções AVON ➡️ ${LINKS.avonPromos}\n` +
     `  127 itens com 60% a 70%Off com cupom\n` +
-    `• Promoções Disney ➡️ ${LINKS.disneyPromos}\n` +
+    `🔥 Promoções Disney ➡️ ${LINKS.disneyPromos}\n` +
     `  De 40% a 70%Off em Stitch, Mickey, Homem-aranha, Avengers e mais.`;
   if (USE_BUTTONS) {
     const ok = await sendUrlButtons(sock, jid, header, [
@@ -427,10 +427,12 @@ function buildUpsertHandler(getSock) {
         if (intent.type === 'raffle'         || wantsRaffle(joined))         { replyRaffle(sockNow, jid); return; }
         if (intent.type === 'social'         || wantsSocial(joined))         { replySocial(sockNow, jid, joined); return; }
         
-        // 2) COMENTADO: Cupons, promos, sabonetes e marcas agora passam pelo OpenAI
-        //    para usar o arquivo assistant-system.txt completo (com emojis 🔥 e 2 links)
+        // 2) Promoções: descomentado para mostrar lista com 🔥
+        if (intent.type === 'promos'         || wantsPromos(joined))         { await replyPromos(sockNow, jid); return; }
+        
+        // 3) COMENTADO: Cupons, sabonetes e marcas agora passam pelo OpenAI
+        //    para usar o arquivo assistant-system.txt completo (com 2 links de cupom)
         // if (intent.type === 'coupon'         || wantsCoupon(joined))         { await replyCoupons(sockNow, jid); return; }
-        // if (intent.type === 'promos'         || wantsPromos(joined))         { await replyPromos(sockNow, jid); return; }
         // if (intent.type === 'soap'           || wantsSoap(joined))           { await replySoap(sockNow, jid); return; }
         // if (intent.type === 'brand')                                           { await replyBrand(sockNow, jid, intent.data.name); return; }
 
