@@ -24,7 +24,7 @@ try { heuristics = require('../services/heuristics'); } catch (_) {}
 const ASSISTANT_ENABLED = String(process.env.ASSISTANT_ENABLED || '0') === '1';
 const OPENAI_API_KEY    = process.env.OPENAI_API_KEY || '';
 const OPENAI_MODEL      = process.env.OPENAI_MODEL || 'gpt-4o';
-const ASSISTANT_TEMP    = Number(process.env.ASSISTANT_TEMPERATURE || 0.6);
+const ASSISTANT_TEMP    = Number(process.env.ASSISTANT_TEMPERATURE || 0.3);  // Reduzido para 0.3 (menos criatividade = menos invenção de links)
 
 // Saudação fixa opcional (se vazia, Playground saúda)
 const GREET_TEXT = (process.env.ASSISTANT_GREET_TEXT || '').trim();
@@ -35,12 +35,15 @@ const REWIRE_MODE = String(process.env.ASSISTANT_REWIRE_MODE || 'auto').toLowerC
 const REWIRE_INTERVAL_MS = Math.max(5000, Number(process.env.ASSISTANT_REWIRE_INTERVAL_MS || 15000) | 0);
 
 // Links oficiais (mantidos para atalhos de intenção, se usados)
+// IMPORTANTE: Estes links devem bater com o arquivo assistant-system.txt
 const LINKS = {
-  promosProgressivo: 'https://www.natura.com.br/c/promocao-da-semana?consultoria=clubemac',
-  promosGerais:      'https://www.natura.com.br/c/promocoes?consultoria=clubemac',
-  monteSeuKit:       'https://www.natura.com.br/c/monte-seu-kit?consultoria=clubemac',
-  sabonetes:         'https://www.natura.com.br/c/corpo-e-banho-sabonete-barra?consultoria=clubemac',
-  cuponsSite:        'https://bit.ly/cupons-murilo',
+  promosProgressivo: 'https://swiy.co/garanto60off-natura',  // CORRIGIDO para bater com assistant-system.txt
+  promosGerais:      'https://swiy.co/natura-70ou60off',
+  sabonetes:         'https://swiy.co/liquida-sabonetes',
+  cuponsSite:        'https://swiy.co/cupons-murilo',
+  cuponsExtras:      'https://swiy.co/cupons-extras',  // ADICIONADO: segundo link de cupons
+  avonPromos:        'https://swiy.co/loja-avon',
+  disneyPromos:      'https://swiy.co/disney-promos',
   sorteioWhats:      'https://wa.me/5548991021707',
   sorteioInsta:      'https://ig.me/m/murilo_cerqueira_consultoria',
   sorteioMsg:        'http://m.me/murilocerqueiraconsultor',
@@ -54,15 +57,39 @@ const LINKS = {
 // ====== System instructions ======
 function loadSystemText() {
   try {
+    // Tenta ler da variável de ambiente primeiro
     const file = (process.env.ASSISTANT_SYSTEM_FILE || '').trim();
     if (file) {
       const txt = fs.readFileSync(file, 'utf8');
-      if (txt && txt.trim()) return txt.trim();
+      if (txt && txt.trim()) {
+        console.log('[assistant] Carregado de ASSISTANT_SYSTEM_FILE:', file);
+        return txt.trim();
+      }
     }
-  } catch (_) {}
+    
+    // Se não houver variável, tenta ler do caminho padrão relativo ao módulo
+    const path = require('path');
+    const defaultPath = path.join(__dirname, '../config/assistant-system.txt');
+    const txt = fs.readFileSync(defaultPath, 'utf8');
+    if (txt && txt.trim()) {
+      console.log('[assistant] Carregado do caminho padrão:', defaultPath);
+      return txt.trim();
+    }
+  } catch (e) {
+    console.error('[assistant] ERRO ao carregar system text:', e.message);
+    console.error('[assistant] Caminho tentado:', e.path || 'desconhecido');
+  }
+  
+  // Tenta variável de ambiente com texto direto
   const envTxt = (process.env.ASSISTANT_SYSTEM || '').trim();
-  if (envTxt) return envTxt;
-  return 'Você é o atendente virtual do Murilo Cerqueira (Natura). Siga as regras do arquivo assistant-system.txt. Não invente links; use apenas os oficiais com ?consultoria=clubemac.';
+  if (envTxt) {
+    console.log('[assistant] Usando ASSISTANT_SYSTEM da variável de ambiente');
+    return envTxt;
+  }
+  
+  // Fallback - nunca deve chegar aqui se o arquivo existir
+  console.warn('[assistant] ATENÇÃO: Usando texto padrão de fallback (arquivo não foi carregado!)');
+  return 'Você é o atendente virtual do Murilo Cerqueira (Natura e Avon). Siga as regras do arquivo assistant-system.txt. Não invente links; use apenas os oficiais com ?consultoria=clubemac.';
 }
 const SYSTEM_TEXT = loadSystemText();
 
@@ -102,7 +129,7 @@ function wantsOrderSupport(text) {
   return /(pedido|compra|encomenda|pacote|entrega|nota fiscal|pagamento|boleto).*(problema|atras|n[aã]o chegou|nao recebi|erro|sumiu|cad[eê])|rastre(i|ei)o|codigo de rastreio|transportadora/.test(s);
 }
 
-// tópico de produto (tolerante) – mantido para compat, embora não haja mais “append” automático
+// tópico de produto (tolerante) – mantido para compat, embora não haja mais "append" automático
 function wantsProductTopic(text) {
   const s = String(text || '').toLowerCase();
   return /(hidrat\w+|perfum\w+|desodorant\w+|sabonete\w*|cabel\w+|maquiag\w+|barb\w+|infantil\w*|present\w*|kit\w*|aura\b|ekos\b|kaiak\b|essencial\b|luna\b|tododia\b|mam[aã]e.*beb[eê]\b|una\b|faces\b|chronos\b|lumina\b|biome\b|bothanica\b)/i.test(s);
@@ -135,12 +162,24 @@ async function replaceCouponMarkers(text) {
 }
 
 // Respostas baseadas em regra (mantidas p/ compat se usuário digitar diretamente)
-async function replyCoupons(sock, jid) {
+async function replyCoupons(sock, jid, showOfertas = true) {
   let list = [];
   try { list = await fetchTopCoupons(2); } catch (_) {}
 
   const nota = 'Obs.: os cupons só funcionam no meu Espaço Natura — na tela de pagamento, procure por "Murilo Cerqueira".';
-  const promoLine = `Promoções do dia: ${LINKS.promosGerais}`;
+  
+  // OFERTAS DO DIA COMPLETAS (com 🔥)
+  const ofertasDia = 
+    `Ofertas do dia:\n` +
+    `🔥 Desconto progressivo Natura ➡️ https://swiy.co/garanto60off-natura\n` +
+    `  O desconto máximo (pode chegar a 60% + Frete Grátis com cupom) acima de 3 a 4 produtos dentre 328 disponíveis.\n` +
+    `🔥 Produtos em promoção ➡️ https://swiy.co/natura-70ou60off\n` +
+    `  723 itens com até 70% OFF e frete grátis aplicando cupom.\n` +
+    `🔥 Sabonetes Natura em promoção ➡️ https://swiy.co/liquida-sabonetes\n` +
+    `🔥 Promoções AVON ➡️ https://swiy.co/loja-avon\n` +
+    `  127 itens com 60% a 70%Off com cupom\n` +
+    `🔥 Promoções Disney ➡️ https://swiy.co/disney-promos\n` +
+    `  De 40% a 70%Off em Stitch, Mickey, Homem-aranha, Avengers e mais.`;
 
   if (Array.isArray(list) && list.length) {
     const [c1, c2] = list;
@@ -154,44 +193,47 @@ async function replyCoupons(sock, jid) {
       if (ok) return true;
     }
     enqueueText(sock, jid, `${linha}\n${nota}`);
-    enqueueText(sock, jid, `Mais cupons: ${LINKS.cuponsSite}`);
-    enqueueText(sock, jid, promoLine);
+    enqueueText(sock, jid, `Mais cupons: ${LINKS.cuponsSite} e ${LINKS.cuponsExtras}`);
+    if (showOfertas) enqueueText(sock, jid, ofertasDia); // SÓ MOSTRA SE showOfertas=true
     return true;
   }
 
   const header = 'No momento não consigo listar um código agora. Veja os cupons atuais aqui:';
   if (USE_BUTTONS) {
-    const ok = await sendUrlButtons(sock, jid, `${header}\n${LINKS.cuponsSite}\n${nota}`, [
+    const ok = await sendUrlButtons(sock, jid, `${header}\n${LINKS.cuponsSite} e ${LINKS.cuponsExtras}\n${nota}`, [
       { index: 1, urlButton: { displayText: 'Ver cupons',    url: LINKS.cuponsSite   } },
       { index: 2, urlButton: { displayText: 'Ver promoções', url: LINKS.promosGerais } },
     ]);
     if (ok) return true;
   }
-  enqueueText(sock, jid, `${header} ${LINKS.cuponsSite}\n${nota}`);
-  enqueueText(sock, jid, promoLine);
+  enqueueText(sock, jid, `${header} ${LINKS.cuponsSite} e ${LINKS.cuponsExtras}\n${nota}`);
+  if (showOfertas) enqueueText(sock, jid, ofertasDia); // SÓ MOSTRA SE showOfertas=true
   return true;
 }
 
 async function replyPromos(sock, jid) {
   const header =
     'Ofertas do dia (consultoria ativa):\n' +
-    `• Desconto progressivo ➡️ ${LINKS.promosProgressivo}\n` +
-    `  Observação: o desconto máximo (pode chegar a 50%) costuma exigir 3 a 4 produtos dentre 328 disponíveis e há frete grátis aplicando cupom.\n` +
-    `• Produtos em promoção ➡️ ${LINKS.promosGerais}\n` +
-    `  Observação: 723 itens com até 70% OFF e frete grátis aplicando cupom.\n` +
-    `• Monte seu kit ➡️ ${LINKS.monteSeuKit}\n` +
-    `  Observação: comprando 4 itens (dentre 182), ganha 40% OFF e frete grátis.`;
+    `🔥 Desconto progressivo Natura ➡️ ${LINKS.promosProgressivo}\n` +
+    `  O desconto máximo (pode chegar a 60% + Frete Grátis com cupom) acima de 3 a 4 produtos dentre 328 disponíveis.\n` +
+    `🔥 Produtos em promoção ➡️ ${LINKS.promosGerais}\n` +
+    `  723 itens com até 70% OFF e frete grátis aplicando cupom.\n` +
+    `🔥 Sabonetes Natura em promoção ➡️ ${LINKS.sabonetes}\n` +
+    `🔥 Promoções AVON ➡️ ${LINKS.avonPromos}\n` +
+    `  127 itens com 60% a 70%Off com cupom\n` +
+    `🔥 Promoções Disney ➡️ ${LINKS.disneyPromos}\n` +
+    `  De 40% a 70%Off em Stitch, Mickey, Homem-aranha, Avengers e mais.`;
   if (USE_BUTTONS) {
     const ok = await sendUrlButtons(sock, jid, header, [
-      { index: 1, urlButton: { displayText: 'Ver promoções',        url: LINKS.promosGerais      } },
+      { index: 1, urlButton: { displayText: 'Ver promoções Natura', url: LINKS.promosGerais      } },
       { index: 2, urlButton: { displayText: 'Desconto progressivo', url: LINKS.promosProgressivo } },
-      { index: 3, urlButton: { displayText: 'Monte seu kit',        url: LINKS.monteSeuKit       } },
+      { index: 3, urlButton: { displayText: 'Ver promoções AVON',   url: LINKS.avonPromos        } },
     ]);
-    await replyCoupons(sock, jid);
+    await replyCoupons(sock, jid, false); // NÃO mostra ofertas (já mostrou acima)
     if (ok) return;
   }
   enqueueText(sock, jid, header);
-  await replyCoupons(sock, jid);
+  await replyCoupons(sock, jid, false); // NÃO mostra ofertas (já mostrou acima)
 }
 
 function replySoap(sock, jid) {
@@ -241,9 +283,9 @@ function replyOrderSupport(sock, jid) {
   enqueueText(
     sock, jid,
     `Pagamentos, nota fiscal, pedido e entrega são tratados pelo suporte oficial da Natura:\n` +
-    `https://www.natura.com.br/ajuda-e-contato\n` +
-    `Dica: no chat, digite 4x “Falar com atendente” para acelerar o atendimento humano.\n` +
-    `Visualizar seus pedidos: https://www.natura.com.br/meus-dados/pedidos?consultoria=clubemac`
+    `https://swiy.co/jyOY\n` +
+    `Dica: no chat, digite 4x "Falar com atendente" para acelerar o atendimento humano.\n` +
+    `Visualizar seus pedidos: https://swiy.co/jyO-`
   );
 }
 
@@ -265,12 +307,59 @@ async function askOpenAI({ prompt, userName, isNewTopic }) {
   const rules = [
     SYSTEM_TEXT,
     '',
-    'Regras de execução:',
-    `- Nome do cliente: ${userName || '(desconhecido)'}`,
-    `- isNewTopic=${isNewTopic ? 'true' : 'false'} (se true, pode se apresentar; se false, evite nova saudação)`,
-    '- Use SOMENTE os links listados nas seções 3/4/5/6/8, sempre com ?consultoria=clubemac. Se não houver link específico, não forneça link.',
-    '- Nunca formate link como markdown/âncora. Exiba o texto exato do link.',
-    '- Se precisar de cupom, escreva exatamente o marcador {{CUPOM}} que o sistema substituirá pelo(s) código(s).'
+    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+    '📋 CONTEXTO DESTA CONVERSA (APENAS PARA SEU USO INTERNO):',
+    `Cliente: ${userName || 'nome não informado'}`,
+    `Início de conversa: ${isNewTopic ? 'SIM (pode se apresentar)' : 'NÃO (continuação, não se apresente novamente)'}`,
+    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+    '',
+    '⚠️⚠️⚠️ REGRAS CRÍTICAS - NUNCA VIOLAR ⚠️⚠️⚠️',
+    '',
+    '🚫 NUNCA INCLUA NA SUA RESPOSTA:',
+    '  - Variáveis técnicas (isNewTopic, userName, etc)',
+    '  - Informações de debug ou contexto interno',
+    '  - Apenas responda naturalmente ao cliente',
+    '',
+    '🚨🚨🚨 LINKS - PROIBIÇÕES ABSOLUTAS 🚨🚨🚨',
+    '',
+    '❌ NUNCA FAÇA ISTO:',
+    '  - Inventar links como "swiy.co/avon-comprar" (NÃO EXISTE)',
+    '  - Usar "www.avon.com.br" ou "www.natura.com.br"',
+    '  - Criar links "parecidos" ou "lógicos"',
+    '  - Misturar swiy.co com parâmetros ?consultoria',
+    '',
+    '✅ SEMPRE FAÇA ISTO:',
+    '  - Use SOMENTE links das seções 3, 4.1, 4.2, 5, 6, 8',
+    '  - Copie o link EXATO do arquivo',
+    '  - Para Avon sem link específico: use https://swiy.co/jyYe',
+    '  - Para Natura sem link específico: use https://swiy.co/natura-70ou60off',
+    '',
+    '📋 LINKS AVON PERMITIDOS (COMPLETO):',
+    '  jyYe=loja, jyYl=promos, jyYY=desconto, jyYh=relampago,',
+    '  jyYW=frete, jyYg=lancamentos, jyYf=presentes,',
+    '  jyYX=perfumes, jyYm=cabelos, jyYn=cuidados, jyYo=maquiagem,',
+    '  jyYp=rosto, jyYs=casa, jyYq=infantil, jyYr=disney,',
+    '  color-trend, power-stay, renew1, Avon-Care, Clearskin,',
+    '  Advance-Techniques, Far-Away, Segno, Avon-Encanto, loja-avon, disney-promos',
+    '',
+    '⚡ EXEMPLO CORRETO:',
+    '  Cliente: "quero comprar avon"',
+    '  Você: "Acesse a loja: https://swiy.co/jyYe 😊"',
+    '',
+    '❌ EXEMPLO ERRADO (NUNCA FAZER):',
+    '  Cliente: "quero comprar avon"',
+    '  Você: "Acesse: https://swiy.co/avon-comprar" ← ERRADO!',
+    '  Você: "Vá em www.avon.com.br/?consultoria=clubemac" ← ERRADO!',
+    '',
+    '📝 FORMATAÇÃO:',
+    '- Nunca use markdown [texto](url) ou HTML',
+    '- Para cupons use {{CUPOM}} (será substituído automaticamente)',
+    '',
+    '💬 SUA RESPOSTA DEVE SER:',
+    '  - Natural e conversacional',
+    '  - SEM variáveis técnicas',
+    '  - SEM informações de debug',
+    '  - Apenas a mensagem para o cliente'
   ].join('\n');
 
   try {
@@ -344,16 +433,21 @@ function buildUpsertHandler(getSock) {
         // 0) segurança
         if (intent.type === 'security') { enqueueText(sockNow, jid, securityReply()); return; }
 
-        // 1) atalhos (mantidos p/ compat)
+        // 1) atalhos essenciais (mantidos por serem críticos/rápidos)
         if (intent.type === 'thanks' || wantsThanks(joined))                 { replyThanks(sockNow, jid); return; }
         if (intent.type === 'coupon_problem' || wantsCouponProblem(joined))  { replyCouponProblem(sockNow, jid); return; }
         if (intent.type === 'order_support'  || wantsOrderSupport(joined))   { replyOrderSupport(sockNow, jid); return; }
         if (intent.type === 'raffle'         || wantsRaffle(joined))         { replyRaffle(sockNow, jid); return; }
-        if (intent.type === 'coupon'         || wantsCoupon(joined))         { await replyCoupons(sockNow, jid); return; }
-        if (intent.type === 'promos'         || wantsPromos(joined))         { await replyPromos(sockNow, jid); return; }
         if (intent.type === 'social'         || wantsSocial(joined))         { replySocial(sockNow, jid, joined); return; }
-        if (intent.type === 'soap'           || wantsSoap(joined))           { await replySoap(sockNow, jid); return; }
-        if (intent.type === 'brand')                                           { await replyBrand(sockNow, jid, intent.data.name); return; }
+        
+        // 2) Promoções: descomentado para mostrar lista com 🔥
+        if (intent.type === 'promos'         || wantsPromos(joined))         { await replyPromos(sockNow, jid); return; }
+        
+        // 3) COMENTADO: Cupons, sabonetes e marcas agora passam pelo OpenAI
+        //    para usar o arquivo assistant-system.txt completo (com 2 links de cupom)
+        if (intent.type === 'coupon'         || wantsCoupon(joined))         { await replyCoupons(sockNow, jid); return; }
+        // if (intent.type === 'soap'           || wantsSoap(joined))           { await replySoap(sockNow, jid); return; }
+        // if (intent.type === 'brand')                                           { await replyBrand(sockNow, jid, intent.data.name); return; }
 
         // Saudação por regra (opcional). Se desligada, Playground saúda.
         let isNewTopicForAI = ctx.shouldGreet;
@@ -384,7 +478,7 @@ function buildUpsertHandler(getSock) {
           if (ctx.shouldGreet && !GREET_TEXT && !(RULE_GREETING_ON && nameUtils)) markGreeted(jid);
         }
 
-        // Sem “failsafe append” e sem menu extra — Playground controla todo o conteúdo
+        // Sem "failsafe append" e sem menu extra — Playground controla todo o conteúdo
         void hadMedia; void heuristics; void wantsProductTopic; // silencioso
       });
     } catch (e) {
@@ -462,4 +556,3 @@ function attachAssistant(appInstance) {
 }
 
 module.exports = { attachAssistant };
-
