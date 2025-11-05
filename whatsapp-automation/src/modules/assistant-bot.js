@@ -167,7 +167,19 @@ async function replyCoupons(sock, jid) {
   try { list = await fetchTopCoupons(2); } catch (_) {}
 
   const nota = 'Obs.: os cupons só funcionam no meu Espaço Natura — na tela de pagamento, procure por "Murilo Cerqueira".';
-  const promoLine = `Promoções do dia: ${LINKS.promosGerais}`;
+  
+  // OFERTAS DO DIA COMPLETAS (com 🔥)
+  const ofertasDia = 
+    `Ofertas do dia:\n` +
+    `🔥 Desconto progressivo Natura ➡️ https://swiy.co/garanto60off-natura\n` +
+    `  O desconto máximo (pode chegar a 60% + Frete Grátis com cupom) acima de 3 a 4 produtos dentre 328 disponíveis.\n` +
+    `🔥 Produtos em promoção ➡️ https://swiy.co/natura-70ou60off\n` +
+    `  723 itens com até 70% OFF e frete grátis aplicando cupom.\n` +
+    `🔥 Sabonetes Natura em promoção ➡️ https://swiy.co/liquida-sabonetes\n` +
+    `🔥 Promoções AVON ➡️ https://swiy.co/loja-avon\n` +
+    `  127 itens com 60% a 70%Off com cupom\n` +
+    `🔥 Promoções Disney ➡️ https://swiy.co/disney-promos\n` +
+    `  De 40% a 70%Off em Stitch, Mickey, Homem-aranha, Avengers e mais.`;
 
   if (Array.isArray(list) && list.length) {
     const [c1, c2] = list;
@@ -182,7 +194,7 @@ async function replyCoupons(sock, jid) {
     }
     enqueueText(sock, jid, `${linha}\n${nota}`);
     enqueueText(sock, jid, `Mais cupons: ${LINKS.cuponsSite} e ${LINKS.cuponsExtras}`);
-    enqueueText(sock, jid, promoLine);
+    enqueueText(sock, jid, ofertasDia); // OFERTAS COMPLETAS!
     return true;
   }
 
@@ -195,7 +207,7 @@ async function replyCoupons(sock, jid) {
     if (ok) return true;
   }
   enqueueText(sock, jid, `${header} ${LINKS.cuponsSite} e ${LINKS.cuponsExtras}\n${nota}`);
-  enqueueText(sock, jid, promoLine);
+  enqueueText(sock, jid, ofertasDia); // OFERTAS COMPLETAS!
   return true;
 }
 
@@ -324,7 +336,7 @@ async function askOpenAI({ prompt, userName, isNewTopic }) {
     '',
     '📋 LINKS AVON PERMITIDOS (COMPLETO):',
     '  jyYe=loja, jyYl=promos, jyYY=desconto, jyYh=relampago,',
-    '  jyYV=cupons, jyYW=frete, jyYg=lancamentos, jyYf=presentes,',
+    '  jyYW=frete, jyYg=lancamentos, jyYf=presentes,',
     '  jyYX=perfumes, jyYm=cabelos, jyYn=cuidados, jyYo=maquiagem,',
     '  jyYp=rosto, jyYs=casa, jyYq=infantil, jyYr=disney,',
     '  color-trend, power-stay, renew1, Avon-Care, Clearskin,',
@@ -433,7 +445,7 @@ function buildUpsertHandler(getSock) {
         
         // 3) COMENTADO: Cupons, sabonetes e marcas agora passam pelo OpenAI
         //    para usar o arquivo assistant-system.txt completo (com 2 links de cupom)
-        // if (intent.type === 'coupon'         || wantsCoupon(joined))         { await replyCoupons(sockNow, jid); return; }
+        if (intent.type === 'coupon'         || wantsCoupon(joined))         { await replyCoupons(sockNow, jid); return; }
         // if (intent.type === 'soap'           || wantsSoap(joined))           { await replySoap(sockNow, jid); return; }
         // if (intent.type === 'brand')                                           { await replyBrand(sockNow, jid, intent.data.name); return; }
 
