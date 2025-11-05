@@ -35,8 +35,9 @@ const REWIRE_MODE = String(process.env.ASSISTANT_REWIRE_MODE || 'auto').toLowerC
 const REWIRE_INTERVAL_MS = Math.max(5000, Number(process.env.ASSISTANT_REWIRE_INTERVAL_MS || 15000) | 0);
 
 // Links oficiais (mantidos para atalhos de intenção, se usados)
+// IMPORTANTE: Estes links devem bater com o arquivo assistant-system.txt
 const LINKS = {
-  promosProgressivo: 'https://swiy.co/50a60off-natura',
+  promosProgressivo: 'https://swiy.co/garanto60off-natura',  // CORRIGIDO para bater com assistant-system.txt
   promosGerais:      'https://swiy.co/natura-70ou60off',
   sabonetes:         'https://swiy.co/liquida-sabonetes',
   cuponsSite:        'https://swiy.co/cupons-murilo',
@@ -293,12 +294,23 @@ async function askOpenAI({ prompt, userName, isNewTopic }) {
   const rules = [
     SYSTEM_TEXT,
     '',
-    'Regras de execução:',
+    '⚠️ REGRAS CRÍTICAS DE EXECUÇÃO (NUNCA VIOLAR):',
     `- Nome do cliente: ${userName || '(desconhecido)'}`,
     `- isNewTopic=${isNewTopic ? 'true' : 'false'} (se true, pode se apresentar; se false, evite nova saudação)`,
-    '- Use SOMENTE os links listados nas seções 3/4/5/6/8, sempre com ?consultoria=clubemac. Se não houver link específico, não forneça link.',
-    '- Nunca formate link como markdown/âncora. Exiba o texto exato do link.',
-    '- Se precisar de cupom, escreva exatamente o marcador {{CUPOM}} que o sistema substituirá pelo(s) código(s).'
+    '',
+    '🚨 LINKS - REGRAS ABSOLUTAS:',
+    '1. NUNCA invente, crie ou monte links. JAMAIS!',
+    '2. Use SOMENTE os links EXATOS das seções 3/4/5/6/8 do arquivo assistant-system.txt',
+    '3. TODOS os links Natura devem ter ?consultoria=clubemac (mas use os links swiy.co fornecidos)',
+    '4. Para Avon, use APENAS os links swiy.co fornecidos na seção 4.2',
+    '5. NUNCA use links diretos como www.avon.com.br ou www.natura.com.br',
+    '6. Se não houver link específico para o produto solicitado, NÃO FORNEÇA LINK NENHUM',
+    '7. Prefira sempre links swiy.co ao invés de links longos da Natura/Avon',
+    '',
+    '📝 FORMATAÇÃO:',
+    '- Nunca formate link como markdown [texto](url) ou HTML <a>',
+    '- Exiba o texto exato e completo do link (copie-e-cole do arquivo)',
+    '- Para cupons, use o marcador {{CUPOM}} que será substituído automaticamente'
   ].join('\n');
 
   try {
