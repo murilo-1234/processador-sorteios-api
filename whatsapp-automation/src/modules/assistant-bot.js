@@ -162,7 +162,7 @@ async function replaceCouponMarkers(text) {
 }
 
 // Respostas baseadas em regra (mantidas p/ compat se usuário digitar diretamente)
-async function replyCoupons(sock, jid) {
+async function replyCoupons(sock, jid, showOfertas = true) {
   let list = [];
   try { list = await fetchTopCoupons(2); } catch (_) {}
 
@@ -194,7 +194,7 @@ async function replyCoupons(sock, jid) {
     }
     enqueueText(sock, jid, `${linha}\n${nota}`);
     enqueueText(sock, jid, `Mais cupons: ${LINKS.cuponsSite} e ${LINKS.cuponsExtras}`);
-    enqueueText(sock, jid, ofertasDia); // OFERTAS COMPLETAS!
+    if (showOfertas) enqueueText(sock, jid, ofertasDia); // SÓ MOSTRA SE showOfertas=true
     return true;
   }
 
@@ -207,7 +207,7 @@ async function replyCoupons(sock, jid) {
     if (ok) return true;
   }
   enqueueText(sock, jid, `${header} ${LINKS.cuponsSite} e ${LINKS.cuponsExtras}\n${nota}`);
-  enqueueText(sock, jid, ofertasDia); // OFERTAS COMPLETAS!
+  if (showOfertas) enqueueText(sock, jid, ofertasDia); // SÓ MOSTRA SE showOfertas=true
   return true;
 }
 
@@ -229,11 +229,11 @@ async function replyPromos(sock, jid) {
       { index: 2, urlButton: { displayText: 'Desconto progressivo', url: LINKS.promosProgressivo } },
       { index: 3, urlButton: { displayText: 'Ver promoções AVON',   url: LINKS.avonPromos        } },
     ]);
-    await replyCoupons(sock, jid);
+    await replyCoupons(sock, jid, false); // NÃO mostra ofertas (já mostrou acima)
     if (ok) return;
   }
   enqueueText(sock, jid, header);
-  await replyCoupons(sock, jid);
+  await replyCoupons(sock, jid, false); // NÃO mostra ofertas (já mostrou acima)
 }
 
 function replySoap(sock, jid) {
