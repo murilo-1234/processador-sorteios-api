@@ -294,9 +294,18 @@ async function askOpenAI({ prompt, userName, isNewTopic }) {
   const rules = [
     SYSTEM_TEXT,
     '',
+    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+    '📋 CONTEXTO DESTA CONVERSA (APENAS PARA SEU USO INTERNO):',
+    `Cliente: ${userName || 'nome não informado'}`,
+    `Início de conversa: ${isNewTopic ? 'SIM (pode se apresentar)' : 'NÃO (continuação, não se apresente novamente)'}`,
+    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+    '',
     '⚠️⚠️⚠️ REGRAS CRÍTICAS - NUNCA VIOLAR ⚠️⚠️⚠️',
-    `- Nome do cliente: ${userName || '(desconhecido)'}`,
-    `- isNewTopic=${isNewTopic ? 'true' : 'false'} (se true, pode se apresentar; se false, evite nova saudação)`,
+    '',
+    '🚫 NUNCA INCLUA NA SUA RESPOSTA:',
+    '  - Variáveis técnicas (isNewTopic, userName, etc)',
+    '  - Informações de debug ou contexto interno',
+    '  - Apenas responda naturalmente ao cliente',
     '',
     '🚨🚨🚨 LINKS - PROIBIÇÕES ABSOLUTAS 🚨🚨🚨',
     '',
@@ -331,7 +340,13 @@ async function askOpenAI({ prompt, userName, isNewTopic }) {
     '',
     '📝 FORMATAÇÃO:',
     '- Nunca use markdown [texto](url) ou HTML',
-    '- Para cupons use {{CUPOM}} (será substituído automaticamente)'
+    '- Para cupons use {{CUPOM}} (será substituído automaticamente)',
+    '',
+    '💬 SUA RESPOSTA DEVE SER:',
+    '  - Natural e conversacional',
+    '  - SEM variáveis técnicas',
+    '  - SEM informações de debug',
+    '  - Apenas a mensagem para o cliente'
   ].join('\n');
 
   try {
