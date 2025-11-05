@@ -55,15 +55,39 @@ const LINKS = {
 // ====== System instructions ======
 function loadSystemText() {
   try {
+    // Tenta ler da variável de ambiente primeiro
     const file = (process.env.ASSISTANT_SYSTEM_FILE || '').trim();
     if (file) {
       const txt = fs.readFileSync(file, 'utf8');
-      if (txt && txt.trim()) return txt.trim();
+      if (txt && txt.trim()) {
+        console.log('[assistant] Carregado de ASSISTANT_SYSTEM_FILE:', file);
+        return txt.trim();
+      }
     }
-  } catch (_) {}
+    
+    // Se não houver variável, tenta ler do caminho padrão relativo ao módulo
+    const path = require('path');
+    const defaultPath = path.join(__dirname, '../config/assistant-system.txt');
+    const txt = fs.readFileSync(defaultPath, 'utf8');
+    if (txt && txt.trim()) {
+      console.log('[assistant] Carregado do caminho padrão:', defaultPath);
+      return txt.trim();
+    }
+  } catch (e) {
+    console.error('[assistant] ERRO ao carregar system text:', e.message);
+    console.error('[assistant] Caminho tentado:', e.path || 'desconhecido');
+  }
+  
+  // Tenta variável de ambiente com texto direto
   const envTxt = (process.env.ASSISTANT_SYSTEM || '').trim();
-  if (envTxt) return envTxt;
-  return 'Você é o atendente virtual do Murilo Cerqueira (Natura). Siga as regras do arquivo assistant-system.txt. Não invente links; use apenas os oficiais com ?consultoria=clubemac.';
+  if (envTxt) {
+    console.log('[assistant] Usando ASSISTANT_SYSTEM da variável de ambiente');
+    return envTxt;
+  }
+  
+  // Fallback - nunca deve chegar aqui se o arquivo existir
+  console.warn('[assistant] ATENÇÃO: Usando texto padrão de fallback (arquivo não foi carregado!)');
+  return 'Você é o atendente virtual do Murilo Cerqueira (Natura e Avon). Siga as regras do arquivo assistant-system.txt. Não invente links; use apenas os oficiais com ?consultoria=clubemac.';
 }
 const SYSTEM_TEXT = loadSystemText();
 
