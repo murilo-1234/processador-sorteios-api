@@ -72,49 +72,18 @@ Cliente: "tem creme dental da avon?"
 
 NUNCA CONFUNDA NATURA COM AVON!
 
-📋 LISTA COMPLETA - MARCAS NATURA COM LINKS ESPECÍFICOS:
+PRODUTOS/LINHAS DA NATURA (use links Natura):
+- Ekos, Chronos, Luna, Tododia, Kaiak, Essencial, Mamãe e Bebê
+- Una (maquiagem), FAces (maquiagem)
+- Sève (óleo corporal), Biome, Bothanica, Lumina, Aura
+- Crer Pra Ver, Plant
+- Se a pessoa pedir qualquer uma destas linhas: use link NATURA!
 
-Quando o cliente mencionar QUALQUER uma destas marcas, use o link correspondente:
-
-✅ Aura ➡️ https://swiy.co/jyOE
-✅ Biome ➡️ https://swiy.co/jyOP
-✅ Bothânica (ou Bothanica) ➡️ https://swiy.co/jyOO
-✅ Chronos ➡️ https://swiy.co/jyON
-✅ Derma (ou Natura Derma) ➡️ https://swiy.co/natura-chronos
-✅ Crer Para Ver ➡️ https://swiy.co/jyOT
-✅ Ekos ➡️ https://swiy.co/jyOL
-✅ Essencial ➡️ https://swiy.co/jyOS
-✅ Kaiak ➡️ https://swiy.co/jyOQ
-✅ Lumina ➡️ https://swiy.co/jyOM
-✅ Luna ➡️ https://swiy.co/jyOU
-✅ Mamãe e Bebê ➡️ https://swiy.co/jyOR
-✅ Tododia ➡️ https://swiy.co/jyO_
-✅ Una (maquiagem) ➡️ https://swiy.co/jyP0
-✅ Faces (ou FAces - maquiagem) ➡️ https://swiy.co/jyOX
-✅ Homem (ou Linha Homem) ➡️ https://swiy.co/natura-homem
-✅ Sève (ou Seve - óleo corporal) ➡️ https://swiy.co/jyML
-✅ Natura Solar (ou Solar - protetor) ➡️ https://swiy.co/natura-solar
-✅ Plant ➡️ (use link geral Natura se não tiver específico)
-
-📋 LISTA COMPLETA - MARCAS AVON COM LINKS ESPECÍFICOS:
-
-Quando o cliente mencionar QUALQUER uma destas marcas, use o link correspondente:
-
-✅ Color Trend ➡️ https://swiy.co/color-trend
-✅ Power Stay ➡️ https://swiy.co/power-stay
-✅ Renew ➡️ https://swiy.co/renew1
-✅ Avon Care ➡️ https://swiy.co/Avon-Care
-✅ Clearskin ➡️ https://swiy.co/Clearskin
-✅ Advance Techniques ➡️ https://swiy.co/Advance-Techniques
-✅ Far Away ➡️ https://swiy.co/Far-Away
-✅ Segno ➡️ https://swiy.co/Segno
-✅ Avon Encanto ➡️ https://swiy.co/Avon-Encanto
-✅ Disney (ou Stitch, Mickey, Avengers) ➡️ https://swiy.co/jyYr
-
-🎯 REGRA SIMPLES:
-1. Cliente menciona marca? Procure na lista acima
-2. Achou? Use o link específico da marca
-3. Não achou? Use link geral da marca (Natura ou Avon)
+PRODUTOS/LINHAS DA AVON (use links Avon):
+- Color Trend, Power Stay, Renew, Avon Care, Clearskin
+- Advance Techniques, Far Away, Segno, Avon Encanto
+- Stitch, Mickey, Disney (são da Avon!)
+- Se a pessoa pedir qualquer uma destas linhas: use link AVON!
 
 EXEMPLOS CRÍTICOS:
 
@@ -123,20 +92,8 @@ Cliente: "maquiagem una"
 ❌ ERRADO: Link da Avon (Una é NATURA!)
 
 Cliente: "oleo seve" ou "óleo sève"
-✅ CORRETO: "Você pode conferir óleos corporais Sève da Natura aqui: https://swiy.co/jyML 😊"
+✅ CORRETO: "Você pode conferir óleos corporais da Natura aqui: https://swiy.co/jyML 😊"
 ❌ ERRADO: Link da Avon (Sève é NATURA!)
-
-Cliente: "produtos derma" ou "natura derma"
-✅ CORRETO: "Você pode conferir a linha Derma da Natura aqui: https://swiy.co/natura-chronos 😊"
-❌ ERRADO: Link da Avon (Derma é NATURA!)
-
-Cliente: "produtos para homem" ou "linha homem natura"
-✅ CORRETO: "Você pode conferir a linha Homem da Natura aqui: https://swiy.co/natura-homem 😊"
-❌ ERRADO: Link geral (Homem tem link específico!)
-
-Cliente: "protetor solar natura" ou "natura solar"
-✅ CORRETO: "Você pode conferir protetores Natura Solar aqui: https://swiy.co/natura-solar 😊"
-❌ ERRADO: Link geral (Natura Solar tem link específico!)
 
 Cliente: "tem stitch?" ou "produtos disney"
 ✅ CORRETO: "Você pode conferir os produtos Disney da Avon aqui: https://swiy.co/jyYr 😊"
@@ -318,8 +275,6 @@ Marca Bothanica ➡️ https://swiy.co/jyOO
 
 Marca Chronos ➡️ https://swiy.co/jyON
 
-Marca Derma (Natura Derma) ➡️ https://swiy.co/natura-chronos
-
 Marca Crer Pra Ver ➡️ https://swiy.co/jyOT
 
 Marca Ekos ➡️ https://swiy.co/jyOL
@@ -339,10 +294,6 @@ _
 Marca Una ➡️ https://swiy.co/jyP0
 
 Marca FAces ➡️ https://swiy.co/jyOX
-
-Marca/Linha Homem ➡️ https://swiy.co/natura-homem
-
-Marca Natura Solar ➡️ https://swiy.co/natura-solar
 
 Presentes ➡️ https://swiy.co/jyOZ
 
