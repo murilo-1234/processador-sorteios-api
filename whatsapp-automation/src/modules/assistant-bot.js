@@ -172,14 +172,14 @@ async function replyCoupons(sock, jid, showOfertas = true) {
   const ofertasDia = 
     `Ofertas do dia:\n` +
     `🔥 Desconto progressivo Natura ➡️ https://swiy.co/garanto60off-natura\n` +
-    `  O desconto máximo (pode chegar a 60% + Frete Grátis com cupom) acima de 3 a 4 produtos dentre 328 disponíveis.\n` +
+    `  O desconto máximo (pode chegar a 60% + Frete Grátis com cupom +10% cashback) acima de 3 a 4 produtos dentre 328 disponíveis.\n` +
     `🔥 Produtos em promoção ➡️ https://swiy.co/natura-70ou60off\n` +
-    `  723 itens com até 70% OFF e frete grátis aplicando cupom.\n` +
+    `  723 itens com até 70% OFF e frete grátis +10% cashback aplicando cupom.\n` +
     `🔥 Sabonetes Natura em promoção ➡️ https://swiy.co/liquida-sabonetes\n` +
     `🔥 Promoções AVON ➡️ https://swiy.co/loja-avon\n` +
-    `  127 itens com 60% a 70%Off com cupom\n` +
+    `  127 itens com 60% a 70%Off +10% cashback com cupom\n` +
     `🔥 Promoções Disney ➡️ https://swiy.co/disney-promos\n` +
-    `  De 40% a 70%Off em Stitch, Mickey, Homem-aranha, Avengers e mais.`;
+    `  De 40% a 70%Off +10% cashback em Stitch, Mickey, Homem-aranha, Avengers e mais.`;
 
   if (Array.isArray(list) && list.length) {
     const [c1, c2] = list;
