@@ -314,7 +314,7 @@ function replyCashback(sock, jid) {
     `• Se comprar menos que 4x, o saldo é descartado\n\n` +
     `📝 Exemplo:\n` +
     `Se você tem R$ 10,00 de cashback, precisa comprar pelo menos R$ 40,00 para usá-lo.\n\n` +
-    `Consulte seu saldo em "Meus Créditos" no app/site da Natura/Avon 😊`
+    `Consulte seu saldo em "Meu Perfil" no app/site da Natura/Avon 😊`
   );
 }
 
