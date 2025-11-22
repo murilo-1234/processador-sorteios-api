@@ -96,7 +96,7 @@ const SYSTEM_TEXT = loadSystemText();
 // ───────── Intents rápidas (compat) ─────────
 function wantsCoupon(text) {
   const s = String(text || '').toLowerCase();
-  return /\b(cupom|cupon|cupum|cupao|coupon|kupon|coupom|coupoin)s?\b/.test(s);
+  return /\b(cupom|cupon|cupum|cupao|coupon|kupon|coupom|coupoin|codigo|código|code)s?\b/.test(s);
 }
 function wantsPromos(text) {
   const s = String(text || '').toLowerCase();
@@ -127,6 +127,10 @@ function wantsCouponProblem(text) {
 function wantsOrderSupport(text) {
   const s = String(text || '').toLowerCase();
   return /(pedido|compra|encomenda|pacote|entrega|nota fiscal|pagamento|boleto).*(problema|atras|n[aã]o chegou|nao recebi|erro|sumiu|cad[eê])|rastre(i|ei)o|codigo de rastreio|transportadora/.test(s);
+}
+function wantsCashback(text) {
+  const s = String(text || '').toLowerCase();
+  return /\b(cashback|cash[\s-]?back|credito|crédito|dinheiro\s+de\s+volta)\b/.test(s);
 }
 
 // tópico de produto (tolerante) – mantido para compat, embora não haja mais "append" automático
@@ -299,6 +303,21 @@ async function replyBrand(sock, jid, brandName) {
   await replyCoupons(sock, jid);
 }
 
+function replyCashback(sock, jid) {
+  enqueueText(
+    sock, jid,
+    `💰 Como funciona o cashback Natura/Avon:\n\n` +
+    `• Fica disponível em até 10 dias após a entrega\n` +
+    `• Válido por 45 dias (depois expira)\n` +
+    `• Você ganha 10% do valor em cashback\n` +
+    `• Para resgatar: compra mínima de 4x o valor do cashback\n` +
+    `• Se comprar menos que 4x, o saldo é descartado\n\n` +
+    `📝 Exemplo:\n` +
+    `Se você tem R$ 10,00 de cashback, precisa comprar pelo menos R$ 40,00 para usá-lo.\n\n` +
+    `Consulte seu saldo em "Meus Créditos" no app/site da Natura/Avon 😊`
+  );
+}
+
 // ───────── OpenAI (Playground) ─────────
 async function askOpenAI({ prompt, userName, isNewTopic }) {
   const fallback = 'Estou online! Se quiser, posso buscar promoções, cupons ou tirar dúvidas rápidas. 🙂✨';
@@ -439,6 +458,7 @@ function buildUpsertHandler(getSock) {
         if (intent.type === 'order_support'  || wantsOrderSupport(joined))   { replyOrderSupport(sockNow, jid); return; }
         if (intent.type === 'raffle'         || wantsRaffle(joined))         { replyRaffle(sockNow, jid); return; }
         if (intent.type === 'social'         || wantsSocial(joined))         { replySocial(sockNow, jid, joined); return; }
+        if (intent.type === 'cashback'       || wantsCashback(joined))       { replyCashback(sockNow, jid); return; }
         
         // 2) Promoções: descomentado para mostrar lista com 🔥
         if (intent.type === 'promos'         || wantsPromos(joined))         { await replyPromos(sockNow, jid); return; }
