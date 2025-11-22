@@ -96,7 +96,7 @@ const SYSTEM_TEXT = loadSystemText();
 // ───────── Intents rápidas (compat) ─────────
 function wantsCoupon(text) {
   const s = String(text || '').toLowerCase();
-  return /\b(cupom|cupon|cupum|cupao|coupon|kupon|coupom|coupoin)s?\b/.test(s);
+  return /\b(cupom|cupon|cupum|cupao|coupon|kupon|coupom|coupoin|codigo|código|code)s?\b/.test(s);
 }
 function wantsPromos(text) {
   const s = String(text || '').toLowerCase();
