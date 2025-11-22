@@ -458,6 +458,7 @@ function buildUpsertHandler(getSock) {
         if (intent.type === 'order_support'  || wantsOrderSupport(joined))   { replyOrderSupport(sockNow, jid); return; }
         if (intent.type === 'raffle'         || wantsRaffle(joined))         { replyRaffle(sockNow, jid); return; }
         if (intent.type === 'social'         || wantsSocial(joined))         { replySocial(sockNow, jid, joined); return; }
+        console.log('[assistant] TESTE CASHBACK - joined:', joined, 'detected:', wantsCashback(joined));
         if (intent.type === 'cashback'       || wantsCashback(joined))       { replyCashback(sockNow, jid); return; }
         
         // 2) Promoções: descomentado para mostrar lista com 🔥
