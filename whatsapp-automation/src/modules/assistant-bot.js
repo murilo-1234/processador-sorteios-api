@@ -100,7 +100,7 @@ function wantsCoupon(text) {
 }
 function wantsPromos(text) {
   const s = String(text || '').toLowerCase();
-  return /(promo(ç|c)[aã]o|promos?\b|oferta|desconto|liquid(a|ã)c?[aã]o|sale)/i.test(s);
+  return /(promo(ç|c)[aã]o|promos?\b|oferta|pormocao|desconto|liquid(a|ã)c?[aã]o|sale)/i.test(s);
 }
 function wantsRaffle(text) {
   const s = String(text || '').toLowerCase().trim();
