@@ -1,4 +1,4 @@
-Perfi// src/modules/assistant-bot.js
+// src/modules/assistant-bot.js
 // Liga entrada (mensagens 1:1) -> coalesce/greet ->
 // intents (cupons/promos/sorteio/agradecimento/redes/sabonetes/suporte/segurança/marcas)
 // -> OpenAI -> reply-queue
@@ -100,7 +100,7 @@ function wantsCoupon(text) {
 }
 function wantsPromos(text) {
   const s = String(text || '').toLowerCase();
-  return /(promo(ç|c)[aã]o|promos?\b|oferta|pormocao|desconto|liquid(a|ã)c?[aã]o|sale)/i.test(s);
+  return /(promo(ç|c)[aã]o|promos?\b|oferta|desconto|liquid(a|ã)c?[aã]o|sale)/i.test(s);
 }
 function wantsRaffle(text) {
   const s = String(text || '').toLowerCase().trim();
@@ -458,7 +458,6 @@ function buildUpsertHandler(getSock) {
         if (intent.type === 'order_support'  || wantsOrderSupport(joined))   { replyOrderSupport(sockNow, jid); return; }
         if (intent.type === 'raffle'         || wantsRaffle(joined))         { replyRaffle(sockNow, jid); return; }
         if (intent.type === 'social'         || wantsSocial(joined))         { replySocial(sockNow, jid, joined); return; }
-        console.log('[assistant] TESTE CASHBACK - joined:', joined, 'detected:', wantsCashback(joined));
         if (intent.type === 'cashback'       || wantsCashback(joined))       { replyCashback(sockNow, jid); return; }
         
         // 2) Promoções: descomentado para mostrar lista com 🔥
