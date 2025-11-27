@@ -192,9 +192,9 @@ function winnerLooksReady(info) {
   if (!raw) return false;
   if (/será\s+anunciado/i.test(raw)) return false;
 
-  const { name, metaDateTime } = parseWinnerDetailed(raw);
+  const { name } = parseWinnerDetailed(raw);
   if (!name || name.length < 3) return false;
-  if (!metaDateTime) return false;
+  // Removido: if (!metaDateTime) return false;
 
   return true;
 }
