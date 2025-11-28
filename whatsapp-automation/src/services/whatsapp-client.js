@@ -1,4 +1,11 @@
 // whatsapp-automation/src/services/whatsapp-client.js
+// 
+// VERSÃO CORRIGIDA - Mudanças:
+// - Removida reconexão automática interna (agora controlada pelo bots/index.js)
+// - Adicionado callback onConnectionChange para o controlador externo
+// - Melhor tratamento de erros
+// - Mantidas todas as funcionalidades existentes (grupos, QR, pairing, etc)
+
 const fs = require('fs');
 const path = require('path');
 
@@ -14,13 +21,22 @@ class WhatsAppClient {
     this.currentPairingCode = null;
     this.user = null;
 
-    // controles de reconexão
+    // controles de reconexão (mantidos para compatibilidade, mas não usados internamente)
     this.currentRetry = 0;
     this.maxRetries = Number(process.env.WHATSAPP_RETRY_ATTEMPTS || 3);
     this.circuitBreaker = 'CLOSED';
 
+    // NOVO: Callback para notificar mudanças de conexão (usado pelo bots/index.js)
+    this.onConnectionChange = null;
+
+    // NOVO: Último erro para diagnóstico
+    this.lastError = null;
+
     // módulo Baileys (carregado sob demanda para evitar ERR_REQUIRE_ESM)
     this._baileys = null;
+    
+    // NOVO: Flag para evitar inicializações simultâneas
+    this._initializing = false;
   }
 
   async _loadBaileys() {
@@ -32,71 +48,133 @@ class WhatsAppClient {
   }
 
   async initialize() {
-    const B = await this._loadBaileys();
-    const {
-      makeWASocket,
-      Browsers,
-      useMultiFileAuthState,
-      fetchLatestBaileysVersion,
-      DisconnectReason,
-    } = B;
+    // NOVO: Evita inicializações simultâneas
+    if (this._initializing) {
+      console.log('[WhatsAppClient] Já está inicializando, ignorando chamada duplicada');
+      return;
+    }
+    
+    this._initializing = true;
+    
+    try {
+      const B = await this._loadBaileys();
+      const {
+        makeWASocket,
+        Browsers,
+        useMultiFileAuthState,
+        fetchLatestBaileysVersion,
+        DisconnectReason,
+      } = B;
 
-    // garante diretório e RW
-    fs.mkdirSync(this.sessionPath, { recursive: true });
-    const probe = path.join(this.sessionPath, '.__rwtest');
-    fs.writeFileSync(probe, String(Date.now()));
-    fs.rmSync(probe, { force: true });
+      // garante diretório e RW
+      fs.mkdirSync(this.sessionPath, { recursive: true });
+      const probe = path.join(this.sessionPath, '.__rwtest');
+      fs.writeFileSync(probe, String(Date.now()));
+      fs.rmSync(probe, { force: true });
 
-    const { state, saveCreds } = await useMultiFileAuthState(this.sessionPath);
-    const { version } = await fetchLatestBaileysVersion();
-
-    this.sock = makeWASocket({
-      version,
-      auth: state,
-      browser: Browsers.appropriate('Chrome'),
-      printQRInTerminal: false,
-      markOnlineOnConnect: false,
-      // manter histórico completo (quando suportado)
-      syncFullHistory: true,
-    });
-
-    this.sock.ev.on('creds.update', saveCreds);
-
-    this.sock.ev.on('connection.update', (update = {}) => {
-      const { connection, lastDisconnect, qr } = update;
-
-      if (qr) {
-        this.currentQRCode = qr;
-        this.qrCodeGenerated = true;
+      const { state, saveCreds } = await useMultiFileAuthState(this.sessionPath);
+      
+      // MODIFICADO: Tratamento de erro ao buscar versão
+      let version;
+      try {
+        const vRes = await fetchLatestBaileysVersion();
+        version = vRes.version;
+      } catch (e) {
+        console.warn('[WhatsAppClient] Erro ao buscar versão do Baileys, usando padrão:', e?.message);
+        version = [2, 3000, 1015901307];
       }
 
-      if (connection === 'open') {
-        this.isConnected = true;
-        this.user = this.sock?.user || null;
-        this.currentRetry = 0;
-        this.qrCodeGenerated = false;
-        this.currentQRCode = null;
-        this.currentPairingCode = null;
+      // NOVO: Fecha socket anterior se existir (evita conexões duplicadas)
+      if (this.sock) {
+        try {
+          this.sock.end();
+        } catch (_) {}
+        this.sock = null;
       }
 
-      if (connection === 'close') {
-        this.isConnected = false;
-        this.user = null;
+      this.sock = makeWASocket({
+        version,
+        auth: state,
+        browser: Browsers.appropriate('Chrome'),
+        printQRInTerminal: false,
+        markOnlineOnConnect: false,
+        // manter histórico completo (quando suportado)
+        syncFullHistory: true,
+      });
 
-        const code =
-          lastDisconnect?.error?.output?.statusCode ||
-          lastDisconnect?.error?.code;
+      this.sock.ev.on('creds.update', saveCreds);
 
-        const shouldReconnect = code !== DisconnectReason.loggedOut;
+      this.sock.ev.on('connection.update', (update = {}) => {
+        const { connection, lastDisconnect, qr } = update;
 
-        if (shouldReconnect && this.currentRetry < this.maxRetries) {
-          this.currentRetry++;
-          setTimeout(() => this.initialize().catch(() => {}), 1500);
+        if (qr) {
+          this.currentQRCode = qr;
+          this.qrCodeGenerated = true;
         }
-      }
-    });
 
-    await this.tryPairingIfConfigured().catch(() => {});
+        if (connection === 'open') {
+          this.isConnected = true;
+          this.user = this.sock?.user || null;
+          this.currentRetry = 0;
+          this.qrCodeGenerated = false;
+          this.currentQRCode = null;
+          this.currentPairingCode = null;
+          this.lastError = null;
+          
+          // NOVO: Notifica callback externo
+          if (typeof this.onConnectionChange === 'function') {
+            this.onConnectionChange({ status: 'connected', user: this.user });
+          }
+        }
+
+        if (connection === 'close') {
+          this.isConnected = false;
+          this.user = null;
+
+          const error = lastDisconnect?.error;
+          const code =
+            error?.output?.statusCode ||
+            error?.code;
+
+          // NOVO: Guarda o erro para diagnóstico
+          this.lastError = {
+            code,
+            message: error?.message || 'Conexão fechada',
+            isLoggedOut: code === DisconnectReason.loggedOut,
+            isConflict: error?.message?.includes('conflict') || error?.message?.includes('replaced'),
+            isCryptoError: 
+              error?.message?.includes('unable to authenticate') ||
+              error?.message?.includes('Unsupported state') ||
+              error?.message?.includes('bad mac'),
+          };
+
+          // REMOVIDO: Reconexão automática interna
+          // Agora o bots/index.js controla isso de forma inteligente
+          // 
+          // ANTES:
+          // if (shouldReconnect && this.currentRetry < this.maxRetries) {
+          //   this.currentRetry++;
+          //   setTimeout(() => this.initialize().catch(() => {}), 1500);
+          // }
+          //
+          // AGORA: Apenas notifica o callback externo
+
+          // NOVO: Notifica callback externo
+          if (typeof this.onConnectionChange === 'function') {
+            this.onConnectionChange({ 
+              status: 'disconnected', 
+              error: this.lastError,
+              shouldReconnect: code !== DisconnectReason.loggedOut
+            });
+          }
+        }
+      });
+
+      await this.tryPairingIfConfigured().catch(() => {});
+      
+    } finally {
+      this._initializing = false;
+    }
   }
 
   // tenta provocar a emissão de QR logo após reset/init
@@ -132,6 +210,7 @@ class WhatsAppClient {
       isConnected: !!this.isConnected,
       user: this.user,
       currentRetry: this.currentRetry,
+      lastError: this.lastError,  // NOVO: inclui último erro
     };
   }
 
@@ -171,6 +250,7 @@ class WhatsAppClient {
       this.currentPairingCode = null;
       this.user = null;
       this.currentRetry = 0;
+      this.lastError = null;
     } catch (e) {
       console.error('clearSession error:', e?.message || e);
     }
