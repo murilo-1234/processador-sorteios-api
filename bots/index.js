@@ -336,7 +336,7 @@ app.get('/api/instances', basicAuth, (req, res) => {
   res.json({ ok: true, at: now, instances: list });
 });
 
-// QR em SVG (força geração + long-poll)
+// QR em SVG (com auto-refresh se não disponível)
 app.get('/qr/:id', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   const id = req.params.id;
@@ -344,17 +344,37 @@ app.get('/qr/:id', async (req, res) => {
   if (!it) return res.status(404).send('instância não encontrada');
 
   try {
-    // chuta o handshake para nascer QR
-    await it.client.forceQRGeneration?.().catch(()=>{});
-
-    // espera até 25s por um QR (em memória)
+    // Tenta pegar QR do cache imediatamente
     let qr = qrStore.get(id) || it.client.getQRCode?.() || null;
-    for (let i = 0; i < 50 && !qr; i++) {
-      await sleep(500);
-      qr = qrStore.get(id) || it.client.getQRCode?.() || null;
+
+    // Se não tem, espera só 3 segundos (não 25)
+    if (!qr) {
+      await it.client.forceQRGeneration?.().catch(()=>{});
+      for (let i = 0; i < 6 && !qr; i++) {
+        await sleep(500);
+        qr = qrStore.get(id) || it.client.getQRCode?.() || null;
+      }
     }
 
-    if (!qr) return res.status(404).send('QR ainda não disponível');
+    // Se ainda não tem QR, mostra página que atualiza sozinha
+    if (!qr) {
+      res.type('text/html');
+      return res.send(`<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="3">
+<title>Aguardando QR - ${id}</title>
+<style>
+  body{font-family:system-ui;background:#0b1020;color:#e6e9ef;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;flex-direction:column}
+  .loader{border:4px solid #334766;border-top:4px solid #c2ffd2;border-radius:50%;width:40px;height:40px;animation:spin 1s linear infinite;margin-bottom:16px}
+  @keyframes spin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}
+</style>
+</head><body>
+<div class="loader"></div>
+<p>Aguardando QR para ${id}...</p>
+<p style="font-size:12px;color:#99a3b5">Atualizando automaticamente</p>
+</body></html>`);
+    }
 
     const svg = await QRCode.toString(qr, { type: 'svg', margin: 1, width: 264 });
     res.type('image/svg+xml');
