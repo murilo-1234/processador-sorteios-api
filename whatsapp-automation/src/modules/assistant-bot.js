@@ -2,8 +2,13 @@
 // Liga entrada (mensagens 1:1) -> coalesce/greet ->
 // intents (cupons/promos/sorteio/agradecimento/redes/sabonetes/suporte/segurança/marcas)
 // -> OpenAI -> reply-queue
+//
+// VERSÃO CORRIGIDA - Mudanças:
+// - Corrigido carregamento do assistant-system.txt para funcionar de qualquer diretório
+// - Adicionados múltiplos caminhos de fallback
 
 const fs = require('fs');
+const path = require('path');
 const axios = require('axios');
 const { pushIncoming, markGreeted } = require('../services/inbox-state');
 const { enqueueText } = require('../services/reply-queue');
@@ -55,30 +60,46 @@ const LINKS = {
 };
 
 // ====== System instructions ======
+// CORRIGIDO: Função com múltiplos caminhos de fallback
 function loadSystemText() {
-  try {
-    // Tenta ler da variável de ambiente primeiro
-    const file = (process.env.ASSISTANT_SYSTEM_FILE || '').trim();
-    if (file) {
-      const txt = fs.readFileSync(file, 'utf8');
+  // Lista de caminhos possíveis para o arquivo (em ordem de prioridade)
+  const possiblePaths = [
+    // 1. Variável de ambiente (caminho absoluto)
+    process.env.ASSISTANT_SYSTEM_FILE,
+    
+    // 2. Relativo ao módulo atual (quando rodando de whatsapp-automation/)
+    path.join(__dirname, '../config/assistant-system.txt'),
+    
+    // 3. Relativo ao diretório de trabalho (quando rodando de bots/)
+    path.join(process.cwd(), 'whatsapp-automation/src/config/assistant-system.txt'),
+    
+    // 4. Caminho absoluto comum no Render
+    '/opt/render/project/src/whatsapp-automation/src/config/assistant-system.txt',
+    
+    // 5. Caminho relativo alternativo
+    path.join(process.cwd(), 'src/config/assistant-system.txt'),
+    
+    // 6. Outro caminho relativo
+    './whatsapp-automation/src/config/assistant-system.txt',
+  ].filter(Boolean); // Remove valores vazios/undefined
+
+  // Tenta cada caminho
+  for (const filePath of possiblePaths) {
+    try {
+      const txt = fs.readFileSync(filePath, 'utf8');
       if (txt && txt.trim()) {
-        console.log('[assistant] Carregado de ASSISTANT_SYSTEM_FILE:', file);
+        console.log('[assistant] ✅ Carregado de:', filePath);
         return txt.trim();
       }
+    } catch (e) {
+      // Silencioso - tenta o próximo caminho
     }
-    
-    // Se não houver variável, tenta ler do caminho padrão relativo ao módulo
-    const path = require('path');
-    const defaultPath = path.join(__dirname, '../config/assistant-system.txt');
-    const txt = fs.readFileSync(defaultPath, 'utf8');
-    if (txt && txt.trim()) {
-      console.log('[assistant] Carregado do caminho padrão:', defaultPath);
-      return txt.trim();
-    }
-  } catch (e) {
-    console.error('[assistant] ERRO ao carregar system text:', e.message);
-    console.error('[assistant] Caminho tentado:', e.path || 'desconhecido');
   }
+  
+  // Log dos caminhos tentados para debug
+  console.error('[assistant] ❌ Não foi possível carregar assistant-system.txt');
+  console.error('[assistant] Caminhos tentados:');
+  possiblePaths.forEach((p, i) => console.error(`  ${i + 1}. ${p}`));
   
   // Tenta variável de ambiente com texto direto
   const envTxt = (process.env.ASSISTANT_SYSTEM || '').trim();
@@ -88,7 +109,7 @@ function loadSystemText() {
   }
   
   // Fallback - nunca deve chegar aqui se o arquivo existir
-  console.warn('[assistant] ATENÇÃO: Usando texto padrão de fallback (arquivo não foi carregado!)');
+  console.warn('[assistant] ⚠️ ATENÇÃO: Usando texto padrão de fallback (arquivo não foi carregado!)');
   return 'Você é o atendente virtual do Murilo Cerqueira (Natura e Avon). Siga as regras do arquivo assistant-system.txt. Não invente links; use apenas os oficiais com ?consultoria=clubemac.';
 }
 const SYSTEM_TEXT = loadSystemText();
