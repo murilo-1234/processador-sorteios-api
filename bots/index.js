@@ -537,9 +537,17 @@ app.get(['/','/admin'], basicAuth, async (req, res) => {
   </style>
   <script>
     async function doPost(url){
+      // Se for "clear" (limpar sessão), pede confirmação
+      if(url.includes('/clear')){
+        if(!confirm('Tem certeza que deseja limpar a sessão?')) return;
+      }
       const r = await fetch(url,{method:'POST'});
       const j = await r.json().catch(()=>({}));
-      alert(JSON.stringify(j,null,2));
+      // Se for connect ou clear, abre o QR automaticamente
+      if(j.ok && (url.includes('/connect') || url.includes('/clear'))){
+        const id = url.split('/api/')[1]?.split('/')[0];
+        if(id) window.open('/qr/'+id, '_blank');
+      }
       location.reload();
     }
     setInterval(()=>location.reload(), 8000);
