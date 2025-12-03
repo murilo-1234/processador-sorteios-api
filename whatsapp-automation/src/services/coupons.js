@@ -1,121 +1,162 @@
 const axios = require('axios');
-const cheerio = require('cheerio');
 
-// Palavras comuns que NÃO são cupom
-const BLACKLIST = new Set([
-  'VEJA', 'MEUS', 'CUPOM', 'CUPONS', 'SORTEIO', 'ENTRE', 'ATENDIMENTO',
-  'ENVIE', 'HOJE', 'VALIDO', 'VÁLIDO', 'PROCURE', 'AJUDA', 'PROBLEMAS',
-  'LINK', 'SITE', 'NATURA', 'MURILO'
-]);
+// ============================================
+// CONFIGURAÇÃO - AGORA USA API JSON
+// ============================================
 
-// Config (com defaults seguros)
-const SOURCE_URL = process.env.COUPONS_SOURCE_URL || 'https://clubemac.com.br/cupons/';
+// Nova API de cupons (muito mais rápida e confiável que scraping)
+const API_URL = process.env.COUPONS_API_URL || 'https://natura-client-automation-1.onrender.com/api/cupons';
 const DEFAULT_COUPON = String(process.env.DEFAULT_COUPON || 'CLUBEMAC').toUpperCase();
-const CACHE_TTL = Math.max(30, Number(process.env.COUPONS_CACHE_TTL_SECONDS || 600) | 0) * 1000; // ms
-const RETRIES = Math.max(0, Number(process.env.COUPONS_RETRY_ATTEMPTS || 2) | 0);
+const CACHE_TTL = Math.max(30, Number(process.env.COUPONS_CACHE_TTL_SECONDS || 300) | 0) * 1000; // 5 min default
 
 // Cache simples em memória
-let _cache = { ts: 0, list: [] };
+let _cache = { ts: 0, list: [], destaque: null, segundo: null };
 function _now() { return Date.now(); }
 
-async function _downloadHtml() {
-  const { data } = await axios.get(SOURCE_URL, {
-    timeout: 15000,
+/**
+ * Busca cupons da API JSON
+ * Retorna: { cupons_ativos, destaque, segundo, total_cupons, ... }
+ */
+async function _fetchFromAPI() {
+  const { data } = await axios.get(API_URL, {
+    timeout: 10000,
     headers: {
-      'User-Agent': 'Mozilla/5.0 (compatible; SorteiosBot/1.0)',
-      'Accept': 'text/html'
+      'Accept': 'application/json',
+      'User-Agent': 'WhatsAppAutomation/1.0'
     }
   });
-  return String(data || '');
-}
-
-async function _fetchWithRetry() {
-  let lastErr = null;
-  for (let i = 0; i <= RETRIES; i++) {
-    try { return await _downloadHtml(); }
-    catch (e) { lastErr = e; }
-  }
-  throw lastErr || new Error('fetch coupons failed');
+  return data;
 }
 
 /**
- * Extrai até `max` cupons a partir do HTML do Clubemac.
- * Prioriza padrões "PEGA*" e faz fallback para códigos em caixa alta (4–5 letras) filtrando blacklist.
+ * Busca cupons com retry
+ */
+async function _fetchWithRetry(retries = 2) {
+  let lastErr = null;
+  for (let i = 0; i <= retries; i++) {
+    try { 
+      return await _fetchFromAPI(); 
+    }
+    catch (e) { 
+      lastErr = e;
+      console.log(`[COUPONS] Tentativa ${i + 1} falhou: ${e.message}`);
+    }
+  }
+  throw lastErr || new Error('fetch coupons API failed');
+}
+
+/**
+ * Busca até `max` cupons da API
+ * Prioriza: destaque, segundo, depois os demais
  */
 async function fetchCoupons(max = 2) {
-  // cache
   const now = _now();
-  if (_cache.ts && now - _cache.ts < CACHE_TTL && Array.isArray(_cache.list)) {
+  
+  // Verifica cache
+  if (_cache.ts && now - _cache.ts < CACHE_TTL && Array.isArray(_cache.list) && _cache.list.length > 0) {
+    console.log(`[COUPONS] Cache hit - ${_cache.list.length} cupons`);
     return _cache.list.slice(0, Math.max(1, max));
   }
 
   try {
-    const html = await _fetchWithRetry();
-    const $ = cheerio.load(html);
-
-    // 1) Tenta capturar a partir de atributos/comuns de "copiar cupom"
+    console.log(`[COUPONS] Buscando da API: ${API_URL}`);
+    const apiData = await _fetchWithRetry();
+    
+    // Extrair cupons da resposta
+    const cuponsAtivos = apiData.cupons_ativos || [];
+    const destaque = apiData.destaque;
+    const segundo = apiData.segundo;
+    
+    // Montar lista ordenada (destaque primeiro, depois segundo, depois os demais)
     const ordered = [];
     const seen = new Set();
-    const pushOrdered = (code) => {
-      const c = String(code || '').toUpperCase().trim();
-      if (!c) return;
-      if (BLACKLIST.has(c)) return;
-      // Aceita SOMENTE 4–5 letras, evita capturar partes de palavras
-      if (!/^[A-Z]{4,5}$/.test(c)) return;
-      if (!seen.has(c)) { seen.add(c); ordered.push(c); }
+    
+    const addCoupon = (code) => {
+      if (!code) return;
+      const c = String(code).toUpperCase().trim();
+      if (!seen.has(c)) {
+        seen.add(c);
+        ordered.push(c);
+      }
     };
-
-    $('[data-clipboard-text], [data-copy], [data-coupon-code], .coupon-code, code').each((_i, el) => {
-      const v =
-        $(el).attr('data-clipboard-text') ||
-        $(el).attr('data-copy') ||
-        $(el).attr('data-coupon-code') ||
-        $(el).text();
-      const s = String(v || '').trim().toUpperCase();
-      // Só empurra se já for exatamente 4–5 letras
-      if (/^[A-Z]{4,5}$/.test(s)) pushOrdered(s);
-    });
-
-    // 2) Varredura por padrão "PEGA*"
-    const text = $('body').text().toUpperCase();
-    const pegaMatches = [...text.matchAll(/\bPEGA[A-Z0-9]{1,8}\b/g)].map(m => m[0]);
-    for (const c of pegaMatches) pushOrdered(c);
-
-    if (ordered.length < max) {
-      // 3) Fallback genérico: 4–5 letras com fronteira Unicode (sem lookbehind, compatível)
-      const generic = [...text.matchAll(/(?:^|\P{L})([A-Z]{4,5})(?=$|\P{L})/gu)].map(m => m[1]);
-      for (const c of generic) pushOrdered(c);
+    
+    // Prioridade: destaque > segundo > demais
+    if (destaque) addCoupon(destaque);
+    if (segundo) addCoupon(segundo);
+    
+    // Adiciona os demais cupons
+    for (const cupom of cuponsAtivos) {
+      addCoupon(cupom.codigo);
     }
-
-    const list = ordered.slice(0, Math.max(1, max));
-    if (list.length) {
-      _cache = { ts: now, list: ordered };
-      return list;
+    
+    if (ordered.length > 0) {
+      _cache = { 
+        ts: now, 
+        list: ordered,
+        destaque: destaque,
+        segundo: segundo
+      };
+      console.log(`[COUPONS] Encontrados ${ordered.length} cupons: ${ordered.slice(0, 3).join(', ')}...`);
+      return ordered.slice(0, Math.max(1, max));
     }
-  } catch (_) {
-    // ignora e cai no fallback
+    
+  } catch (err) {
+    console.error(`[COUPONS] Erro ao buscar API: ${err.message}`);
   }
 
-  // Fallback final
-  _cache = { ts: now, list: [DEFAULT_COUPON] };
+  // Fallback: retorna cupom padrão
+  console.log(`[COUPONS] Usando fallback: ${DEFAULT_COUPON}`);
+  _cache = { ts: now, list: [DEFAULT_COUPON], destaque: DEFAULT_COUPON, segundo: null };
   return [DEFAULT_COUPON].slice(0, Math.max(1, max));
 }
 
-/** Retorna os cupons em texto amigável, ex.: "PEGAP" ou "PEGAP ou PEGAQ" */
+/**
+ * Retorna cupons em texto amigável
+ * Ex.: "CASAA" ou "CASAA ou CASAB"
+ */
 async function fetchCouponsText(max = 2, sep = ' ou ') {
   const list = await fetchCoupons(max);
   return list.length > 1 ? `${list[0]}${sep}${list[1]}` : list[0];
 }
 
-/** Retrocompat: devolve só o 1º cupom (mantém quem já usa) */
+/**
+ * Retorna apenas o primeiro cupom (destaque)
+ */
 async function fetchFirstCoupon() {
   const list = await fetchCoupons(1);
   return list[0];
+}
+
+/**
+ * Retorna dados completos da API (para uso avançado)
+ */
+async function fetchCouponsData() {
+  try {
+    return await _fetchWithRetry();
+  } catch (err) {
+    return {
+      cupons_ativos: [{ codigo: DEFAULT_COUPON, desconto: 15, disponivel: 50 }],
+      destaque: DEFAULT_COUPON,
+      segundo: null,
+      total_cupons: 1
+    };
+  }
+}
+
+/**
+ * Limpa o cache (força nova busca)
+ */
+function clearCache() {
+  _cache = { ts: 0, list: [], destaque: null, segundo: null };
+  console.log('[COUPONS] Cache limpo');
 }
 
 module.exports = {
   fetchCoupons,
   fetchCouponsText,
   fetchFirstCoupon,
-  fetchTopCoupons: fetchCoupons // alias p/ compat com post-winner.js e assistant-bot.js
+  fetchCouponsData,
+  clearCache,
+  // Aliases para compatibilidade
+  fetchTopCoupons: fetchCoupons
 };
