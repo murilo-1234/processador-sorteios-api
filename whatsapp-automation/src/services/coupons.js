@@ -7,10 +7,11 @@ const axios = require('axios');
 // Nova API de cupons (muito mais rápida e confiável que scraping)
 const API_URL = process.env.COUPONS_API_URL || 'https://natura-client-automation-1.onrender.com/api/cupons';
 const DEFAULT_COUPON = String(process.env.DEFAULT_COUPON || 'CLUBEMAC').toUpperCase();
-const CACHE_TTL = Math.max(30, Number(process.env.COUPONS_CACHE_TTL_SECONDS || 300) | 0) * 1000; // 5 min default
+const CACHE_TTL = Math.max(30, Number(process.env.COUPONS_CACHE_TTL_SECONDS || 300) | 0) * 1000; // 5 min normal
+const CACHE_TTL_EMERGENCY = 24 * 60 * 60 * 1000; // 24 horas se API falhar
 
 // Cache simples em memória
-let _cache = { ts: 0, list: [], destaque: null, segundo: null };
+let _cache = { ts: 0, list: [], destaque: null, segundo: null, fromAPI: false };
 function _now() { return Date.now(); }
 
 /**
@@ -48,11 +49,12 @@ async function _fetchWithRetry(retries = 2) {
 /**
  * Busca até `max` cupons da API
  * Prioriza: destaque, segundo, depois os demais
+ * Se API falhar, usa cache por até 24h
  */
 async function fetchCoupons(max = 2) {
   const now = _now();
   
-  // Verifica cache
+  // Verifica cache normal (5 min)
   if (_cache.ts && now - _cache.ts < CACHE_TTL && Array.isArray(_cache.list) && _cache.list.length > 0) {
     console.log(`[COUPONS] Cache hit - ${_cache.list.length} cupons`);
     return _cache.list.slice(0, Math.max(1, max));
@@ -94,19 +96,27 @@ async function fetchCoupons(max = 2) {
         ts: now, 
         list: ordered,
         destaque: destaque,
-        segundo: segundo
+        segundo: segundo,
+        fromAPI: true  // Marcador: veio da API
       };
-      console.log(`[COUPONS] Encontrados ${ordered.length} cupons: ${ordered.slice(0, 3).join(', ')}...`);
+      console.log(`[COUPONS] ✅ Encontrados ${ordered.length} cupons: ${ordered.slice(0, 3).join(', ')}...`);
       return ordered.slice(0, Math.max(1, max));
     }
     
   } catch (err) {
-    console.error(`[COUPONS] Erro ao buscar API: ${err.message}`);
+    console.error(`[COUPONS] ❌ Erro ao buscar API: ${err.message}`);
+    
+    // === CACHE DE EMERGÊNCIA (24h) ===
+    if (_cache.ts && _cache.fromAPI && now - _cache.ts < CACHE_TTL_EMERGENCY && _cache.list.length > 0) {
+      const idadeMin = Math.round((now - _cache.ts) / 60000);
+      console.log(`[COUPONS] ⚠️ Usando cache de emergência (${idadeMin} min atrás): ${_cache.list.slice(0, 2).join(', ')}`);
+      return _cache.list.slice(0, Math.max(1, max));
+    }
   }
 
-  // Fallback: retorna cupom padrão
-  console.log(`[COUPONS] Usando fallback: ${DEFAULT_COUPON}`);
-  _cache = { ts: now, list: [DEFAULT_COUPON], destaque: DEFAULT_COUPON, segundo: null };
+  // Fallback final: retorna cupom padrão
+  console.log(`[COUPONS] 🔄 Usando fallback: ${DEFAULT_COUPON}`);
+  _cache = { ts: now, list: [DEFAULT_COUPON], destaque: DEFAULT_COUPON, segundo: null, fromAPI: false };
   return [DEFAULT_COUPON].slice(0, Math.max(1, max));
 }
 
@@ -147,7 +157,7 @@ async function fetchCouponsData() {
  * Limpa o cache (força nova busca)
  */
 function clearCache() {
-  _cache = { ts: 0, list: [], destaque: null, segundo: null };
+  _cache = { ts: 0, list: [], destaque: null, segundo: null, fromAPI: false };
   console.log('[COUPONS] Cache limpo');
 }
 
