@@ -5,7 +5,7 @@ module.exports = [
 🔍 Veja o resultado completo:
 🔗 {{RESULT_URL}}
 
-📲 Me chame no WhatsApp: (48) 99178-4533 – vale até hoje.
+📲 Me chame no WhatsApp: (48) 99116-7973 – vale até hoje.
 ⚠️ Se não aparecer, refazemos com o mesmo prêmio.
 
 🤩🎁 *GANHE um BRINDE da Natura Friday*. É TOP! Veja👇
@@ -25,7 +25,7 @@ https://swiy.co/brinde-natura
 
 📄 Transparência total: {{RESULT_URL}}
 
-📲 Me chame no WhatsApp: (48) 99178-4533 – vale até hoje.
+📲 Me chame no WhatsApp: (48) 99116-7973 – vale até hoje.
 ⚠️ Se não aparecer, refazemos com o mesmo prêmio.
 
 😱 *SABONETES só R$ 4 cada na Natura FRIDAY +cashback*. Use meu cupom {{COUPON}}. Pega👇
@@ -46,7 +46,7 @@ Parabéns, {{WINNER}}! 👏🎁
 📌 Confira a página oficial do sorteio:
 {{RESULT_URL}}
 
-📲 Dúvidas? (48) 99178-4533
+📲 Dúvidas? (48) 99116-7973
 ⚠️ Sem resposta, faremos novo sorteio do mesmo prêmio.
 
 🔥 *PROMO da BLACK FRIDAY do dia*: use {{COUPON}}. TOPs com 60% OFF + Cashback + frete grátis👇
@@ -65,7 +65,7 @@ https://swiy.co/natura-70ou60off
 Veja tudo (participantes, regras e transparência):
 👉 {{RESULT_URL}}
 
-💬 Chama no Whats para combinar a entrega do prêmio: (48) 99178-4533 - tem que chamar hoje.
+💬 Chama no Whats para combinar a entrega do prêmio: (48) 99116-7973 - tem que chamar hoje.
 
 ⚡ *PROMO RELÂMPAGO Natura Friday - 79 itens com 60%Off +Cashback* com meu cupom {{COUPON}}👇
 https://swiy.co/natura-70ou60off
@@ -85,7 +85,7 @@ Parabéns, {{WINNER}}! Você foi a sortuda do dia!
 🔎 Resultado completo e auditoria:
 {{RESULT_URL}}
 
-☎️ Me procure até hoje no Whatsapp: (48) 99178-4533
+☎️ Me procure até hoje no Whatsapp: (48) 99116-7973
 ℹ️ Sem retorno hoje, a gente refaz o sorteio.
 
 💪 *🚨GARANTO 50%Off +cashback com meu cupom* {{COUPON}} em 328 itens acima 3 ou 4 itens do link👇
@@ -105,7 +105,7 @@ Aewww... Parabéns {{WINNER}}!
 Confira a página oficial do sorteio:
 🔗 {{RESULT_URL}}
 
-📣 Fale comigo no WhatsApp (48) 99178-4533 — válido hoje.
+📣 Fale comigo no WhatsApp (48) 99116-7973 — válido hoje.
 🔁 Sem contato, rola novo sorteio com o mesmo prêmio.
 
 🔥 *17 NOVOS na Natura Friday RELÂMPAGO +cashback*. Use meu cupom {{COUPON}}👇
@@ -126,7 +126,7 @@ https://swiy.co/relampago-natura
 📃 Transparência total (participantes e regras):
 {{RESULT_URL}}
 
-📣 Fale comigo no WhatsApp (48) 99178-4533 — válido hoje.
+📣 Fale comigo no WhatsApp (48) 99116-7973 — válido hoje.
 🔁 Sem contato, rola novo sorteio com o mesmo prêmio.
 
 🔥 *🚨Vários EKOS, KAIAK, UNA e ESSENCIAL com 70%Off +cashback* com meu cupom {{COUPON}}👇
@@ -147,7 +147,7 @@ https://swiy.co/natura-70ou60off
 🔍 Veja a página do resultado com 100% de transparência:
 {{RESULT_URL}}
 
-☎️ Ganhadora me chama no Whats: (48) 99178-4533 – tem que falar hoje.
+☎️ Ganhadora me chama no Whats: (48) 99116-7973 – tem que falar hoje.
 🔄 Sem retorno, reposto o prêmio.
 
 🎁 *👏PRESENTES até 70%Off na Natura Friday* com meu cupom {{COUPON}} +cashback. Compre Natal antes para economizar👇
