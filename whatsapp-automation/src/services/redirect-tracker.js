@@ -5,7 +5,7 @@
 const database = require('../config/database');
 
 const REDIRECT_ENABLED = String(process.env.REDIRECT_ENABLED || '0') === '1';
-const REDIRECT_PHONE   = process.env.REDIRECT_PHONE || '5548991591707';
+const REDIRECT_PHONE   = process.env.REDIRECT_PHONE || '5548991784533';
 
 // Cache em memória: jid -> { notifiedAt, msgCount }
 const cache = new Map();
