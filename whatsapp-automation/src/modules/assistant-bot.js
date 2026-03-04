@@ -483,8 +483,11 @@ function buildUpsertHandler(getSock) {
         if (isRedirectMode) {
           try {
             if (!redirectTracker.wasNotified(jid)) {
+              // Primeiro contato: SÓ o aviso de redirect, nada mais
               enqueueText(sockNow, jid, redirectTracker.getFullRedirectMessage());
               await redirectTracker.markNotified(jid);
+              redirectTracker.incrementMessageCount(jid);
+              return; // <-- não processa mais nada
             }
             redirectTracker.incrementMessageCount(jid);
           } catch (e) { console.error('[redirect] intercept error:', e?.message); }
@@ -495,20 +498,24 @@ function buildUpsertHandler(getSock) {
         // 0) segurança
         if (intent.type === 'security') { enqueueText(sockNow, jid, securityReply()); return; }
 
-        // 1) atalhos essenciais (mantidos por serem críticos/rápidos)
-        if (intent.type === 'thanks' || wantsThanks(joined))                 { replyThanks(sockNow, jid); return; }
-        if (intent.type === 'coupon_problem' || wantsCouponProblem(joined))  { replyCouponProblem(sockNow, jid); return; }
-        if (intent.type === 'order_support'  || wantsOrderSupport(joined))   { replyOrderSupport(sockNow, jid); return; }
-        if (intent.type === 'raffle'         || wantsRaffle(joined))         { replyRaffle(sockNow, jid); return; }
-        if (intent.type === 'social'         || wantsSocial(joined))         { replySocial(sockNow, jid, joined); return; }
-        if (intent.type === 'cashback'       || wantsCashback(joined))       { replyCashback(sockNow, jid); return; }
-        
-        // 2) Promoções: descomentado para mostrar lista com 🔥
-        if (intent.type === 'promos'         || wantsPromos(joined))         { await replyPromos(sockNow, jid); return; }
-        
-        // 3) COMENTADO: Cupons, sabonetes e marcas agora passam pelo OpenAI
-        //    para usar o arquivo assistant-system.txt completo (com 2 links de cupom)
-        if (intent.type === 'coupon'         || wantsCoupon(joined))         { await replyCoupons(sockNow, jid); return; }
+        // Em modo redirect: pular TODOS os atalhos hardcoded (respostas longas)
+        // e ir direto pro OpenAI com regras de brevidade
+        if (!isRedirectMode) {
+          // 1) atalhos essenciais (mantidos por serem críticos/rápidos)
+          if (intent.type === 'thanks' || wantsThanks(joined))                 { replyThanks(sockNow, jid); return; }
+          if (intent.type === 'coupon_problem' || wantsCouponProblem(joined))  { replyCouponProblem(sockNow, jid); return; }
+          if (intent.type === 'order_support'  || wantsOrderSupport(joined))   { replyOrderSupport(sockNow, jid); return; }
+          if (intent.type === 'raffle'         || wantsRaffle(joined))         { replyRaffle(sockNow, jid); return; }
+          if (intent.type === 'social'         || wantsSocial(joined))         { replySocial(sockNow, jid, joined); return; }
+          if (intent.type === 'cashback'       || wantsCashback(joined))       { replyCashback(sockNow, jid); return; }
+
+          // 2) Promoções: descomentado para mostrar lista com 🔥
+          if (intent.type === 'promos'         || wantsPromos(joined))         { await replyPromos(sockNow, jid); return; }
+
+          // 3) COMENTADO: Cupons, sabonetes e marcas agora passam pelo OpenAI
+          //    para usar o arquivo assistant-system.txt completo (com 2 links de cupom)
+          if (intent.type === 'coupon'         || wantsCoupon(joined))         { await replyCoupons(sockNow, jid); return; }
+        }
         // if (intent.type === 'soap'           || wantsSoap(joined))           { await replySoap(sockNow, jid); return; }
         // if (intent.type === 'brand')                                           { await replyBrand(sockNow, jid, intent.data.name); return; }
 
