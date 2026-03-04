@@ -75,13 +75,15 @@ async function incrementMessageCount(jid) {
 // ───────── Mensagens ─────────
 function getFullRedirectMessage() {
   return (
-    `📢 *Aviso importante!*\n\n` +
-    `Nosso número de atendimento mudou!\n` +
+    `📢 Aviso importante!\n\n` +
+    `Meu número de atendimento mudou!\n` +
     `O novo número é: https://wa.me/${REDIRECT_PHONE}\n\n` +
     `Por favor, salve o novo contato para continuar recebendo\n` +
     `nossas ofertas, cupons e novidades. 😊\n\n` +
     `Ainda posso te ajudar por aqui, mas em breve\n` +
-    `este número será desativado.`
+    `este número será desativado.\n\n` +
+    `Mais informações: https://www.muriloconsultor.com.br/\n\n` +
+    `Bjos\nMurilo Cerqueira`
   );
 }
 

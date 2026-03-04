@@ -472,50 +472,47 @@ function buildUpsertHandler(getSock) {
       const rawName = (m.pushName || '').trim();
       const hadMedia = hasMedia(m);
 
+      // ── Redirect mode: SÓ a mensagem fixa, bypass TOTAL ──
+      // Não entra no pushIncoming, sem intents, sem OpenAI, sem cupons, sem NADA
+      if (redirectTracker?.isEnabled()) {
+        const sockNow = getSock();
+        if (sockNow) {
+          try {
+            if (!redirectTracker.wasNotified(jid)) {
+              enqueueText(sockNow, jid, redirectTracker.getFullRedirectMessage());
+              await redirectTracker.markNotified(jid);
+            }
+            redirectTracker.incrementMessageCount(jid);
+          } catch (e) { console.error('[redirect] error:', e?.message); }
+        }
+        return; // pipeline inteiro pulado
+      }
+
       pushIncoming(jid, text, async (batch, ctx) => {
         const sockNow = getSock();
         if (!sockNow) return;
 
         const joined = batch.join(' ').trim();
 
-        // ── Redirect interceptor ──
-        const isRedirectMode = !!(redirectTracker?.isEnabled());
-        if (isRedirectMode) {
-          try {
-            if (!redirectTracker.wasNotified(jid)) {
-              // Primeiro contato: SÓ o aviso de redirect, nada mais
-              enqueueText(sockNow, jid, redirectTracker.getFullRedirectMessage());
-              await redirectTracker.markNotified(jid);
-              redirectTracker.incrementMessageCount(jid);
-              return; // <-- não processa mais nada
-            }
-            redirectTracker.incrementMessageCount(jid);
-          } catch (e) { console.error('[redirect] intercept error:', e?.message); }
-        }
-
         const intent = detectIntent ? detectIntent(joined) : { type: null, data: null };
 
         // 0) segurança
         if (intent.type === 'security') { enqueueText(sockNow, jid, securityReply()); return; }
 
-        // Em modo redirect: pular TODOS os atalhos hardcoded (respostas longas)
-        // e ir direto pro OpenAI com regras de brevidade
-        if (!isRedirectMode) {
-          // 1) atalhos essenciais (mantidos por serem críticos/rápidos)
-          if (intent.type === 'thanks' || wantsThanks(joined))                 { replyThanks(sockNow, jid); return; }
-          if (intent.type === 'coupon_problem' || wantsCouponProblem(joined))  { replyCouponProblem(sockNow, jid); return; }
-          if (intent.type === 'order_support'  || wantsOrderSupport(joined))   { replyOrderSupport(sockNow, jid); return; }
-          if (intent.type === 'raffle'         || wantsRaffle(joined))         { replyRaffle(sockNow, jid); return; }
-          if (intent.type === 'social'         || wantsSocial(joined))         { replySocial(sockNow, jid, joined); return; }
-          if (intent.type === 'cashback'       || wantsCashback(joined))       { replyCashback(sockNow, jid); return; }
+        // 1) atalhos essenciais (mantidos por serem críticos/rápidos)
+        if (intent.type === 'thanks' || wantsThanks(joined))                 { replyThanks(sockNow, jid); return; }
+        if (intent.type === 'coupon_problem' || wantsCouponProblem(joined))  { replyCouponProblem(sockNow, jid); return; }
+        if (intent.type === 'order_support'  || wantsOrderSupport(joined))   { replyOrderSupport(sockNow, jid); return; }
+        if (intent.type === 'raffle'         || wantsRaffle(joined))         { replyRaffle(sockNow, jid); return; }
+        if (intent.type === 'social'         || wantsSocial(joined))         { replySocial(sockNow, jid, joined); return; }
+        if (intent.type === 'cashback'       || wantsCashback(joined))       { replyCashback(sockNow, jid); return; }
 
-          // 2) Promoções: descomentado para mostrar lista com 🔥
-          if (intent.type === 'promos'         || wantsPromos(joined))         { await replyPromos(sockNow, jid); return; }
+        // 2) Promoções: descomentado para mostrar lista com 🔥
+        if (intent.type === 'promos'         || wantsPromos(joined))         { await replyPromos(sockNow, jid); return; }
 
-          // 3) COMENTADO: Cupons, sabonetes e marcas agora passam pelo OpenAI
-          //    para usar o arquivo assistant-system.txt completo (com 2 links de cupom)
-          if (intent.type === 'coupon'         || wantsCoupon(joined))         { await replyCoupons(sockNow, jid); return; }
-        }
+        // 3) COMENTADO: Cupons, sabonetes e marcas agora passam pelo OpenAI
+        //    para usar o arquivo assistant-system.txt completo (com 2 links de cupom)
+        if (intent.type === 'coupon'         || wantsCoupon(joined))         { await replyCoupons(sockNow, jid); return; }
         // if (intent.type === 'soap'           || wantsSoap(joined))           { await replySoap(sockNow, jid); return; }
         // if (intent.type === 'brand')                                           { await replyBrand(sockNow, jid, intent.data.name); return; }
 
@@ -538,7 +535,7 @@ function buildUpsertHandler(getSock) {
           prompt: joined,
           userName: (nameUtils && nameUtils.pickDisplayName ? nameUtils.pickDisplayName(rawName) : rawName),
           isNewTopic: isNewTopicForAI,
-          isRedirectMode,
+          isRedirectMode: false,
         });
 
         // Substituição de {{CUPOM}} — sem anexos extras
@@ -547,13 +544,6 @@ function buildUpsertHandler(getSock) {
         if (out && out.trim()) {
           enqueueText(sockNow, jid, out.trim());
           if (ctx.shouldGreet && !GREET_TEXT && !(RULE_GREETING_ON && nameUtils)) markGreeted(jid);
-        }
-
-        // Footer de lembrete (chega ~8s após a resposta do bot)
-        if (isRedirectMode && redirectTracker) {
-          setTimeout(() => {
-            try { enqueueText(sockNow, jid, redirectTracker.getFooter()); } catch (_) {}
-          }, 8000);
         }
 
         // Sem "failsafe append" e sem menu extra — Playground controla todo o conteúdo
