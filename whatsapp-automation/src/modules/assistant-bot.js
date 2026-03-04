@@ -25,6 +25,8 @@ let nameUtils = null;
 try { nameUtils = require('../services/name-utils'); } catch (_) {}
 let heuristics = null;
 try { heuristics = require('../services/heuristics'); } catch (_) {}
+let redirectTracker = null;
+try { redirectTracker = require('../services/redirect-tracker'); } catch (_) {}
 
 const ASSISTANT_ENABLED = String(process.env.ASSISTANT_ENABLED || '0') === '1';
 const OPENAI_API_KEY    = process.env.OPENAI_API_KEY || '';
@@ -340,7 +342,7 @@ function replyCashback(sock, jid) {
 }
 
 // ───────── OpenAI (Playground) ─────────
-async function askOpenAI({ prompt, userName, isNewTopic }) {
+async function askOpenAI({ prompt, userName, isNewTopic, isRedirectMode }) {
   const fallback = 'Estou online! Se quiser, posso buscar promoções, cupons ou tirar dúvidas rápidas. 🙂✨';
   if (!OPENAI_API_KEY) return fallback;
 
@@ -399,7 +401,15 @@ async function askOpenAI({ prompt, userName, isNewTopic }) {
     '  - Natural e conversacional',
     '  - SEM variáveis técnicas',
     '  - SEM informações de debug',
-    '  - Apenas a mensagem para o cliente'
+    '  - Apenas a mensagem para o cliente',
+    ...(isRedirectMode ? [
+      '',
+      '⚡ MODO SUNSET (número sendo desativado):',
+      '  - Respostas CURTAS, máx 2-3 frases',
+      '  - Vá direto ao ponto, sem enrolação',
+      '  - NÃO liste todas as promoções — dê no máximo 1 link relevante',
+      '  - O cliente já foi avisado para migrar para o novo número',
+    ] : []),
   ].join('\n');
 
   try {
@@ -468,6 +478,18 @@ function buildUpsertHandler(getSock) {
 
         const joined = batch.join(' ').trim();
 
+        // ── Redirect interceptor ──
+        const isRedirectMode = !!(redirectTracker?.isEnabled());
+        if (isRedirectMode) {
+          try {
+            if (!redirectTracker.wasNotified(jid)) {
+              enqueueText(sockNow, jid, redirectTracker.getFullRedirectMessage());
+              await redirectTracker.markNotified(jid);
+            }
+            redirectTracker.incrementMessageCount(jid);
+          } catch (e) { console.error('[redirect] intercept error:', e?.message); }
+        }
+
         const intent = detectIntent ? detectIntent(joined) : { type: null, data: null };
 
         // 0) segurança
@@ -508,7 +530,8 @@ function buildUpsertHandler(getSock) {
         const rawOut = await askOpenAI({
           prompt: joined,
           userName: (nameUtils && nameUtils.pickDisplayName ? nameUtils.pickDisplayName(rawName) : rawName),
-          isNewTopic: isNewTopicForAI
+          isNewTopic: isNewTopicForAI,
+          isRedirectMode,
         });
 
         // Substituição de {{CUPOM}} — sem anexos extras
@@ -517,6 +540,13 @@ function buildUpsertHandler(getSock) {
         if (out && out.trim()) {
           enqueueText(sockNow, jid, out.trim());
           if (ctx.shouldGreet && !GREET_TEXT && !(RULE_GREETING_ON && nameUtils)) markGreeted(jid);
+        }
+
+        // Footer de lembrete (chega ~8s após a resposta do bot)
+        if (isRedirectMode && redirectTracker) {
+          setTimeout(() => {
+            try { enqueueText(sockNow, jid, redirectTracker.getFooter()); } catch (_) {}
+          }, 8000);
         }
 
         // Sem "failsafe append" e sem menu extra — Playground controla todo o conteúdo
@@ -532,6 +562,12 @@ function buildUpsertHandler(getSock) {
 function attachAssistant(appInstance) {
   if (!ASSISTANT_ENABLED) { console.log('[assistant] disabled (ASSISTANT_ENABLED!=1)'); return; }
   console.log('[assistant] enabled (rewire:', REWIRE_MODE, ', interval:', REWIRE_INTERVAL_MS, ')');
+
+  // Redirect: init tabela SQLite (se ativado)
+  if (redirectTracker?.isEnabled()) {
+    redirectTracker.ensureTable().catch(e => console.error('[redirect] init:', e?.message));
+    console.log('[assistant] redirect mode ENABLED');
+  }
 
   const getSock = () =>
     (appInstance?.waAdmin?.getSock && appInstance.waAdmin.getSock()) ||

@@ -21,6 +21,8 @@ let attachAssistant = null;
 try {
   ({ attachAssistant } = require('../whatsapp-automation/src/modules/assistant-bot'));
 } catch {}
+let redirectTracker = null;
+try { redirectTracker = require('../whatsapp-automation/src/services/redirect-tracker'); } catch {}
 
 // ---------- Config ----------
 const PORT = process.env.PORT || 10000;
@@ -445,6 +447,17 @@ app.post('/api/reconnect-all', basicAuth, async (req, res) => {
   }
   
   res.json({ ok: true, results });
+});
+
+// Redirect stats
+app.get('/api/redirect/stats', basicAuth, async (req, res) => {
+  if (!redirectTracker) return res.json({ ok: false, error: 'redirect-tracker not loaded' });
+  try {
+    const stats = await redirectTracker.getStats();
+    res.json({ ok: true, ...stats });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message });
+  }
 });
 
 // página simples (protegida se ADMIN_* definidos)
