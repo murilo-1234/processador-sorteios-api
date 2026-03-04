@@ -478,10 +478,8 @@ function buildUpsertHandler(getSock) {
         const sockNow = getSock();
         if (sockNow) {
           try {
-            if (!redirectTracker.wasNotified(jid)) {
-              enqueueText(sockNow, jid, redirectTracker.getFullRedirectMessage());
-              await redirectTracker.markNotified(jid);
-            }
+            enqueueText(sockNow, jid, redirectTracker.getFullRedirectMessage());
+            if (!redirectTracker.wasNotified(jid)) await redirectTracker.markNotified(jid);
             redirectTracker.incrementMessageCount(jid);
           } catch (e) { console.error('[redirect] error:', e?.message); }
         }
