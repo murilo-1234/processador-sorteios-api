@@ -4,30 +4,27 @@
 // Sem OpenAI, sem intents, sem SQLite, sem redirect-tracker.
 
 const MENSAGEM_FIXA = [
-  '📢 Aviso importante!',
+  '\u{1F4E2} Aviso importante!',
   '',
-  'Meu número de atendimento mudou!',
-  'O novo número é: https://wa.me/5548991784533',
+  'Meu n\u00famero de atendimento mudou!',
+  'O novo n\u00famero \u00e9: https://wa.me/5548991784533',
   '',
   'Por favor, salve o novo contato para continuar recebendo',
-  'nossas ofertas, cupons e novidades. 😊',
+  'nossas ofertas, cupons e novidades. \u{1F60A}',
   '',
   'Ainda posso te ajudar por aqui, mas em breve',
-  'este número será desativado.',
+  'este n\u00famero ser\u00e1 desativado.',
   '',
-  'Mais informações: https://www.muriloconsultor.com.br/',
+  'Mais informa\u00e7\u00f5es: https://www.muriloconsultor.com.br/',
   '',
   'Bjos',
   'Murilo Cerqueira',
 ].join('\n');
 
 // Cooldown em ms: não responde ao mesmo JID dentro desse intervalo
-// (evita spam se a pessoa mandar 5 msgs rápido)
-// Padrão: 60s. Configurável via ENV.
 const COOLDOWN_MS = Math.max(10000, Number(process.env.AUTORESPONDER_COOLDOWN_MS || 60000));
 
-// Map global: jid -> timestamp do último envio (compartilhado entre instâncias)
-// Se pessoa manda msg pro bot1, NÃO recebe de novo do bot2 dentro do cooldown.
+// Map global: jid -> timestamp do último envio
 const lastSent = new Map();
 
 // Limpa entradas antigas a cada 10 min
@@ -45,10 +42,12 @@ function isFromMe(msg) { return !!msg?.key?.fromMe; }
 function buildUpsertHandler(getSock, label) {
   return async (ev) => {
     try {
-      // CRÍTICO: só processa mensagens novas (notify)
-      // Ignora append (histórico) — era a causa do loop infinito
-      if (ev?.type !== 'notify') return;
+      // Filtra histórico (append) mas aceita notify E undefined
+      // (versões antigas do Baileys não têm ev.type)
+      if (ev?.type === 'append') return;
       if (!ev?.messages?.length) return;
+
+      console.log('[autoresponder:' + label + '] upsert type=' + (ev?.type || 'undefined') + ' msgs=' + ev.messages.length);
 
       for (const m of ev.messages) {
         const jid = m?.key?.remoteJid;
@@ -57,30 +56,32 @@ function buildUpsertHandler(getSock, label) {
         if (isGroup(jid)) continue;
         if (isStatus(jid)) continue;
 
-        // Cooldown: já respondeu recentemente?
+        // Cooldown
         const now = Date.now();
         const last = lastSent.get(jid) || 0;
-        if (now - last < COOLDOWN_MS) continue;
+        if (now - last < COOLDOWN_MS) {
+          console.log('[autoresponder:' + label + '] cooldown ' + jid);
+          continue;
+        }
 
-        // Marca ANTES de enviar (previne race condition)
         lastSent.set(jid, now);
 
         const sock = getSock();
         if (!sock) {
-          console.warn(`[autoresponder:${label}] sem socket`);
+          console.warn('[autoresponder:' + label + '] sem socket');
           continue;
         }
 
         try {
           await sock.sendMessage(jid, { text: MENSAGEM_FIXA });
-          console.log(`[autoresponder:${label}] ✅ ${jid}`);
+          console.log('[autoresponder:' + label + '] enviado ' + jid);
         } catch (e) {
-          console.error(`[autoresponder:${label}] erro ${jid}:`, e?.message || e);
-          lastSent.delete(jid); // remove cooldown para tentar de novo
+          console.error('[autoresponder:' + label + '] erro ' + jid + ': ' + (e?.message || e));
+          lastSent.delete(jid);
         }
       }
     } catch (e) {
-      console.error(`[autoresponder:${label}] erro geral:`, e?.message || e);
+      console.error('[autoresponder:' + label + '] erro geral: ' + (e?.message || e));
     }
   };
 }
@@ -88,17 +89,22 @@ function buildUpsertHandler(getSock, label) {
 // ───────── Wire-up (idempotente por instância) ─────────
 function attachAssistant(appInstance) {
   const client = appInstance?.whatsappClient;
-  if (!client) return;
+  if (!client) {
+    console.warn('[autoresponder] client nulo, ignorando');
+    return;
+  }
 
-  // IDEMPOTENTE: se já anexou a este client, só re-wira ao socket atual
+  const label = (client.sessionPath || '').split(/[/\]/).pop() || '?';
+
+  // IDEMPOTENTE: se já anexou, só re-wira ao socket atual
   if (client.__ar_attached) {
+    console.log('[autoresponder:' + label + '] re-wire (já anexado)');
     if (client.__ar_ensureWired) client.__ar_ensureWired();
     return;
   }
   client.__ar_attached = true;
 
-  const label = client.sessionPath?.split(/[/\]/).pop() || '?';
-  console.log(`[autoresponder:${label}] ativado (cooldown ${COOLDOWN_MS}ms)`);
+  console.log('[autoresponder:' + label + '] ATIVADO (cooldown ' + COOLDOWN_MS + 'ms)');
 
   const getSock = () => client?.sock;
 
@@ -116,7 +122,6 @@ function attachAssistant(appInstance) {
     if (!sock?.ev?.on) return false;
     if (currentSockRef === sock && handler) return true;
 
-    // Remove listener do socket anterior
     if (currentSockRef && handler) {
       offSafe(currentSockRef, 'messages.upsert', handler);
     }
@@ -124,7 +129,7 @@ function attachAssistant(appInstance) {
     handler = buildUpsertHandler(getSock, label);
     sock.ev.on('messages.upsert', handler);
     currentSockRef = sock;
-    console.log(`[autoresponder:${label}] wired`);
+    console.log('[autoresponder:' + label + '] WIRED ao socket');
     return true;
   };
 
@@ -134,10 +139,8 @@ function attachAssistant(appInstance) {
     if (sock !== currentSockRef) wireToSock(sock);
   };
 
-  // Salva referência para chamadas subsequentes
   client.__ar_ensureWired = ensureWired;
 
-  // Conecta agora e verifica a cada 10s
   ensureWired();
   setInterval(() => { try { ensureWired(); } catch (_) {} }, 10000);
 }
