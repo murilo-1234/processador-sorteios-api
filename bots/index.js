@@ -257,12 +257,13 @@ function setupEventListeners(ref) {
         if (jid.endsWith('@g.us')) return;
         if (jid === 'status@broadcast') return;
 
-        // Cooldown: só responde 1x por pessoa a cada 60s
+        // Cooldown: só responde 1x por pessoa POR INSTÂNCIA a cada 60s
+        const cooldownKey = `${ref.id}:${jid}`;
         const now = Date.now();
-        const lastSent = arSent.get(jid) || 0;
+        const lastSent = arSent.get(cooldownKey) || 0;
         if (now - lastSent < AR_COOLDOWN) return;
 
-        arSent.set(jid, now);
+        arSent.set(cooldownKey, now);
         await sock.sendMessage(jid, { text: AR_MSG });
         console.log(`[${ref.id}] RESPONDIDO -> ${jid.split('@')[0]}`);
       } catch (e) {
