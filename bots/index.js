@@ -17,30 +17,31 @@ const QRCode = require('qrcode');
 
 // Reuso do seu código existente
 const WhatsAppClient = require('../whatsapp-automation/src/services/whatsapp-client');
-// ===== AUTO-RESPONDER =====
-var AR_MSG =
-  '\u{1F4E2} Aviso importante!\n\n' +
-  'Meu n\u00famero de atendimento mudou!\n' +
-  'O novo n\u00famero \u00e9: https://wa.me/5548991784533\n\n' +
-  'Por favor, salve o novo contato para continuar recebendo\n' +
-  'nossas ofertas, cupons e novidades. \u{1F60A}\n\n' +
-  'Ainda posso te ajudar por aqui, mas em breve\n' +
-  'este n\u00famero ser\u00e1 desativado.\n\n' +
-  'Mais informa\u00e7\u00f5es: https://www.muriloconsultor.com.br/\n\n' +
-  'Bjos\nMurilo Cerqueira';
-var AR_COOLDOWN = 60000;
-var arSent = new Map();
-setInterval(function(){var n=Date.now();arSent.forEach(function(t,j){if(n-t>3600000)arSent.delete(j)})},600000);
-// ===========================
+// ========== AUTO-RESPONDER (mensagem fixa) ==========
+const AR_MSG = `📢 Aviso importante!
 
-// autoresponder inline (sem modulo externo)
+Meu número de atendimento mudou!
+O novo número é: https://wa.me/5548991784533
+
+Por favor, salve o novo contato para continuar recebendo
+nossas ofertas, cupons e novidades. 😊
+
+Ainda posso te ajudar por aqui, mas em breve
+este número será desativado.
+
+Mais informações: https://www.muriloconsultor.com.br/
+
+Bjos
+Murilo Cerqueira`;
+
+const AR_COOLDOWN = 60 * 1000; // 60 segundos
+const arSent = new Map(); // jid -> timestamp do último envio
 
 // ---------- Config ----------
 const PORT = process.env.PORT || 10000;
 const TZ = process.env.TZ || 'America/Sao_Paulo';
 const ADMIN_USER = process.env.ADMIN_USER || '';
 const ADMIN_PASS = process.env.ADMIN_PASSWORD || process.env.ADMIN_PASS || '';
-
 const WA_SESSION_BASE = process.env.WA_SESSION_BASE || './data/baileys-bots';
 
 // NOVO: Configurações de conexão controlada
@@ -144,10 +145,8 @@ async function initializeInstance(ref) {
   try {
     await ref.client.initialize();
     
-    // Configura listeners de eventos
+    // Configura listeners de eventos (connection + auto-responder)
     setupEventListeners(ref);
-    
-    // autoresponder via setupEventListeners
 
     return ref;
   } catch (e) {
@@ -189,7 +188,7 @@ async function clearAndReinitialize(ref) {
   }
 }
 
-// NOVO: Configura listeners de eventos do Baileys
+// Configura listeners de eventos do Baileys (connection + auto-responder)
 function setupEventListeners(ref) {
   try {
     const sock = ref.client.sock;
@@ -197,88 +196,84 @@ function setupEventListeners(ref) {
 
     // Remove listeners anteriores para evitar duplicação
     sock.ev.removeAllListeners?.('connection.update');
+    sock.ev.removeAllListeners?.('messages.upsert');
 
+    // ---- Connection updates ----
     sock.ev.on('connection.update', (u) => {
-      // Atualiza QR
       if (u?.qr) {
         qrStore.set(ref.id, u.qr);
         ref.state = 'waiting_qr';
       }
 
-      // Conexão aberta com sucesso
       if (u?.connection === 'open') {
         qrStore.delete(ref.id);
         ref.state = 'connected';
-        ref.reconnectAttempts = 0; // Reset das tentativas
+        ref.reconnectAttempts = 0;
         ref.lastError = null;
         console.log(`[${ref.id}] ✅ Conectado com sucesso!`);
       }
 
-      // Conexão fechada
       if (u?.connection === 'close') {
         const error = u?.lastDisconnect?.error;
         const statusCode = error?.output?.statusCode || error?.code;
-        
+
         ref.lastError = `Desconectado (código: ${statusCode || 'desconhecido'})`;
         console.log(`[${ref.id}] ❌ ${ref.lastError}`);
 
-        // Se foi logout (401), não reconecta automaticamente
         if (statusCode === 401) {
           console.log(`[${ref.id}] Logout detectado. Sessão invalidada.`);
           ref.state = 'logged_out';
           return;
         }
 
-        // Se foi conflito, espera mais tempo antes de reconectar
         if (isConflictError(error)) {
           console.log(`[${ref.id}] Conflito de sessão detectado. Aguardando mais tempo...`);
-          ref.reconnectAttempts = Math.max(ref.reconnectAttempts, 3); // Força delay maior
+          ref.reconnectAttempts = Math.max(ref.reconnectAttempts, 3);
         }
 
-        // Se sessão corrompida, limpa e pede QR novo
         if (isCorruptedSessionError(error)) {
           clearAndReinitialize(ref);
           return;
         }
 
-        // Agenda reconexão normal
         ref.state = 'disconnected';
         scheduleReconnect(ref);
       }
     });
 
-
-    // ===== AUTO-RESPONDER =====
-    try{sock.ev.removeAllListeners('messages.upsert')}catch(x){}
-    sock.ev.on('messages.upsert', async function(ev) {
+    // ---- Auto-responder (mensagem fixa) ----
+    sock.ev.on('messages.upsert', async (ev) => {
       try {
-        if(ev&&ev.type==='append') return;
-        if(!ev||!ev.messages||!ev.messages.length) return;
-        for(var i=0;i<ev.messages.length;i++){
-          var m=ev.messages[i];
-          var jid=m&&m.key&&m.key.remoteJid;
-          if(!jid) continue;
-          if(m.key.fromMe) continue;
-          if(jid.endsWith('@g.us')) continue;
-          if(jid==='status@broadcast') continue;
-          var now=Date.now();
-          var last=arSent.get(jid)||0;
-          if(now-last<AR_COOLDOWN) continue;
-          arSent.set(jid, now);
-          try{
-            await sock.sendMessage(jid, {text: AR_MSG});
-            console.log('['+ref.id+'] RESPONDIDO -> '+jid);
-          }catch(se){
-            console.error('['+ref.id+'] envio erro: '+(se&&se.message||se));
-            arSent.delete(jid);
-          }
-        }
-      }catch(e){console.error('['+ref.id+'] upsert erro: '+(e&&e.message||e))}
+        // Ignorar histórico (sync inicial)
+        if (ev?.type === 'append') return;
+
+        if (!ev?.messages?.length) return;
+        const msg = ev.messages[0];
+        const jid = msg?.key?.remoteJid;
+
+        // Ignorar: mensagens próprias, grupos, status
+        if (!jid) return;
+        if (msg?.key?.fromMe) return;
+        if (jid.endsWith('@g.us')) return;
+        if (jid === 'status@broadcast') return;
+
+        // Cooldown: só responde 1x por pessoa a cada 60s
+        const now = Date.now();
+        const lastSent = arSent.get(jid) || 0;
+        if (now - lastSent < AR_COOLDOWN) return;
+
+        arSent.set(jid, now);
+        await sock.sendMessage(jid, { text: AR_MSG });
+        console.log(`[${ref.id}] RESPONDIDO -> ${jid.split('@')[0]}`);
+      } catch (e) {
+        console.error(`[${ref.id}] auto-responder erro:`, e?.message || e);
+      }
     });
-    console.log('['+ref.id+'] listeners+autoresponder OK');
+
+    console.log(`[${ref.id}] listeners+autoresponder OK`);
 
   } catch (e) {
-    console.warn('['+ref.id+'] setup erro:', e&&e.message);
+    console.warn(`[${ref.id}] Erro ao configurar listeners:`, e?.message);
   }
 }
 
@@ -481,8 +476,6 @@ app.post('/api/reconnect-all', basicAuth, async (req, res) => {
   
   res.json({ ok: true, results });
 });
-
-
 
 // página simples (protegida se ADMIN_* definidos)
 app.get(['/','/admin'], basicAuth, async (req, res) => {
