@@ -17,19 +17,30 @@ const QRCode = require('qrcode');
 
 // Reuso do seu código existente
 const WhatsAppClient = require('../whatsapp-automation/src/services/whatsapp-client');
-let attachAssistant = null;
-try {
-  ({ attachAssistant } = require('../whatsapp-automation/src/modules/assistant-bot'));
-} catch {}
-let redirectTracker = null;
-try { redirectTracker = require('../whatsapp-automation/src/services/redirect-tracker'); } catch {}
+// ===== AUTO-RESPONDER =====
+var AR_MSG =
+  '\u{1F4E2} Aviso importante!\n\n' +
+  'Meu n\u00famero de atendimento mudou!\n' +
+  'O novo n\u00famero \u00e9: https://wa.me/5548991784533\n\n' +
+  'Por favor, salve o novo contato para continuar recebendo\n' +
+  'nossas ofertas, cupons e novidades. \u{1F60A}\n\n' +
+  'Ainda posso te ajudar por aqui, mas em breve\n' +
+  'este n\u00famero ser\u00e1 desativado.\n\n' +
+  'Mais informa\u00e7\u00f5es: https://www.muriloconsultor.com.br/\n\n' +
+  'Bjos\nMurilo Cerqueira';
+var AR_COOLDOWN = 60000;
+var arSent = new Map();
+setInterval(function(){var n=Date.now();arSent.forEach(function(t,j){if(n-t>3600000)arSent.delete(j)})},600000);
+// ===========================
+
+// autoresponder inline (sem modulo externo)
 
 // ---------- Config ----------
 const PORT = process.env.PORT || 10000;
 const TZ = process.env.TZ || 'America/Sao_Paulo';
 const ADMIN_USER = process.env.ADMIN_USER || '';
 const ADMIN_PASS = process.env.ADMIN_PASSWORD || process.env.ADMIN_PASS || '';
-const ASSISTANT_ENABLED = String(process.env.ASSISTANT_ENABLED || '1') === '1';
+
 const WA_SESSION_BASE = process.env.WA_SESSION_BASE || './data/baileys-bots';
 
 // NOVO: Configurações de conexão controlada
@@ -136,15 +147,7 @@ async function initializeInstance(ref) {
     // Configura listeners de eventos
     setupEventListeners(ref);
     
-    // Anexa assistente se habilitado
-    if (attachAssistant && ASSISTANT_ENABLED) {
-      try { 
-        attachAssistant({ whatsappClient: ref.client }); 
-        console.log(`[${ref.id}] Assistente anexado`);
-      } catch (e) {
-        console.warn(`[${ref.id}] Erro ao anexar assistente:`, e?.message);
-      }
-    }
+    // autoresponder via setupEventListeners
 
     return ref;
   } catch (e) {
@@ -244,8 +247,38 @@ function setupEventListeners(ref) {
       }
     });
 
+
+    // ===== AUTO-RESPONDER =====
+    try{sock.ev.removeAllListeners('messages.upsert')}catch(x){}
+    sock.ev.on('messages.upsert', async function(ev) {
+      try {
+        if(ev&&ev.type==='append') return;
+        if(!ev||!ev.messages||!ev.messages.length) return;
+        for(var i=0;i<ev.messages.length;i++){
+          var m=ev.messages[i];
+          var jid=m&&m.key&&m.key.remoteJid;
+          if(!jid) continue;
+          if(m.key.fromMe) continue;
+          if(jid.endsWith('@g.us')) continue;
+          if(jid==='status@broadcast') continue;
+          var now=Date.now();
+          var last=arSent.get(jid)||0;
+          if(now-last<AR_COOLDOWN) continue;
+          arSent.set(jid, now);
+          try{
+            await sock.sendMessage(jid, {text: AR_MSG});
+            console.log('['+ref.id+'] RESPONDIDO -> '+jid);
+          }catch(se){
+            console.error('['+ref.id+'] envio erro: '+(se&&se.message||se));
+            arSent.delete(jid);
+          }
+        }
+      }catch(e){console.error('['+ref.id+'] upsert erro: '+(e&&e.message||e))}
+    });
+    console.log('['+ref.id+'] listeners+autoresponder OK');
+
   } catch (e) {
-    console.warn(`[${ref.id}] Erro ao configurar listeners:`, e?.message);
+    console.warn('['+ref.id+'] setup erro:', e&&e.message);
   }
 }
 
@@ -449,16 +482,7 @@ app.post('/api/reconnect-all', basicAuth, async (req, res) => {
   res.json({ ok: true, results });
 });
 
-// Redirect stats
-app.get('/api/redirect/stats', basicAuth, async (req, res) => {
-  if (!redirectTracker) return res.json({ ok: false, error: 'redirect-tracker not loaded' });
-  try {
-    const stats = await redirectTracker.getStats();
-    res.json({ ok: true, ...stats });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e?.message });
-  }
-});
+
 
 // página simples (protegida se ADMIN_* definidos)
 app.get(['/','/admin'], basicAuth, async (req, res) => {
