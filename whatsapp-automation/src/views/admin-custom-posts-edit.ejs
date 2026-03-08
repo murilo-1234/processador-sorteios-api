@@ -49,37 +49,37 @@
         
         <div class="form-group">
           <label>✍️ TEXTO 1 (obrigatório):</label>
-          <textarea name="texto_1" maxlength="650" required 
+          <textarea name="texto_1" maxlength="4000" required
                     oninput="updateCounter(this, 'counter1')"><%= post.TEXTO_1 %></textarea>
-          <span id="counter1" class="textarea-counter"><%= post.TEXTO_1.length %>/650</span>
+          <span id="counter1" class="textarea-counter"><%= post.TEXTO_1.length %>/4000</span>
         </div>
         
         <div class="form-group">
           <label>✍️ TEXTO 2 (obrigatório):</label>
-          <textarea name="texto_2" maxlength="650" required 
+          <textarea name="texto_2" maxlength="4000" required
                     oninput="updateCounter(this, 'counter2')"><%= post.TEXTO_2 %></textarea>
-          <span id="counter2" class="textarea-counter"><%= post.TEXTO_2.length %>/650</span>
+          <span id="counter2" class="textarea-counter"><%= post.TEXTO_2.length %>/4000</span>
         </div>
         
         <div class="form-group">
           <label>✍️ TEXTO 3 (obrigatório):</label>
-          <textarea name="texto_3" maxlength="650" required 
+          <textarea name="texto_3" maxlength="4000" required
                     oninput="updateCounter(this, 'counter3')"><%= post.TEXTO_3 %></textarea>
-          <span id="counter3" class="textarea-counter"><%= post.TEXTO_3.length %>/650</span>
+          <span id="counter3" class="textarea-counter"><%= post.TEXTO_3.length %>/4000</span>
         </div>
         
         <div class="form-group">
           <label>✍️ TEXTO 4 (obrigatório):</label>
-          <textarea name="texto_4" maxlength="650" required 
+          <textarea name="texto_4" maxlength="4000" required
                     oninput="updateCounter(this, 'counter4')"><%= post.TEXTO_4 %></textarea>
-          <span id="counter4" class="textarea-counter"><%= post.TEXTO_4.length %>/650</span>
+          <span id="counter4" class="textarea-counter"><%= post.TEXTO_4.length %>/4000</span>
         </div>
         
         <div class="form-group">
           <label>✍️ TEXTO 5 (obrigatório):</label>
-          <textarea name="texto_5" maxlength="650" required 
+          <textarea name="texto_5" maxlength="4000" required
                     oninput="updateCounter(this, 'counter5')"><%= post.TEXTO_5 %></textarea>
-          <span id="counter5" class="textarea-counter"><%= post.TEXTO_5.length %>/650</span>
+          <span id="counter5" class="textarea-counter"><%= post.TEXTO_5.length %>/4000</span>
         </div>
         
         <div class="form-group">
@@ -100,7 +100,7 @@
   
   <script>
     function updateCounter(textarea, counterId) {
-      document.getElementById(counterId).textContent = textarea.value.length + '/650';
+      document.getElementById(counterId).textContent = textarea.value.length + '/4000';
     }
   </script>
 </body>

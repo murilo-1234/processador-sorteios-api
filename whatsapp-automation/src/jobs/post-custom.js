@@ -262,14 +262,23 @@ async function runOnce(app, opts = {}) {
           ? { video: mediaBuffer, mimetype: post.mediaType }
           : { image: mediaBuffer, mimetype: post.mediaType };
 
-        const payload = { ...media, caption };
         const opts = BAILEYS_LINK_PREVIEW_OFF ? { linkPreview: false } : undefined;
+        const CAPTION_LIMIT = 1024;
 
         if (!dryRun) {
-          await sock.sendMessage(proximoGrupo, payload, opts);
+          if (caption.length <= CAPTION_LIMIT) {
+            // Texto curto: imagem + legenda juntos (comportamento original)
+            const payload = { ...media, caption };
+            await sock.sendMessage(proximoGrupo, payload, opts);
+          } else {
+            // Texto longo: imagem primeiro, depois texto separado
+            await sock.sendMessage(proximoGrupo, media, opts);
+            await new Promise(r => setTimeout(r, 1500));
+            await sock.sendMessage(proximoGrupo, { text: caption }, opts);
+          }
           await ledger.commit(ik);
           sent++;
-          console.log(`✅ [post-custom] Postado!`);
+          console.log(`✅ [post-custom] Postado! (${caption.length} chars${caption.length > CAPTION_LIMIT ? ', split mode' : ''})`);
         }
 
         post.postedSet.add(proximoGrupo);
