@@ -14,6 +14,7 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const QRCode = require('qrcode');
+const { startVivinoReviewsWorker } = require('./vivino_reviews_worker');
 
 // Reuso do seu código existente
 const WhatsAppClient = require('../whatsapp-automation/src/services/whatsapp-client');
@@ -599,4 +600,7 @@ app.get(['/','/admin'], basicAuth, async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`[bots] online on :${PORT} TZ=${TZ} instances=${WA_INSTANCE_IDS.join(',')}`);
+  startVivinoReviewsWorker().catch((e) => {
+    console.error('[vivino-worker] falha ao iniciar:', e?.message || e);
+  });
 });
