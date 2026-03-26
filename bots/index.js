@@ -586,6 +586,384 @@ app.get('/api/vivino/metrics.txt', basicAuth, async (req, res) => {
   }
 });
 
+app.get('/admin/vivino', basicAuth, (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Painel Vivino</title>
+  <style>
+    :root{
+      --bg:#090f1a;
+      --bg-soft:#111b2a;
+      --card:#162338;
+      --line:#2a3f60;
+      --text:#e9f0fb;
+      --muted:#9eb1cc;
+      --ok:#24c36b;
+      --warn:#f7b955;
+      --err:#ff6a6a;
+      --accent:#4cc9f0;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial,sans-serif;
+      background:
+        radial-gradient(1200px 480px at 10% -20%, #1d3557 0%, transparent 55%),
+        radial-gradient(900px 420px at 90% -30%, #143a52 0%, transparent 50%),
+        var(--bg);
+      color:var(--text);
+      padding:20px;
+    }
+    .wrap{max-width:1400px;margin:0 auto}
+    .top{
+      display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;
+      margin-bottom:16px
+    }
+    .title h1{margin:0;font-size:24px;letter-spacing:.2px}
+    .title p{margin:4px 0 0;color:var(--muted);font-size:13px}
+    .controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    .controls input,.controls button,.controls a{
+      border:1px solid var(--line);
+      background:var(--bg-soft);
+      color:var(--text);
+      border-radius:10px;
+      padding:8px 10px;
+      font-size:13px;
+      text-decoration:none;
+    }
+    .controls button{cursor:pointer}
+    .cards{
+      display:grid;
+      grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
+      gap:12px;
+      margin-bottom:14px;
+    }
+    .card{
+      background:linear-gradient(180deg,#182841 0%, #142236 100%);
+      border:1px solid var(--line);
+      border-radius:14px;
+      padding:12px;
+      box-shadow:0 8px 22px rgba(3,6,12,.28);
+    }
+    .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+    .v{font-size:24px;font-weight:700;margin-top:6px}
+    .sub{font-size:12px;color:var(--muted);margin-top:5px}
+    .ok{color:var(--ok)}
+    .warn{color:var(--warn)}
+    .err{color:var(--err)}
+    .grid{
+      display:grid;
+      grid-template-columns:1.3fr .7fr;
+      gap:12px;
+    }
+    .panel{
+      background:linear-gradient(180deg,#16243a 0%, #111e31 100%);
+      border:1px solid var(--line);
+      border-radius:14px;
+      padding:12px;
+      margin-bottom:12px;
+    }
+    .panel h2{margin:0 0 10px;font-size:15px}
+    .progress-shell{
+      width:100%;height:14px;background:#0b1422;border:1px solid var(--line);
+      border-radius:999px;overflow:hidden;
+    }
+    .progress-bar{
+      height:100%;
+      background:linear-gradient(90deg,#00b4d8 0%, #48cae4 50%, #90e0ef 100%);
+      width:0%;
+      transition:width .5s ease;
+    }
+    .cols{
+      display:grid;
+      grid-template-columns:repeat(3,minmax(0,1fr));
+      gap:8px;
+      margin-top:10px;
+    }
+    .mini{
+      background:#0f1a2a;border:1px solid #223655;border-radius:10px;padding:8px;
+      font-size:12px;color:var(--muted)
+    }
+    .mini b{display:block;color:var(--text);font-size:15px;margin-top:3px}
+    .chart{
+      display:flex;
+      align-items:flex-end;
+      gap:3px;
+      height:150px;
+      background:#0f1a2a;
+      border:1px solid #243a5d;
+      border-radius:10px;
+      padding:8px 8px 6px;
+      overflow-x:auto;
+    }
+    .bar{
+      min-width:10px;
+      border-radius:3px 3px 0 0;
+      background:linear-gradient(180deg,#4cc9f0 0%, #4361ee 100%);
+      opacity:.9;
+    }
+    .bar.day{
+      min-width:16px;
+      background:linear-gradient(180deg,#80ed99 0%, #57cc99 100%);
+    }
+    .legend{font-size:11px;color:var(--muted);margin-top:6px}
+    table{
+      width:100%;
+      border-collapse:collapse;
+      font-size:12px;
+    }
+    th,td{
+      text-align:left;
+      border-bottom:1px solid #253b5f;
+      padding:8px 6px;
+      vertical-align:top;
+    }
+    th{color:#b6c7de;font-weight:600}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .evt{max-height:380px;overflow:auto}
+    .dim{color:var(--muted)}
+    .footer{font-size:12px;color:var(--muted);margin-top:8px}
+    @media (max-width:1100px){
+      .grid{grid-template-columns:1fr}
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div class="title">
+        <h1>Painel Vivino Worker</h1>
+        <p>Acompanhamento em tempo real com histórico por hora/dia e timeline de eventos</p>
+      </div>
+      <div class="controls">
+        <label class="dim">Horas:
+          <input id="hours" type="number" min="6" max="168" value="48" style="width:72px"/>
+        </label>
+        <label class="dim">Dias:
+          <input id="days" type="number" min="7" max="120" value="30" style="width:72px"/>
+        </label>
+        <button id="apply">Aplicar</button>
+        <a href="/api/vivino/metrics" target="_blank">JSON</a>
+        <a href="/api/vivino/metrics.txt" target="_blank">TXT</a>
+        <a href="/admin">Voltar</a>
+      </div>
+    </div>
+
+    <div class="cards">
+      <div class="card"><div class="k">Progresso</div><div id="cProgress" class="v">-</div><div id="cProgressSub" class="sub">-</div></div>
+      <div class="card"><div class="k">Pendentes</div><div id="cPending" class="v">-</div><div id="cPendingSub" class="sub">-</div></div>
+      <div class="card"><div class="k">Velocidade (1h)</div><div id="cRate1h" class="v">-</div><div id="cRate1hSub" class="sub">-</div></div>
+      <div class="card"><div class="k">Velocidade (24h)</div><div id="cRate24h" class="v">-</div><div id="cRate24hSub" class="sub">-</div></div>
+      <div class="card"><div class="k">ETA</div><div id="cEta" class="v">-</div><div id="cEtaSub" class="sub">-</div></div>
+      <div class="card"><div class="k">Worker</div><div id="cWorker" class="v">-</div><div id="cWorkerSub" class="sub">-</div></div>
+    </div>
+
+    <div class="grid">
+      <div>
+        <div class="panel">
+          <h2>Passo a Passo do Lote</h2>
+          <div class="progress-shell"><div id="batchBar" class="progress-bar"></div></div>
+          <div class="cols">
+            <div class="mini">Lote atual<b id="mBatch">-</b></div>
+            <div class="mini">OK / Retry<b id="mOkRetry">-</b></div>
+            <div class="mini">Fase / Ciclo<b id="mPhase">-</b></div>
+            <div class="mini">Rate batch<b id="mRateBatch">-</b></div>
+            <div class="mini">Rate global<b id="mRateGlobal">-</b></div>
+            <div class="mini">Reviews rows<b id="mRows">-</b></div>
+          </div>
+          <div id="mUpdated" class="footer">Atualizado: -</div>
+        </div>
+
+        <div class="panel">
+          <h2>Histórico por Hora (vinhos concluídos)</h2>
+          <div id="hourlyChart" class="chart"></div>
+          <div class="legend">Cada barra representa 1 hora. Janela configurável (6-168h).</div>
+        </div>
+
+        <div class="panel">
+          <h2>Histórico por Dia (vinhos concluídos)</h2>
+          <div id="dailyChart" class="chart"></div>
+          <div class="legend">Cada barra representa 1 dia. Janela configurável (7-120d).</div>
+        </div>
+      </div>
+
+      <div>
+        <div class="panel">
+          <h2>Top Pendentes por Ratings</h2>
+          <div style="overflow:auto;max-height:260px">
+            <table>
+              <thead><tr><th>ID</th><th>Ratings</th><th>Reviews DB</th></tr></thead>
+              <tbody id="pendingRows"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Eventos Recentes (timeline)</h2>
+          <div class="evt">
+            <table>
+              <thead><tr><th>Hora</th><th>Stage</th><th>Mensagem</th></tr></thead>
+              <tbody id="eventRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const state = { hourly: 48, daily: 30, timer: null, loading: false };
+    const fmt = new Intl.NumberFormat('pt-BR');
+    const fmt1 = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 1 });
+    const fmt2 = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 2 });
+
+    function byId(id){ return document.getElementById(id); }
+    function toNum(v){ const n = Number(v); return Number.isFinite(n) ? n : 0; }
+    function human(v){ return fmt.format(toNum(v)); }
+    function pct(v){ return Number.isFinite(v) ? v.toFixed(2) + '%' : 'n/a'; }
+
+    function cssClassByPhase(phase){
+      if (phase === 'fatal_error' || phase === 'error') return 'err';
+      if (phase === 'batch_running' || phase === 'batch_done') return 'ok';
+      return 'warn';
+    }
+
+    function renderBars(containerId, points, key, dayMode){
+      const wrap = byId(containerId);
+      if (!wrap) return;
+      wrap.innerHTML = '';
+      const list = Array.isArray(points) ? points : [];
+      if (!list.length) return;
+      const max = Math.max(...list.map(x => toNum(x[key])), 1);
+      for (const p of list) {
+        const value = toNum(p[key]);
+        const h = Math.max(4, Math.round((value / max) * 130));
+        const bar = document.createElement('div');
+        bar.className = dayMode ? 'bar day' : 'bar';
+        bar.style.height = h + 'px';
+        bar.title = (p.bucketStart || '') + ' | ' + key + '=' + value;
+        wrap.appendChild(bar);
+      }
+    }
+
+    function renderPending(rows){
+      const body = byId('pendingRows');
+      if (!body) return;
+      body.innerHTML = '';
+      (rows || []).forEach((r) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td class="mono">' + String(r.id || '-') + '</td>' +
+          '<td>' + human(r.totalRatings) + '</td>' +
+          '<td>' + human(r.totalReviewsDb) + '</td>';
+        body.appendChild(tr);
+      });
+    }
+
+    function renderEvents(rows){
+      const body = byId('eventRows');
+      if (!body) return;
+      body.innerHTML = '';
+      const list = (rows || []).slice().reverse().slice(0, 120);
+      list.forEach((e) => {
+        const tr = document.createElement('tr');
+        const dt = e.ts ? new Date(e.ts) : null;
+        const hh = dt && !Number.isNaN(dt.getTime()) ? dt.toLocaleTimeString('pt-BR') : '-';
+        const stage = String(e.stage || '-');
+        const msg = String(e.message || '');
+        tr.innerHTML = '<td class="mono dim">' + hh + '</td>' +
+          '<td class="mono">' + stage + '</td>' +
+          '<td>' + msg + '</td>';
+        body.appendChild(tr);
+      });
+    }
+
+    function render(metrics){
+      const m = metrics || {};
+      const base = m.base || {};
+      const tp = m.throughput || {};
+      const wines = tp.wines || {};
+      const eta = m.eta || {};
+      const worker = m.worker || {};
+      const batch = worker.currentBatch || {};
+      const rates = worker.rates || {};
+      const pending = m.pending || {};
+
+      byId('cProgress').textContent = pct(base.progressPct);
+      byId('cProgressSub').textContent = human(base.winesDoneTotal) + ' / ' + human(base.winesEligibleTotal);
+
+      byId('cPending').textContent = human(base.winesPendingTotal);
+      byId('cPendingSub').textContent = 'ratings avg ' + fmt2.format(toNum(pending.avgRatings));
+
+      byId('cRate1h').textContent = human(wines.last1h) + '/h';
+      byId('cRate1hSub').textContent = 'hora anterior comparada no bloco abaixo';
+
+      byId('cRate24h').textContent = human(wines.last24h) + '/24h';
+      byId('cRate24hSub').textContent = fmt2.format(toNum(wines.avgPerHour24h)) + ' por hora (média)';
+
+      byId('cEta').textContent = String(eta.bestHuman || 'n/a');
+      byId('cEtaSub').textContent = 'live: ' + String(eta.byLiveRateHuman || 'n/a');
+
+      byId('cWorker').innerHTML = '<span class="' + cssClassByPhase(worker.phase) + '">' + String(worker.phase || 'n/a') + '</span>';
+      byId('cWorkerSub').textContent = 'ciclo ' + human(worker.cycle) + ' | cooldown ' + human(worker.retryCooldownCount);
+
+      const target = toNum(batch.target);
+      const processed = toNum(batch.processed);
+      const pctBatch = target > 0 ? (processed / target) * 100 : 0;
+      byId('batchBar').style.width = Math.max(0, Math.min(100, pctBatch)) + '%';
+      byId('mBatch').textContent = processed + ' / ' + target + ' (' + pct(pctBatch) + ')';
+      byId('mOkRetry').textContent = human(batch.ok) + ' / ' + human(batch.retryLater);
+      byId('mPhase').textContent = String(worker.phase || 'n/a') + ' | ' + human(worker.cycle);
+      byId('mRateBatch').textContent = fmt2.format(toNum(rates.batchWinesPerSec)) + ' vinhos/s';
+      byId('mRateGlobal').textContent = fmt2.format(toNum(rates.globalWinesPerSec)) + ' vinhos/s';
+      byId('mRows').textContent = human(base.reviewsRowsTotal);
+      byId('mUpdated').textContent = 'Atualizado: ' + String(m.generatedAt || '-');
+
+      renderBars('hourlyChart', m.history && m.history.hourly, 'winesDone', false);
+      renderBars('dailyChart', m.history && m.history.daily, 'winesDone', true);
+      renderPending(pending.topPendingByRatings);
+      renderEvents(m.events);
+    }
+
+    async function refresh(){
+      if (state.loading) return;
+      state.loading = true;
+      try {
+        const url = '/api/vivino/metrics?hourly_hours=' + encodeURIComponent(state.hourly) +
+          '&daily_days=' + encodeURIComponent(state.daily);
+        const res = await fetch(url);
+        const data = await res.json();
+        if (!data || !data.ok || !data.metrics) throw new Error((data && data.error) ? data.error : 'Sem dados');
+        render(data.metrics);
+      } catch (err) {
+        console.error(err);
+      } finally {
+        state.loading = false;
+      }
+    }
+
+    function applyConfig(){
+      const h = Math.max(6, Math.min(168, toNum(byId('hours').value || 48)));
+      const d = Math.max(7, Math.min(120, toNum(byId('days').value || 30)));
+      state.hourly = h;
+      state.daily = d;
+      byId('hours').value = String(h);
+      byId('days').value = String(d);
+      refresh();
+    }
+
+    byId('apply').addEventListener('click', applyConfig);
+    window.addEventListener('load', () => {
+      refresh();
+      state.timer = setInterval(refresh, 3000);
+    });
+  </script>
+</body>
+</html>`);
+});
+
 // QR em SVG (com auto-refresh se não disponível)
 app.get('/qr/:id', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -859,6 +1237,7 @@ app.get(['/','/admin'], basicAuth, async (req, res) => {
     </div>
     <div class="global-actions">
       <button onclick="doPost('/api/reconnect-all')">Reconectar Todos Desconectados</button>
+      <a class="qr" href="/admin/vivino" target="_blank">Painel Vivino</a>
     </div>
     <div class="card vivino-card">
       <div class="head">

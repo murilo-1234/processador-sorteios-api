@@ -35,6 +35,7 @@ const STEEL_TIMEOUT_MS = Number(process.env.VIVINO_STEEL_TIMEOUT_MS || 45000);
 const STEEL_MAX_REQUESTS_PER_SESSION = Number(process.env.VIVINO_STEEL_MAX_REQUESTS_PER_SESSION || 25);
 const METRICS_HOURLY_HOURS = Number(process.env.VIVINO_METRICS_HOURLY_HOURS || 48);
 const METRICS_DAILY_DAYS = Number(process.env.VIVINO_METRICS_DAILY_DAYS || 30);
+const EVENTS_MAX = Number(process.env.VIVINO_EVENTS_MAX || 300);
 
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -53,6 +54,7 @@ let steelLock = Promise.resolve();
 let workerPool = null;
 let metricsPool = null;
 const retryLaterUntilByWine = new Map();
+const workerEvents = [];
 const workerProgress = {
   enabled: WORKER_ENABLED,
   started: false,
@@ -93,6 +95,25 @@ const workerProgress = {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const nowIso = () => new Date().toISOString();
+
+function pushWorkerEvent(level, stage, message, data = null) {
+  const event = {
+    ts: nowIso(),
+    level: String(level || 'info'),
+    stage: String(stage || 'general'),
+    message: String(message || ''),
+    data: data && typeof data === 'object' ? data : null,
+  };
+  workerEvents.push(event);
+  while (workerEvents.length > Math.max(50, EVENTS_MAX)) {
+    workerEvents.shift();
+  }
+}
+
+function getVivinoWorkerEvents(limit = 100) {
+  const n = clampIntRange(limit, 10, Math.max(50, EVENTS_MAX));
+  return workerEvents.slice(-n);
+}
 
 function clampNonNegative(value) {
   if (!Number.isFinite(value)) return 0;
@@ -203,6 +224,7 @@ async function fetchJsonWithRetry(url) {
 
   if (STEEL_ENABLED && STEEL_API_KEY) {
     console.log(`[vivino-worker] fallback Steel.dev acionado para ${url}`);
+    pushWorkerEvent('warn', 'steel_fallback', 'Fallback Steel.dev acionado', { url });
     return fetchJsonViaSteel(url);
   }
 
@@ -303,6 +325,7 @@ async function fetchJsonViaSteel(url) {
         const parsed = parseJsonText(text);
         if (parsed.ok) {
           console.log(`[vivino-worker] Steel request_context OK em ${url}`);
+          pushWorkerEvent('info', 'steel_request_context', 'Steel request_context OK', { url, status });
           return { ok: true, status, data: parsed.data, via: 'steel_request_context' };
         }
         logPayloadPreview(`[vivino-worker] Steel request_context payload invalido em ${url}`, text);
@@ -327,6 +350,7 @@ async function fetchJsonViaSteel(url) {
           const parsed = parseJsonText(browserFetch.body);
           if (parsed.ok) {
             console.log(`[vivino-worker] Steel page_fetch OK em ${url}`);
+            pushWorkerEvent('info', 'steel_page_fetch', 'Steel page_fetch OK', { url, status: browserFetch.status });
             return { ok: true, status: browserFetch.status, data: parsed.data, via: 'steel_page_fetch' };
           }
           logPayloadPreview(`[vivino-worker] Steel page_fetch payload invalido em ${url}`, browserFetch.body);
@@ -339,10 +363,12 @@ async function fetchJsonViaSteel(url) {
       }
 
       console.log(`[vivino-worker] Steel request_context status=${status} em ${url}`);
+      pushWorkerEvent('warn', 'steel_status', 'Steel retornou status sem sucesso', { url, status });
       return { ok: false, transient: true, status };
     } catch (err) {
       const msg = String(err && err.message ? err.message : err);
       console.log(`[vivino-worker] erro Steel.dev em ${url}: ${msg}`);
+      pushWorkerEvent('error', 'steel_error', 'Erro no Steel.dev', { url, message: msg });
       await closeSteelBrowser();
       return { ok: false, transient: true, status: 0 };
     }
@@ -570,6 +596,24 @@ function logProgressDashboard(extra = {}) {
     console.log(`[vivino-worker]   ${extra.message}`);
   }
   console.log('[vivino-worker] ======================================================================');
+  pushWorkerEvent('info', extra.stage || 'dashboard', extra.message || 'dashboard atualizado', {
+    phase: workerProgress.phase,
+    cycle: workerProgress.cycle,
+    totalEligible: workerProgress.totalEligible,
+    doneEligible: workerProgress.doneEligible,
+    pendingEligible: workerProgress.pendingEligible,
+    batch: {
+      target: batch.target,
+      processed: batch.processed,
+      ok: batch.ok,
+      retryLater: batch.retryLater,
+    },
+    rates: {
+      batchWinesPerSec: workerProgress.rates.batchWinesPerSec,
+      globalWinesPerSec: workerProgress.rates.globalWinesPerSec,
+    },
+    etaSeconds: workerProgress.etaSeconds,
+  });
 }
 
 function getVivinoWorkerProgress() {
@@ -642,6 +686,7 @@ async function getVivinoWorkerMetrics(options = {}) {
       generatedAt: nowIso(),
       error: 'VIVINO_DATABASE_URL/DATABASE_URL ausente',
       worker: getVivinoWorkerProgress(),
+      events: getVivinoWorkerEvents(200),
     };
   }
 
@@ -993,6 +1038,7 @@ async function getVivinoWorkerMetrics(options = {}) {
       hourly: hourlyHistory,
       daily: dailyHistory,
     },
+    events: getVivinoWorkerEvents(200),
   };
 }
 
@@ -1064,6 +1110,7 @@ async function loop(pool) {
     workerProgress.cycle = cycle;
     workerProgress.phase = 'cycle_start';
     workerProgress.updatedAt = Date.now();
+    pushWorkerEvent('info', 'cycle_start', `Iniciando ciclo ${cycle}`);
 
     const globalBefore = await getGlobalProgressStats(pool);
     workerProgress.totalEligible = globalBefore.totalEligible;
@@ -1088,7 +1135,7 @@ async function loop(pool) {
         startedAt: Date.now(),
         updatedAt: Date.now(),
       };
-      logProgressDashboard({ message: `Sem pendencias. pausa de ${Math.floor(SLEEP_WHEN_EMPTY_MS / 1000)}s.` });
+      logProgressDashboard({ stage: 'idle_waiting', message: `Sem pendencias. pausa de ${Math.floor(SLEEP_WHEN_EMPTY_MS / 1000)}s.` });
       await sleep(SLEEP_WHEN_EMPTY_MS);
       continue;
     }
@@ -1109,7 +1156,7 @@ async function loop(pool) {
         startedAt: Date.now(),
         updatedAt: Date.now(),
       };
-      logProgressDashboard({ message: `Sem IDs no lote. pausa de ${Math.floor(SLEEP_WHEN_EMPTY_MS / 1000)}s.` });
+      logProgressDashboard({ stage: 'idle_no_candidates', message: `Sem IDs no lote. pausa de ${Math.floor(SLEEP_WHEN_EMPTY_MS / 1000)}s.` });
       await sleep(SLEEP_WHEN_EMPTY_MS);
       continue;
     }
@@ -1133,6 +1180,7 @@ async function loop(pool) {
         updatedAt: Date.now(),
       };
       logProgressDashboard({
+        stage: 'cooldown_waiting',
         message: `Todos candidatos em cooldown (candidatos=${candidateIds.length} cooldown=${skippedByCooldown}). aguardando ${Math.floor(SLEEP_BETWEEN_BATCH_MS / 1000)}s.`,
       });
       await sleep(SLEEP_BETWEEN_BATCH_MS);
@@ -1160,6 +1208,7 @@ async function loop(pool) {
     workerProgress.updatedAt = Date.now();
     updateRatesAndEta();
     logProgressDashboard({
+      stage: 'batch_start',
       message: `Lote ${cycle} iniciado | pendentes=${pendingBefore} | candidatos=${candidateIds.length} | cooldown=${skippedByCooldown}`,
     });
 
@@ -1168,9 +1217,21 @@ async function loop(pool) {
       if (res.ok) {
         okWines += 1;
         totalReviews += Number(res.total || 0);
+        pushWorkerEvent('info', 'wine_done', 'Vinho coletado', {
+          wineId: Number(wineId),
+          reviewsFetched: Number(res.total || 0),
+          processed: processed + 1,
+          target: ids.length,
+        });
       } else if (res.retryLater) {
         retryLater += 1;
         markWineRetryLater(wineId);
+        pushWorkerEvent('warn', 'wine_retry_later', 'Vinho reagendado para retry', {
+          wineId: Number(wineId),
+          processed: processed + 1,
+          target: ids.length,
+          error: res.error || null,
+        });
       }
 
       processed += 1;
@@ -1193,6 +1254,15 @@ async function loop(pool) {
         console.log(
           `[vivino-worker] Progresso: ${processed}/${ids.length} | OK: ${okWines} | Retry: ${retryLater} | ${workerProgress.rates.batchWinesPerSec.toFixed(2)} vinhos/s | ETA lote: ${formatDuration(batchEta)} | ETA total: ${formatDuration(workerProgress.etaSeconds)}`,
         );
+        pushWorkerEvent('info', 'batch_progress', 'Progresso do lote', {
+          processed,
+          target: ids.length,
+          ok: okWines,
+          retryLater,
+          batchWinesPerSec: workerProgress.rates.batchWinesPerSec,
+          etaBatchSeconds: batchEta,
+          etaTotalSeconds: workerProgress.etaSeconds,
+        });
         lastProgressLogAt = Date.now();
         lastProgressProcessed = processed;
       }
@@ -1215,7 +1285,7 @@ async function loop(pool) {
     console.log(
       `[vivino-worker] ciclo=${cycle} ok_wines=${okWines} retry_later=${retryLater} reviews_lote=${totalReviews} pendentes_apos=${globalAfter.pendingEligible}`,
     );
-    logProgressDashboard({ message: `Pausa de ${Math.floor(SLEEP_BETWEEN_BATCH_MS / 1000)}s entre lotes...` });
+    logProgressDashboard({ stage: 'batch_done', message: `Pausa de ${Math.floor(SLEEP_BETWEEN_BATCH_MS / 1000)}s entre lotes...` });
     await sleep(SLEEP_BETWEEN_BATCH_MS);
   }
 }
@@ -1229,11 +1299,13 @@ async function startVivinoReviewsWorker() {
   workerProgress.updatedAt = Date.now();
   workerProgress.phase = 'booting';
   workerProgress.lastError = null;
+  pushWorkerEvent('info', 'boot', 'Vivino worker boot');
 
   if (!WORKER_ENABLED) {
     console.log('[vivino-worker] desabilitado via VIVINO_REVIEWS_WORKER_ENABLED=false');
     workerProgress.phase = 'disabled';
     workerProgress.updatedAt = Date.now();
+    pushWorkerEvent('warn', 'disabled', 'Worker desabilitado via env');
     return;
   }
 
@@ -1241,6 +1313,7 @@ async function startVivinoReviewsWorker() {
     workerProgress.phase = 'error';
     workerProgress.lastError = 'VIVINO_DATABASE_URL/DATABASE_URL ausente';
     workerProgress.updatedAt = Date.now();
+    pushWorkerEvent('error', 'config_error', 'DATABASE_URL ausente');
     console.log('[vivino-worker] VIVINO_DATABASE_URL/DATABASE_URL ausente. worker nÃƒÂ£o iniciado.');
     return;
   }
@@ -1259,6 +1332,7 @@ async function startVivinoReviewsWorker() {
     console.error('[vivino-worker] erro no pool:', msg);
     workerProgress.lastError = msg;
     workerProgress.updatedAt = Date.now();
+    pushWorkerEvent('error', 'pool_error', 'Erro no pool PG', { message: msg });
   });
 
   setupProxyIfEnabled();
@@ -1294,7 +1368,7 @@ async function startVivinoReviewsWorker() {
     workerProgress.phase = 'ready';
     workerProgress.updatedAt = Date.now();
     updateRatesAndEta();
-    logProgressDashboard({ message: 'Worker iniciado e monitoramento ativo.' });
+    logProgressDashboard({ stage: 'ready', message: 'Worker iniciado e monitoramento ativo.' });
 
     await loop(pool);
   } catch (err) {
@@ -1303,6 +1377,7 @@ async function startVivinoReviewsWorker() {
     workerProgress.lastError = msg;
     workerProgress.updatedAt = Date.now();
     console.error('[vivino-worker] loop finalizado por erro fatal:', msg);
+    pushWorkerEvent('error', 'fatal_error', 'Loop finalizado por erro fatal', { message: msg });
   }
 }
 
@@ -1310,4 +1385,6 @@ module.exports = {
   startVivinoReviewsWorker,
   getVivinoWorkerProgress,
   getVivinoWorkerMetrics,
+  getVivinoWorkerEvents,
 };
+
