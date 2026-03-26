@@ -16,6 +16,8 @@ const SLEEP_WHEN_EMPTY_MS = Number(process.env.VIVINO_REVIEWS_SLEEP_WHEN_EMPTY_M
 const SLEEP_PER_WINE_MS = Number(process.env.VIVINO_REVIEWS_SLEEP_PER_WINE_MS || 150);
 const RETRY_429_MS = Number(process.env.VIVINO_REVIEWS_RETRY_429_MS || 30000);
 const RETRY_503_MS = Number(process.env.VIVINO_REVIEWS_RETRY_503_MS || 15000);
+const RETRY_WINE_COOLDOWN_MS = Number(process.env.VIVINO_REVIEWS_RETRY_WINE_COOLDOWN_MS || 900000);
+const RETRY_SELECTION_MULTIPLIER = Number(process.env.VIVINO_REVIEWS_RETRY_SELECTION_MULTIPLIER || 10);
 const PROXY_ENABLED = String(
   process.env.VIVINO_PROXY_ENABLED ?? process.env.PROXY_ENABLED ?? 'false',
 ).trim().toLowerCase() === 'true';
@@ -44,6 +46,7 @@ let steelContext = null;
 let steelPage = null;
 let steelRequestCount = 0;
 let steelLock = Promise.resolve();
+const retryLaterUntilByWine = new Map();
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const nowIso = () => new Date().toISOString();
@@ -118,6 +121,13 @@ async function fetchJsonWithRetry(url) {
       if (res.status === 503) {
         console.log(`[vivino-worker] 503 em ${url} (tentativa ${attempt}/${MAX_RETRIES})`);
         await sleep(RETRY_503_MS);
+        continue;
+      }
+
+      if (res.status === 401 || res.status === 403 || res.status === 408 || res.status >= 500) {
+        console.log(`[vivino-worker] status=${res.status} em ${url} (tentativa ${attempt}/${MAX_RETRIES})`);
+        await sleep(backoff);
+        backoff = Math.min(backoff * 2, 300000);
         continue;
       }
 
@@ -233,6 +243,7 @@ async function fetchJsonViaSteel(url) {
       if (status === 200) {
         const parsed = parseJsonText(text);
         if (parsed.ok) {
+          console.log(`[vivino-worker] Steel request_context OK em ${url}`);
           return { ok: true, status, data: parsed.data, via: 'steel_request_context' };
         }
         logPayloadPreview(`[vivino-worker] Steel request_context payload invalido em ${url}`, text);
@@ -256,6 +267,7 @@ async function fetchJsonViaSteel(url) {
         if (browserFetch.status === 200) {
           const parsed = parseJsonText(browserFetch.body);
           if (parsed.ok) {
+            console.log(`[vivino-worker] Steel page_fetch OK em ${url}`);
             return { ok: true, status: browserFetch.status, data: parsed.data, via: 'steel_page_fetch' };
           }
           logPayloadPreview(`[vivino-worker] Steel page_fetch payload invalido em ${url}`, browserFetch.body);
@@ -377,6 +389,33 @@ async function getPendingWineIds(pool, limit) {
   return r.rows.map((x) => x.id);
 }
 
+function markWineRetryLater(wineId) {
+  retryLaterUntilByWine.set(Number(wineId), Date.now() + RETRY_WINE_COOLDOWN_MS);
+}
+
+function cleanupRetryLaterMap(nowMs) {
+  for (const [wineId, until] of retryLaterUntilByWine.entries()) {
+    if (until <= nowMs) retryLaterUntilByWine.delete(wineId);
+  }
+}
+
+function buildBatchWithRetryCooldown(candidateIds, batchSize, nowMs) {
+  const selected = [];
+  let skipped = 0;
+
+  for (const wineId of candidateIds) {
+    const until = retryLaterUntilByWine.get(Number(wineId)) || 0;
+    if (until > nowMs) {
+      skipped += 1;
+      continue;
+    }
+    selected.push(wineId);
+    if (selected.length >= batchSize) break;
+  }
+
+  return { selected, skipped };
+}
+
 async function getPendingCount(pool) {
   const r = await pool.query(
     `SELECT COUNT(*)::bigint AS n
@@ -461,10 +500,27 @@ async function loop(pool) {
       continue;
     }
 
-    const ids = await getPendingWineIds(pool, BATCH_SIZE);
-    if (!ids.length) {
+    cleanupRetryLaterMap(Date.now());
+
+    const candidateLimit = Math.max(BATCH_SIZE, BATCH_SIZE * Math.max(1, RETRY_SELECTION_MULTIPLIER));
+    const candidateIds = await getPendingWineIds(pool, candidateLimit);
+    if (!candidateIds.length) {
       console.log(`[vivino-worker] ${nowIso()} sem IDs no lote. dormindo ${SLEEP_WHEN_EMPTY_MS}ms`);
       await sleep(SLEEP_WHEN_EMPTY_MS);
+      continue;
+    }
+
+    const { selected: ids, skipped: skippedByCooldown } = buildBatchWithRetryCooldown(
+      candidateIds,
+      BATCH_SIZE,
+      Date.now(),
+    );
+
+    if (!ids.length) {
+      console.log(
+        `[vivino-worker] ciclo=${cycle} todos candidatos em cooldown (candidatos=${candidateIds.length} cooldown=${skippedByCooldown}). aguardando ${SLEEP_BETWEEN_BATCH_MS}ms`,
+      );
+      await sleep(SLEEP_BETWEEN_BATCH_MS);
       continue;
     }
 
@@ -472,7 +528,9 @@ async function loop(pool) {
     let retryLater = 0;
     let totalReviews = 0;
 
-    console.log(`[vivino-worker] ciclo=${cycle} pendentes=${pendingBefore} lote=${ids.length} workers=${WORKERS}`);
+    console.log(
+      `[vivino-worker] ciclo=${cycle} pendentes=${pendingBefore} lote=${ids.length} workers=${WORKERS} candidatos=${candidateIds.length} cooldown=${skippedByCooldown}`,
+    );
 
     await runWithConcurrency(ids, WORKERS, async (wineId) => {
       const res = await collectWine(pool, wineId);
@@ -481,6 +539,7 @@ async function loop(pool) {
         totalReviews += Number(res.total || 0);
       } else if (res.retryLater) {
         retryLater += 1;
+        markWineRetryLater(wineId);
       }
     });
 
@@ -520,7 +579,9 @@ async function startVivinoReviewsWorker() {
   if (STEEL_ENABLED) {
     console.log(`[vivino-worker] Steel.dev fallback ${STEEL_API_KEY ? 'habilitado' : 'configurado sem API key'}`);
   }
-  console.log(`[vivino-worker] iniciado | workers=${WORKERS} batch=${BATCH_SIZE} min_ratings=${MIN_RATINGS} max_pages=${MAX_PAGES}`);
+  console.log(
+    `[vivino-worker] iniciado | workers=${WORKERS} batch=${BATCH_SIZE} min_ratings=${MIN_RATINGS} max_pages=${MAX_PAGES} retry_cooldown_ms=${RETRY_WINE_COOLDOWN_MS} retry_multiplier=${RETRY_SELECTION_MULTIPLIER}`,
+  );
 
   try {
     await loop(pool);
