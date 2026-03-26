@@ -1,7 +1,7 @@
 // whatsapp-automation/src/services/whatsapp-client.js
 // 
-// VERSÃO CORRIGIDA - Mudanças:
-// - Removida reconexão automática interna (agora controlada pelo bots/index.js)
+// VERSION CORRIGIDA - Mudancas:
+// - Removida reconexao automatica interna (agora controlada pelo bots/index.js)
 // - Adicionado callback onConnectionChange para o controlador externo
 // - Melhor tratamento de erros
 // - Mantidas todas as funcionalidades existentes (grupos, QR, pairing, etc)
@@ -9,6 +9,16 @@
 const fs = require('fs');
 const path = require('path');
 
+const DEFAULT_BAILEYS_VERSION = [2, 3000, 1035194821];
+
+function parseBaileysVersion(raw) {
+  if (!raw) return null;
+  const parts = String(raw)
+    .split(',')
+    .map((item) => Number(String(item).trim()))
+    .filter((item) => Number.isFinite(item) && item > 0);
+  return parts.length === 3 ? parts : null;
+}
 class WhatsAppClient {
   constructor() {
     this.sessionPath = process.env.WHATSAPP_SESSION_PATH || '/tmp/whatsapp-session';
@@ -80,8 +90,8 @@ class WhatsAppClient {
         const vRes = await fetchLatestBaileysVersion();
         version = vRes.version;
       } catch (e) {
-        console.warn('[WhatsAppClient] Erro ao buscar versão do Baileys, usando padrão:', e?.message);
-        version = [2, 3000, 1015901307];
+        version = parseBaileysVersion(process.env.WA_BAILEYS_VERSION) || DEFAULT_BAILEYS_VERSION;
+        console.warn('[WhatsAppClient] Failed to fetch Baileys version, using fallback:', e?.message, version);
       }
 
       // NOVO: Fecha socket anterior se existir (evita conexões duplicadas)

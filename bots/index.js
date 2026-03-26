@@ -50,6 +50,7 @@ const INSTANCE_SPAWN_DELAY_MS = Number(process.env.WA_INSTANCE_SPAWN_DELAY_MS ||
 const RECONNECT_BASE_DELAY_MS = Number(process.env.WA_RECONNECT_BASE_DELAY_MS || 5000);
 const RECONNECT_MAX_DELAY_MS = Number(process.env.WA_RECONNECT_MAX_DELAY_MS || 120000);
 const RECONNECT_MAX_ATTEMPTS = Number(process.env.WA_RECONNECT_MAX_ATTEMPTS || 10);
+const RECONNECT_405_BASE_DELAY_MS = Number(process.env.WA_RECONNECT_405_BASE_DELAY_MS || 30000);
 
 // Lista de números (somente os que serão "só-bot")
 const WA_INSTANCE_IDS = String(process.env.WA_INSTANCE_IDS || '')
@@ -86,6 +87,14 @@ function getReconnectDelay(attempts) {
   return Math.min(delay, RECONNECT_MAX_DELAY_MS);
 }
 
+function getReconnectDelayForStatus(statusCode, attempts) {
+  if (Number(statusCode) === 405) {
+    const delay = RECONNECT_405_BASE_DELAY_MS * Math.pow(2, attempts);
+    return Math.min(delay, Math.max(RECONNECT_MAX_DELAY_MS, RECONNECT_405_BASE_DELAY_MS * 8));
+  }
+  return getReconnectDelay(attempts);
+}
+
 // NOVO: Verifica se o erro indica sessão corrompida
 function isCorruptedSessionError(error) {
   const msg = String(error?.message || error || '').toLowerCase();
@@ -105,7 +114,7 @@ function isConflictError(error) {
 }
 
 // NOVO: Agenda reconexão com controle
-function scheduleReconnect(ref) {
+function scheduleReconnect(ref, statusCode) {
   // Cancela timer anterior se existir
   if (ref.reconnectTimer) {
     clearTimeout(ref.reconnectTimer);
@@ -119,7 +128,7 @@ function scheduleReconnect(ref) {
     return;
   }
 
-  const delay = getReconnectDelay(ref.reconnectAttempts);
+  const delay = getReconnectDelayForStatus(statusCode, ref.reconnectAttempts);
   console.log(`[${ref.id}] Reconexão agendada em ${delay/1000}s (tentativa ${ref.reconnectAttempts + 1}/${RECONNECT_MAX_ATTEMPTS})`);
   
   ref.state = 'waiting_reconnect';
@@ -227,6 +236,11 @@ function setupEventListeners(ref) {
           return;
         }
 
+        if (statusCode === 405) {
+          console.log(`[${ref.id}] 405 detectado. Forcando backoff maior para evitar tempestade de reconexao.`);
+          ref.reconnectAttempts = Math.max(ref.reconnectAttempts, 2);
+        }
+
         if (isConflictError(error)) {
           console.log(`[${ref.id}] Conflito de sessão detectado. Aguardando mais tempo...`);
           ref.reconnectAttempts = Math.max(ref.reconnectAttempts, 3);
@@ -238,7 +252,7 @@ function setupEventListeners(ref) {
         }
 
         ref.state = 'disconnected';
-        scheduleReconnect(ref);
+        scheduleReconnect(ref, statusCode);
       }
     });
 

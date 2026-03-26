@@ -1,5 +1,5 @@
 const { Pool } = require('pg');
-const { ProxyAgent, setGlobalDispatcher } = require('undici');
+const { ProxyAgent } = require('undici');
 
 const VIVINO_BASE_URL = process.env.VIVINO_BASE_URL || 'https://www.vivino.com';
 const VIVINO_DATABASE_URL = process.env.VIVINO_DATABASE_URL || process.env.DATABASE_URL || '';
@@ -24,6 +24,11 @@ const PROXY_HOST = process.env.VIVINO_PROXY_HOST || process.env.PROXY_HOST || ''
 const PROXY_PORT = process.env.VIVINO_PROXY_PORT || process.env.PROXY_PORT || '';
 const PROXY_USER = process.env.VIVINO_PROXY_USER || process.env.PROXY_USER || '';
 const PROXY_PASS = process.env.VIVINO_PROXY_PASS || process.env.PROXY_PASS || '';
+const STEEL_ENABLED = String(process.env.VIVINO_STEEL_ENABLED || 'false').trim().toLowerCase() === 'true';
+const STEEL_API_KEY = process.env.VIVINO_STEEL_API_KEY || process.env.STEEL_API_KEY || '';
+const STEEL_WS_ENDPOINT = process.env.VIVINO_STEEL_WS_ENDPOINT || 'wss://connect.steel.dev';
+const STEEL_TIMEOUT_MS = Number(process.env.VIVINO_STEEL_TIMEOUT_MS || 45000);
+const STEEL_MAX_REQUESTS_PER_SESSION = Number(process.env.VIVINO_STEEL_MAX_REQUESTS_PER_SESSION || 25);
 
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -33,6 +38,12 @@ const USER_AGENTS = [
 ];
 
 let started = false;
+let vivinoDispatcher = null;
+let steelBrowser = null;
+let steelContext = null;
+let steelPage = null;
+let steelRequestCount = 0;
+let steelLock = Promise.resolve();
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const nowIso = () => new Date().toISOString();
@@ -57,7 +68,7 @@ function setupProxyIfEnabled() {
     return;
   }
 
-  setGlobalDispatcher(new ProxyAgent(proxy));
+  vivinoDispatcher = new ProxyAgent(proxy);
   const masked = proxy.replace(/\/\/([^:@]+):([^@]+)@/, '//***:***@');
   console.log(`[vivino-worker] proxy ativo para requests Vivino (${masked})`);
 }
@@ -86,6 +97,7 @@ async function fetchJsonWithRetry(url) {
     try {
       const res = await fetch(url, {
         method: 'GET',
+        dispatcher: vivinoDispatcher || undefined,
         headers: headers(),
         signal: controller.signal,
       });
@@ -120,7 +132,100 @@ async function fetchJsonWithRetry(url) {
     }
   }
 
+  if (STEEL_ENABLED && STEEL_API_KEY) {
+    console.log(`[vivino-worker] fallback Steel.dev acionado para ${url}`);
+    return fetchJsonViaSteel(url);
+  }
+
   return { ok: false, transient: true, status: 0 };
+}
+
+async function withSteelLock(task) {
+  const previous = steelLock;
+  let release;
+  steelLock = new Promise((resolve) => {
+    release = resolve;
+  });
+  await previous.catch(() => {});
+  try {
+    return await task();
+  } finally {
+    release();
+  }
+}
+
+async function closeSteelBrowser() {
+  if (steelPage) {
+    try { await steelPage.close(); } catch (_) {}
+    steelPage = null;
+  }
+  if (steelContext) {
+    try { await steelContext.close(); } catch (_) {}
+    steelContext = null;
+  }
+  if (steelBrowser) {
+    try { await steelBrowser.close(); } catch (_) {}
+    steelBrowser = null;
+  }
+  steelRequestCount = 0;
+}
+
+async function ensureSteelPage() {
+  if (!STEEL_ENABLED || !STEEL_API_KEY) return null;
+
+  if (steelPage && !steelPage.isClosed() && steelRequestCount < STEEL_MAX_REQUESTS_PER_SESSION) {
+    return steelPage;
+  }
+
+  await closeSteelBrowser();
+
+  const playwright = require('playwright-core');
+  const wsUrl = `${STEEL_WS_ENDPOINT}?apiKey=${encodeURIComponent(STEEL_API_KEY)}`;
+  steelBrowser = await playwright.chromium.connectOverCDP(wsUrl);
+  steelContext = steelBrowser.contexts()[0] || await steelBrowser.newContext({
+    locale: 'pt-BR',
+    timezoneId: 'America/Sao_Paulo',
+    userAgent: USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)],
+    viewport: { width: 1366, height: 768 },
+  });
+  steelPage = await steelContext.newPage();
+  steelPage.setDefaultNavigationTimeout(STEEL_TIMEOUT_MS);
+  steelPage.setDefaultTimeout(STEEL_TIMEOUT_MS);
+  await steelPage.setExtraHTTPHeaders(headers());
+  steelRequestCount = 0;
+  return steelPage;
+}
+
+async function fetchJsonViaSteel(url) {
+  return withSteelLock(async () => {
+    const page = await ensureSteelPage();
+    if (!page) return { ok: false, transient: true, status: 0 };
+
+    try {
+      await page.setExtraHTTPHeaders(headers());
+      const response = await page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        timeout: STEEL_TIMEOUT_MS,
+      });
+      const status = response ? response.status() : 0;
+      const text = await page.locator('body').innerText().catch(async () => {
+        return page.evaluate(() => document.body?.innerText || document.documentElement?.innerText || '');
+      });
+      steelRequestCount += 1;
+
+      if (status !== 200) {
+        return { ok: false, transient: status >= 500 || status === 0, status };
+      }
+
+      const data = JSON.parse(text);
+      return { ok: true, status, data, via: 'steel' };
+    } catch (err) {
+      const msg = String(err && err.message ? err.message : err);
+      console.log(`[vivino-worker] erro Steel.dev em ${url}: ${msg}`);
+      await closeSteelBrowser();
+      return { ok: false, transient: true, status: 0 };
+    }
+  });
 }
 
 function parseReview(item, wineId) {
@@ -362,6 +467,9 @@ async function startVivinoReviewsWorker() {
   });
 
   setupProxyIfEnabled();
+  if (STEEL_ENABLED) {
+    console.log(`[vivino-worker] Steel.dev fallback ${STEEL_API_KEY ? 'habilitado' : 'configurado sem API key'}`);
+  }
   console.log(`[vivino-worker] iniciado | workers=${WORKERS} batch=${BATCH_SIZE} min_ratings=${MIN_RATINGS} max_pages=${MAX_PAGES}`);
 
   try {
