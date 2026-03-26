@@ -14,7 +14,7 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const QRCode = require('qrcode');
-const { startVivinoReviewsWorker } = require('./vivino_reviews_worker');
+const { startVivinoReviewsWorker, getVivinoWorkerProgress } = require('./vivino_reviews_worker');
 
 // Reuso do seu código existente
 const WhatsAppClient = require('../whatsapp-automation/src/services/whatsapp-client');
@@ -84,6 +84,84 @@ const qrStore = new Map();   // id -> último QR recebido
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 function ensureDir(p) { fs.mkdirSync(p, { recursive: true }); }
+
+function toNumber(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function formatDuration(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return 'n/a';
+  const s = Math.floor(seconds);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+
+function getVivinoProgressSnapshot() {
+  const raw = getVivinoWorkerProgress();
+  const totalEligible = toNumber(raw.totalEligible);
+  const doneEligible = toNumber(raw.doneEligible);
+  const pendingEligible = toNumber(raw.pendingEligible);
+  const totalReviewsRows = toNumber(raw.totalReviewsRows);
+  const doneReviewsDbSum = toNumber(raw.doneReviewsDbSum);
+  const sessionWinesDone = toNumber(raw.sessionWinesDone);
+  const sessionReviewsFetched = toNumber(raw.sessionReviewsFetched);
+  const sessionReviewsRowsDelta = toNumber(raw.sessionReviewsRowsDelta);
+  const progressPct = totalEligible > 0 ? (doneEligible / totalEligible) * 100 : 0;
+  const batchWinesPerSec = Number(raw?.rates?.batchWinesPerSec || 0);
+  const globalWinesPerSec = Number(raw?.rates?.globalWinesPerSec || 0);
+  const batch = raw.currentBatch || {};
+  const sessionDuplicatesEstimate = Math.max(0, sessionReviewsFetched - sessionReviewsRowsDelta);
+
+  return {
+    ...raw,
+    totalEligible,
+    doneEligible,
+    pendingEligible,
+    totalReviewsRows,
+    doneReviewsDbSum,
+    sessionWinesDone,
+    sessionReviewsFetched,
+    sessionReviewsRowsDelta,
+    progressPct,
+    rates: {
+      batchWinesPerSec: Number.isFinite(batchWinesPerSec) ? batchWinesPerSec : 0,
+      globalWinesPerSec: Number.isFinite(globalWinesPerSec) ? globalWinesPerSec : 0,
+    },
+    currentBatch: {
+      target: toNumber(batch.target),
+      processed: toNumber(batch.processed),
+      ok: toNumber(batch.ok),
+      retryLater: toNumber(batch.retryLater),
+      pendingBefore: toNumber(batch.pendingBefore),
+      pendingAfter: toNumber(batch.pendingAfter),
+      startedAt: batch.startedAt || null,
+      updatedAt: batch.updatedAt || null,
+    },
+    derived: {
+      progressPct,
+      etaHuman: formatDuration(Number(raw.etaSeconds)),
+      sessionDuplicatesEstimate,
+    },
+  };
+}
+
+function buildVivinoProgressLines(snapshot) {
+  const s = snapshot;
+  return [
+    `VIVINO: ${s.doneEligible.toLocaleString('pt-BR')} / ${s.totalEligible.toLocaleString('pt-BR')} (${s.derived.progressPct.toFixed(2)}%)`,
+    `Pendentes: ${s.pendingEligible.toLocaleString('pt-BR')} | Retry cooldown: ${toNumber(s.retryCooldownCount).toLocaleString('pt-BR')}`,
+    `Lote: ${s.currentBatch.processed}/${s.currentBatch.target} | OK=${s.currentBatch.ok} | Retry=${s.currentBatch.retryLater}`,
+    `Velocidade: lote=${s.rates.batchWinesPerSec.toFixed(2)} vinhos/s | geral=${s.rates.globalWinesPerSec.toFixed(2)} vinhos/s | ETA=${s.derived.etaHuman}`,
+    `Base: reviews_rows=${s.totalReviewsRows.toLocaleString('pt-BR')} | sum_reviews_vinhos=${s.doneReviewsDbSum.toLocaleString('pt-BR')}`,
+    `Sessao: +vinhos=${s.sessionWinesDone.toLocaleString('pt-BR')} | reviews_fetch=${s.sessionReviewsFetched.toLocaleString('pt-BR')} | novos_rows=${s.sessionReviewsRowsDelta.toLocaleString('pt-BR')} | repetidos_est=${s.derived.sessionDuplicatesEstimate.toLocaleString('pt-BR')}`,
+    `Fase: ${s.phase || 'unknown'} | Ciclo: ${toNumber(s.cycle)} | Atualizado: ${s.updatedAt ? new Date(s.updatedAt).toISOString() : 'n/a'}`,
+  ];
+}
 
 // NOVO: Calcula delay com backoff exponencial
 function getReconnectDelay(attempts) {
@@ -391,6 +469,22 @@ app.get('/api/instances', basicAuth, (req, res) => {
   res.json({ ok: true, at: now, instances: list });
 });
 
+app.get('/api/vivino/progress', basicAuth, (req, res) => {
+  const snapshot = getVivinoProgressSnapshot();
+  res.json({
+    ok: true,
+    at: new Date().toISOString(),
+    progress: snapshot,
+  });
+});
+
+app.get('/api/vivino/progress.txt', basicAuth, (req, res) => {
+  const snapshot = getVivinoProgressSnapshot();
+  const lines = buildVivinoProgressLines(snapshot);
+  res.type('text/plain; charset=utf-8');
+  res.send(lines.join('\n'));
+});
+
 // QR em SVG (com auto-refresh se não disponível)
 app.get('/qr/:id', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -564,10 +658,16 @@ app.get(['/','/admin'], basicAuth, async (req, res) => {
   // NOVO: Contagem de status
   const connected = Array.from(instances.values()).filter(x => x.state === 'connected').length;
   const total = instances.size;
+  const vivinoSnapshot = getVivinoProgressSnapshot();
+  const vivinoLines = buildVivinoProgressLines(vivinoSnapshot).join('\n');
+  const vivinoPhase = String(vivinoSnapshot.phase || 'unknown');
+  const vivinoBadgeClass = (vivinoPhase === 'fatal_error' || vivinoPhase === 'error')
+    ? 'error'
+    : (vivinoPhase === 'batch_running' ? 'ok' : 'warn');
 
   res.send(`<!DOCTYPE html><html lang="pt-br"><head>
   <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>WA Bots – Multi</title>
+  <title>WA Bots - Multi</title>
   <style>
     body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial,sans-serif;background:#0b1020;color:#e6e9ef;margin:0;padding:24px}
     h1{font-size:20px;margin:0 0 8px}
@@ -589,31 +689,86 @@ app.get(['/','/admin'], basicAuth, async (req, res) => {
     button:hover,.qr:hover{background:#22304a}
     .danger{border-color:#7b2f2f}
     .global-actions{margin-bottom:16px;display:flex;gap:8px}
+    .vivino-card{margin-bottom:16px}
+    #vivino-progress{margin:0;white-space:pre-wrap;font-size:12px;line-height:1.45;color:#cdd6e3;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
   </style>
   <script>
     async function doPost(url){
-      // Se for "clear" (limpar sessão), pede confirmação
       if(url.includes('/clear')){
-        if(!confirm('Tem certeza que deseja limpar a sessão?')) return;
+        if(!confirm('Tem certeza que deseja limpar a sessao?')) return;
       }
       const r = await fetch(url,{method:'POST'});
       const j = await r.json().catch(()=>({}));
-      // Se for connect ou clear, abre o QR automaticamente
       if(j.ok && (url.includes('/connect') || url.includes('/clear'))){
         const id = url.split('/api/')[1]?.split('/')[0];
         if(id) window.open('/qr/'+id, '_blank');
       }
       location.reload();
     }
-    setInterval(()=>location.reload(), 8000);
+    function renderVivinoPanel(p){
+      if(!p) return;
+      const total = Number(p.totalEligible || 0);
+      const done = Number(p.doneEligible || 0);
+      const pending = Number(p.pendingEligible || 0);
+      const progressPct = total > 0 ? (done / total) * 100 : 0;
+      const batch = p.currentBatch || {};
+      const rates = p.rates || {};
+      const sessionFetched = Number(p.sessionReviewsFetched || 0);
+      const sessionRows = Number(p.sessionReviewsRowsDelta || 0);
+      const sessionDup = Math.max(0, sessionFetched - sessionRows);
+      const lines = [
+        'VIVINO: ' + done.toLocaleString('pt-BR') + ' / ' + total.toLocaleString('pt-BR') + ' (' + progressPct.toFixed(2) + '%)',
+        'Pendentes: ' + pending.toLocaleString('pt-BR') + ' | Retry cooldown: ' + Number(p.retryCooldownCount || 0).toLocaleString('pt-BR'),
+        'Lote: ' + Number(batch.processed || 0) + '/' + Number(batch.target || 0) + ' | OK=' + Number(batch.ok || 0) + ' | Retry=' + Number(batch.retryLater || 0),
+        'Velocidade: lote=' + Number(rates.batchWinesPerSec || 0).toFixed(2) + ' vinhos/s | geral=' + Number(rates.globalWinesPerSec || 0).toFixed(2) + ' vinhos/s | ETA=' + String((p.derived && p.derived.etaHuman) || 'n/a'),
+        'Base: reviews_rows=' + Number(p.totalReviewsRows || 0).toLocaleString('pt-BR') + ' | sum_reviews_vinhos=' + Number(p.doneReviewsDbSum || 0).toLocaleString('pt-BR'),
+        'Sessao: +vinhos=' + Number(p.sessionWinesDone || 0).toLocaleString('pt-BR') + ' | reviews_fetch=' + sessionFetched.toLocaleString('pt-BR') + ' | novos_rows=' + sessionRows.toLocaleString('pt-BR') + ' | repetidos_est=' + sessionDup.toLocaleString('pt-BR'),
+        'Fase: ' + String(p.phase || 'unknown') + ' | Ciclo: ' + Number(p.cycle || 0) + ' | Atualizado: ' + (p.updatedAt ? new Date(p.updatedAt).toISOString() : 'n/a'),
+      ];
+      const box = document.getElementById('vivino-progress');
+      if (box) box.textContent = lines.join('\\n');
+      const badge = document.getElementById('vivino-badge');
+      if (badge) {
+        const phase = String(p.phase || 'unknown');
+        let klass = 'warn';
+        if (phase === 'fatal_error' || phase === 'error') klass = 'error';
+        if (phase === 'batch_running') klass = 'ok';
+        badge.className = 'badge ' + klass;
+        badge.textContent = phase;
+      }
+    }
+    async function refreshVivino(){
+      try {
+        const r = await fetch('/api/vivino/progress');
+        if(!r.ok) return;
+        const j = await r.json();
+        if (j && j.progress) renderVivinoPanel(j.progress);
+      } catch (_) {}
+    }
+    window.addEventListener('load', () => {
+      refreshVivino();
+      setInterval(refreshVivino, 2000);
+      setInterval(()=>location.reload(), 15000);
+    });
   </script>
   </head><body>
-    <h1>WhatsApp Bots – Multi-instância</h1>
+    <h1>WhatsApp Bots - Multi-instancia</h1>
     <div class="summary">
       <strong>${connected}</strong> de <strong>${total}</strong> conectados
     </div>
     <div class="global-actions">
-      <button onclick="doPost('/api/reconnect-all')">🔄 Reconectar Todos Desconectados</button>
+      <button onclick="doPost('/api/reconnect-all')">Reconectar Todos Desconectados</button>
+    </div>
+    <div class="card vivino-card">
+      <div class="head">
+        <div class="id">Vivino Worker</div>
+        <div id="vivino-badge" class="badge ${vivinoBadgeClass}">${vivinoPhase}</div>
+      </div>
+      <pre id="vivino-progress">${vivinoLines}</pre>
+      <div class="actions">
+        <a class="qr" href="/api/vivino/progress" target="_blank">JSON progresso</a>
+        <a class="qr" href="/api/vivino/progress.txt" target="_blank">TXT progresso</a>
+      </div>
     </div>
     <div class="grid">
       ${rows}
@@ -628,3 +783,4 @@ app.listen(PORT, () => {
     console.error('[vivino-worker] falha ao iniciar:', e?.message || e);
   });
 });
+

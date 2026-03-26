@@ -18,6 +18,8 @@ const RETRY_429_MS = Number(process.env.VIVINO_REVIEWS_RETRY_429_MS || 30000);
 const RETRY_503_MS = Number(process.env.VIVINO_REVIEWS_RETRY_503_MS || 15000);
 const RETRY_WINE_COOLDOWN_MS = Number(process.env.VIVINO_REVIEWS_RETRY_WINE_COOLDOWN_MS || 900000);
 const RETRY_SELECTION_MULTIPLIER = Number(process.env.VIVINO_REVIEWS_RETRY_SELECTION_MULTIPLIER || 10);
+const PROGRESS_LOG_EVERY = Number(process.env.VIVINO_PROGRESS_LOG_EVERY || 10);
+const PROGRESS_LOG_INTERVAL_MS = Number(process.env.VIVINO_PROGRESS_LOG_INTERVAL_MS || 5000);
 const PROXY_ENABLED = String(
   process.env.VIVINO_PROXY_ENABLED ?? process.env.PROXY_ENABLED ?? 'false',
 ).trim().toLowerCase() === 'true';
@@ -47,9 +49,62 @@ let steelPage = null;
 let steelRequestCount = 0;
 let steelLock = Promise.resolve();
 const retryLaterUntilByWine = new Map();
+const workerProgress = {
+  enabled: WORKER_ENABLED,
+  started: false,
+  startedAt: null,
+  updatedAt: null,
+  phase: 'idle',
+  cycle: 0,
+  workers: WORKERS,
+  batchSize: BATCH_SIZE,
+  maxPages: MAX_PAGES,
+  totalEligible: 0,
+  doneEligible: 0,
+  pendingEligible: 0,
+  totalReviewsRows: 0,
+  doneReviewsDbSum: 0,
+  sessionWinesDone: 0,
+  sessionReviewsFetched: 0,
+  sessionReviewsRowsDelta: 0,
+  sessionBaseDoneEligible: 0,
+  sessionBaseReviewsRows: 0,
+  currentBatch: {
+    target: 0,
+    processed: 0,
+    ok: 0,
+    retryLater: 0,
+    pendingBefore: 0,
+    pendingAfter: 0,
+    startedAt: null,
+    updatedAt: null,
+  },
+  rates: {
+    batchWinesPerSec: 0,
+    globalWinesPerSec: 0,
+  },
+  etaSeconds: null,
+  lastError: null,
+};
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const nowIso = () => new Date().toISOString();
+
+function clampNonNegative(value) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, value);
+}
+
+function formatDuration(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return 'n/a';
+  const s = Math.floor(seconds);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
 
 function setupProxyIfEnabled() {
   console.log(`[vivino-worker] proxy_enabled=${PROXY_ENABLED}`);
@@ -67,7 +122,7 @@ function setupProxyIfEnabled() {
   }
 
   if (!proxy) {
-    console.log('[vivino-worker] VIVINO_PROXY_ENABLED=true, mas proxy não configurado. seguindo sem proxy.');
+    console.log('[vivino-worker] VIVINO_PROXY_ENABLED=true, mas proxy nÃƒÂ£o configurado. seguindo sem proxy.');
     return;
   }
 
@@ -131,7 +186,7 @@ async function fetchJsonWithRetry(url) {
         continue;
       }
 
-      // Erros permanentes, não insistir.
+      // Erros permanentes, nÃƒÂ£o insistir.
       return { ok: false, transient: false, status: res.status };
     } catch (err) {
       clearTimeout(timer);
@@ -427,6 +482,100 @@ async function getPendingCount(pool) {
   return Number(r.rows[0].n || 0);
 }
 
+async function getGlobalProgressStats(pool) {
+  const vinhoStats = await pool.query(
+    `SELECT
+       COUNT(*) FILTER (WHERE total_ratings >= $1)::bigint AS total_eligible,
+       COUNT(*) FILTER (WHERE total_ratings >= $1 AND reviews_coletados = TRUE)::bigint AS done_eligible,
+       COUNT(*) FILTER (WHERE total_ratings >= $1 AND reviews_coletados = FALSE)::bigint AS pending_eligible,
+       COALESCE(SUM(total_reviews_db) FILTER (WHERE total_ratings >= $1 AND reviews_coletados = TRUE), 0)::bigint AS done_reviews_sum
+     FROM vivino_vinhos`,
+    [MIN_RATINGS],
+  );
+  const reviewsStats = await pool.query(
+    `SELECT COUNT(*)::bigint AS reviews_rows FROM vivino_reviews`,
+  );
+
+  const row = vinhoStats.rows[0] || {};
+  const rowReviews = reviewsStats.rows[0] || {};
+  return {
+    totalEligible: Number(row.total_eligible || 0),
+    doneEligible: Number(row.done_eligible || 0),
+    pendingEligible: Number(row.pending_eligible || 0),
+    doneReviewsDbSum: Number(row.done_reviews_sum || 0),
+    totalReviewsRows: Number(rowReviews.reviews_rows || 0),
+  };
+}
+
+function updateRatesAndEta() {
+  const now = Date.now();
+  const sessionElapsedSec = clampNonNegative((now - Number(workerProgress.startedAt || now)) / 1000);
+  const batchElapsedSec = clampNonNegative((now - Number(workerProgress.currentBatch.startedAt || now)) / 1000);
+
+  workerProgress.rates.globalWinesPerSec = sessionElapsedSec > 0
+    ? workerProgress.sessionWinesDone / sessionElapsedSec
+    : 0;
+  workerProgress.rates.batchWinesPerSec = batchElapsedSec > 0
+    ? workerProgress.currentBatch.processed / batchElapsedSec
+    : 0;
+
+  const etaByGlobal = workerProgress.rates.globalWinesPerSec > 0
+    ? workerProgress.pendingEligible / workerProgress.rates.globalWinesPerSec
+    : null;
+  const etaByBatch = workerProgress.rates.batchWinesPerSec > 0
+    ? workerProgress.pendingEligible / workerProgress.rates.batchWinesPerSec
+    : null;
+
+  workerProgress.etaSeconds = Number.isFinite(etaByGlobal) && etaByGlobal > 0
+    ? etaByGlobal
+    : etaByBatch;
+}
+
+function logProgressDashboard(extra = {}) {
+  const pct = workerProgress.totalEligible > 0
+    ? Math.floor((workerProgress.doneEligible / workerProgress.totalEligible) * 100)
+    : 0;
+  const batch = workerProgress.currentBatch;
+  const batchPct = batch.target > 0
+    ? Math.floor((batch.processed / batch.target) * 100)
+    : 0;
+  const batchEta = batch.target > batch.processed && workerProgress.rates.batchWinesPerSec > 0
+    ? (batch.target - batch.processed) / workerProgress.rates.batchWinesPerSec
+    : null;
+
+  console.log('[vivino-worker] ======================================================================');
+  console.log(
+    `[vivino-worker] PROGRESSO Ã¢â‚¬â€ ${workerProgress.doneEligible.toLocaleString('pt-BR')} / ${workerProgress.totalEligible.toLocaleString('pt-BR')} (${pct}%)`,
+  );
+  console.log(
+    `[vivino-worker]   Pendentes: ${workerProgress.pendingEligible.toLocaleString('pt-BR')} | RetryCooldown: ${retryLaterUntilByWine.size.toLocaleString('pt-BR')}`,
+  );
+  console.log(
+    `[vivino-worker]   Reviews na base: ${workerProgress.totalReviewsRows.toLocaleString('pt-BR')} | Reviews acumuladas (sum): ${workerProgress.doneReviewsDbSum.toLocaleString('pt-BR')}`,
+  );
+  console.log(
+    `[vivino-worker]   Sessao: +${workerProgress.sessionWinesDone.toLocaleString('pt-BR')} vinhos | +${workerProgress.sessionReviewsFetched.toLocaleString('pt-BR')} reviews_fetch`,
+  );
+  console.log(
+    `[vivino-worker]   Lote atual: ${batch.processed}/${batch.target} (${batchPct}%) | OK=${batch.ok} | Retry=${batch.retryLater} | ETA lote=${formatDuration(batchEta)}`,
+  );
+  console.log(
+    `[vivino-worker]   Velocidade: lote=${workerProgress.rates.batchWinesPerSec.toFixed(2)} vinhos/s | geral=${workerProgress.rates.globalWinesPerSec.toFixed(2)} vinhos/s | ETA total=${formatDuration(workerProgress.etaSeconds)}`,
+  );
+  if (extra && extra.message) {
+    console.log(`[vivino-worker]   ${extra.message}`);
+  }
+  console.log('[vivino-worker] ======================================================================');
+}
+
+function getVivinoWorkerProgress() {
+  return {
+    ...workerProgress,
+    retryCooldownCount: retryLaterUntilByWine.size,
+    now: nowIso(),
+  };
+}
+
 async function collectWine(pool, wineId) {
   const client = await pool.connect();
   try {
@@ -437,11 +586,11 @@ async function collectWine(pool, wineId) {
       const result = await fetchJsonWithRetry(url);
 
       if (!result.ok) {
-        // Erro transitório: não marcar como coletado, tenta em lote futuro.
+        // Erro transitÃƒÂ³rio: nÃƒÂ£o marcar como coletado, tenta em lote futuro.
         if (result.transient) {
           return { ok: false, retryLater: true, wineId, total };
         }
-        // Erro permanente: marcar como coletado com o que já temos.
+        // Erro permanente: marcar como coletado com o que jÃƒÂ¡ temos.
         await markWineDone(client, wineId, total);
         return { ok: true, done: true, wineId, total, status: result.status };
       }
@@ -492,10 +641,34 @@ async function loop(pool) {
   let cycle = 0;
   while (true) {
     cycle += 1;
+    workerProgress.cycle = cycle;
+    workerProgress.phase = 'cycle_start';
+    workerProgress.updatedAt = Date.now();
 
-    const pendingBefore = await getPendingCount(pool);
+    const globalBefore = await getGlobalProgressStats(pool);
+    workerProgress.totalEligible = globalBefore.totalEligible;
+    workerProgress.doneEligible = globalBefore.doneEligible;
+    workerProgress.pendingEligible = globalBefore.pendingEligible;
+    workerProgress.totalReviewsRows = globalBefore.totalReviewsRows;
+    workerProgress.doneReviewsDbSum = globalBefore.doneReviewsDbSum;
+    workerProgress.sessionWinesDone = clampNonNegative(workerProgress.doneEligible - workerProgress.sessionBaseDoneEligible);
+    workerProgress.sessionReviewsRowsDelta = clampNonNegative(workerProgress.totalReviewsRows - workerProgress.sessionBaseReviewsRows);
+    updateRatesAndEta();
+
+    const pendingBefore = globalBefore.pendingEligible;
     if (pendingBefore <= 0) {
-      console.log(`[vivino-worker] ${nowIso()} sem pendências. dormindo ${SLEEP_WHEN_EMPTY_MS}ms`);
+      workerProgress.phase = 'idle_waiting';
+      workerProgress.currentBatch = {
+        target: 0,
+        processed: 0,
+        ok: 0,
+        retryLater: 0,
+        pendingBefore: 0,
+        pendingAfter: 0,
+        startedAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      logProgressDashboard({ message: `Sem pendencias. pausa de ${Math.floor(SLEEP_WHEN_EMPTY_MS / 1000)}s.` });
       await sleep(SLEEP_WHEN_EMPTY_MS);
       continue;
     }
@@ -505,7 +678,18 @@ async function loop(pool) {
     const candidateLimit = Math.max(BATCH_SIZE, BATCH_SIZE * Math.max(1, RETRY_SELECTION_MULTIPLIER));
     const candidateIds = await getPendingWineIds(pool, candidateLimit);
     if (!candidateIds.length) {
-      console.log(`[vivino-worker] ${nowIso()} sem IDs no lote. dormindo ${SLEEP_WHEN_EMPTY_MS}ms`);
+      workerProgress.phase = 'idle_no_candidates';
+      workerProgress.currentBatch = {
+        target: 0,
+        processed: 0,
+        ok: 0,
+        retryLater: 0,
+        pendingBefore,
+        pendingAfter: pendingBefore,
+        startedAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      logProgressDashboard({ message: `Sem IDs no lote. pausa de ${Math.floor(SLEEP_WHEN_EMPTY_MS / 1000)}s.` });
       await sleep(SLEEP_WHEN_EMPTY_MS);
       continue;
     }
@@ -517,9 +701,20 @@ async function loop(pool) {
     );
 
     if (!ids.length) {
-      console.log(
-        `[vivino-worker] ciclo=${cycle} todos candidatos em cooldown (candidatos=${candidateIds.length} cooldown=${skippedByCooldown}). aguardando ${SLEEP_BETWEEN_BATCH_MS}ms`,
-      );
+      workerProgress.phase = 'cooldown_waiting';
+      workerProgress.currentBatch = {
+        target: 0,
+        processed: 0,
+        ok: 0,
+        retryLater: 0,
+        pendingBefore,
+        pendingAfter: pendingBefore,
+        startedAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      logProgressDashboard({
+        message: `Todos candidatos em cooldown (candidatos=${candidateIds.length} cooldown=${skippedByCooldown}). aguardando ${Math.floor(SLEEP_BETWEEN_BATCH_MS / 1000)}s.`,
+      });
       await sleep(SLEEP_BETWEEN_BATCH_MS);
       continue;
     }
@@ -527,10 +722,26 @@ async function loop(pool) {
     let okWines = 0;
     let retryLater = 0;
     let totalReviews = 0;
+    let processed = 0;
+    let lastProgressLogAt = Date.now();
+    let lastProgressProcessed = 0;
 
-    console.log(
-      `[vivino-worker] ciclo=${cycle} pendentes=${pendingBefore} lote=${ids.length} workers=${WORKERS} candidatos=${candidateIds.length} cooldown=${skippedByCooldown}`,
-    );
+    workerProgress.phase = 'batch_running';
+    workerProgress.currentBatch = {
+      target: ids.length,
+      processed: 0,
+      ok: 0,
+      retryLater: 0,
+      pendingBefore,
+      pendingAfter: pendingBefore,
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    workerProgress.updatedAt = Date.now();
+    updateRatesAndEta();
+    logProgressDashboard({
+      message: `Lote ${cycle} iniciado | pendentes=${pendingBefore} | candidatos=${candidateIds.length} | cooldown=${skippedByCooldown}`,
+    });
 
     await runWithConcurrency(ids, WORKERS, async (wineId) => {
       const res = await collectWine(pool, wineId);
@@ -541,10 +752,50 @@ async function loop(pool) {
         retryLater += 1;
         markWineRetryLater(wineId);
       }
+
+      processed += 1;
+      workerProgress.currentBatch.processed = processed;
+      workerProgress.currentBatch.ok = okWines;
+      workerProgress.currentBatch.retryLater = retryLater;
+      workerProgress.currentBatch.updatedAt = Date.now();
+      workerProgress.sessionReviewsFetched += Number(res.total || 0);
+      workerProgress.updatedAt = Date.now();
+      updateRatesAndEta();
+
+      const reachedStep = (processed - lastProgressProcessed) >= Math.max(1, PROGRESS_LOG_EVERY);
+      const reachedTime = (Date.now() - lastProgressLogAt) >= Math.max(1000, PROGRESS_LOG_INTERVAL_MS);
+      const finishedBatch = processed >= ids.length;
+      if (reachedStep || reachedTime || finishedBatch) {
+        const batchRemaining = Math.max(0, ids.length - processed);
+        const batchEta = workerProgress.rates.batchWinesPerSec > 0
+          ? (batchRemaining / workerProgress.rates.batchWinesPerSec)
+          : null;
+        console.log(
+          `[vivino-worker] Progresso: ${processed}/${ids.length} | OK: ${okWines} | Retry: ${retryLater} | ${workerProgress.rates.batchWinesPerSec.toFixed(2)} vinhos/s | ETA lote: ${formatDuration(batchEta)} | ETA total: ${formatDuration(workerProgress.etaSeconds)}`,
+        );
+        lastProgressLogAt = Date.now();
+        lastProgressProcessed = processed;
+      }
     });
 
-    const pendingAfter = await getPendingCount(pool);
-    console.log(`[vivino-worker] ciclo=${cycle} ok_wines=${okWines} retry_later=${retryLater} reviews_lote=${totalReviews} pendentes_apos=${pendingAfter}`);
+    const globalAfter = await getGlobalProgressStats(pool);
+    workerProgress.totalEligible = globalAfter.totalEligible;
+    workerProgress.doneEligible = globalAfter.doneEligible;
+    workerProgress.pendingEligible = globalAfter.pendingEligible;
+    workerProgress.totalReviewsRows = globalAfter.totalReviewsRows;
+    workerProgress.doneReviewsDbSum = globalAfter.doneReviewsDbSum;
+    workerProgress.sessionWinesDone = clampNonNegative(workerProgress.doneEligible - workerProgress.sessionBaseDoneEligible);
+    workerProgress.sessionReviewsRowsDelta = clampNonNegative(workerProgress.totalReviewsRows - workerProgress.sessionBaseReviewsRows);
+    workerProgress.currentBatch.pendingAfter = globalAfter.pendingEligible;
+    workerProgress.currentBatch.updatedAt = Date.now();
+    workerProgress.phase = 'batch_done';
+    workerProgress.updatedAt = Date.now();
+    updateRatesAndEta();
+
+    console.log(
+      `[vivino-worker] ciclo=${cycle} ok_wines=${okWines} retry_later=${retryLater} reviews_lote=${totalReviews} pendentes_apos=${globalAfter.pendingEligible}`,
+    );
+    logProgressDashboard({ message: `Pausa de ${Math.floor(SLEEP_BETWEEN_BATCH_MS / 1000)}s entre lotes...` });
     await sleep(SLEEP_BETWEEN_BATCH_MS);
   }
 }
@@ -552,14 +803,25 @@ async function loop(pool) {
 async function startVivinoReviewsWorker() {
   if (started) return;
   started = true;
+  workerProgress.enabled = WORKER_ENABLED;
+  workerProgress.started = true;
+  workerProgress.startedAt = Date.now();
+  workerProgress.updatedAt = Date.now();
+  workerProgress.phase = 'booting';
+  workerProgress.lastError = null;
 
   if (!WORKER_ENABLED) {
     console.log('[vivino-worker] desabilitado via VIVINO_REVIEWS_WORKER_ENABLED=false');
+    workerProgress.phase = 'disabled';
+    workerProgress.updatedAt = Date.now();
     return;
   }
 
   if (!VIVINO_DATABASE_URL) {
-    console.log('[vivino-worker] VIVINO_DATABASE_URL/DATABASE_URL ausente. worker não iniciado.');
+    workerProgress.phase = 'error';
+    workerProgress.lastError = 'VIVINO_DATABASE_URL/DATABASE_URL ausente';
+    workerProgress.updatedAt = Date.now();
+    console.log('[vivino-worker] VIVINO_DATABASE_URL/DATABASE_URL ausente. worker nÃƒÂ£o iniciado.');
     return;
   }
 
@@ -572,7 +834,10 @@ async function startVivinoReviewsWorker() {
   });
 
   pool.on('error', (err) => {
-    console.error('[vivino-worker] erro no pool:', err && err.message ? err.message : err);
+    const msg = String(err && err.message ? err.message : err);
+    console.error('[vivino-worker] erro no pool:', msg);
+    workerProgress.lastError = msg;
+    workerProgress.updatedAt = Date.now();
   });
 
   setupProxyIfEnabled();
@@ -584,10 +849,40 @@ async function startVivinoReviewsWorker() {
   );
 
   try {
+    const initial = await getGlobalProgressStats(pool);
+    workerProgress.totalEligible = initial.totalEligible;
+    workerProgress.doneEligible = initial.doneEligible;
+    workerProgress.pendingEligible = initial.pendingEligible;
+    workerProgress.totalReviewsRows = initial.totalReviewsRows;
+    workerProgress.doneReviewsDbSum = initial.doneReviewsDbSum;
+    workerProgress.sessionBaseDoneEligible = initial.doneEligible;
+    workerProgress.sessionBaseReviewsRows = initial.totalReviewsRows;
+    workerProgress.sessionWinesDone = 0;
+    workerProgress.sessionReviewsFetched = 0;
+    workerProgress.sessionReviewsRowsDelta = 0;
+    workerProgress.currentBatch = {
+      target: 0,
+      processed: 0,
+      ok: 0,
+      retryLater: 0,
+      pendingBefore: initial.pendingEligible,
+      pendingAfter: initial.pendingEligible,
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    workerProgress.phase = 'ready';
+    workerProgress.updatedAt = Date.now();
+    updateRatesAndEta();
+    logProgressDashboard({ message: 'Worker iniciado e monitoramento ativo.' });
+
     await loop(pool);
   } catch (err) {
-    console.error('[vivino-worker] loop finalizado por erro fatal:', err && err.stack ? err.stack : err);
+    const msg = String(err && err.stack ? err.stack : (err && err.message ? err.message : err));
+    workerProgress.phase = 'fatal_error';
+    workerProgress.lastError = msg;
+    workerProgress.updatedAt = Date.now();
+    console.error('[vivino-worker] loop finalizado por erro fatal:', msg);
   }
 }
 
-module.exports = { startVivinoReviewsWorker };
+module.exports = { startVivinoReviewsWorker, getVivinoWorkerProgress };
