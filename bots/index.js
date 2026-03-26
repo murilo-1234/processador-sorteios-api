@@ -14,7 +14,11 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const QRCode = require('qrcode');
-const { startVivinoReviewsWorker, getVivinoWorkerProgress } = require('./vivino_reviews_worker');
+const {
+  startVivinoReviewsWorker,
+  getVivinoWorkerProgress,
+  getVivinoWorkerMetrics,
+} = require('./vivino_reviews_worker');
 
 // Reuso do seu código existente
 const WhatsAppClient = require('../whatsapp-automation/src/services/whatsapp-client');
@@ -160,6 +164,50 @@ function buildVivinoProgressLines(snapshot) {
     `Base: reviews_rows=${s.totalReviewsRows.toLocaleString('pt-BR')} | sum_reviews_vinhos=${s.doneReviewsDbSum.toLocaleString('pt-BR')}`,
     `Sessao: +vinhos=${s.sessionWinesDone.toLocaleString('pt-BR')} | reviews_fetch=${s.sessionReviewsFetched.toLocaleString('pt-BR')} | novos_rows=${s.sessionReviewsRowsDelta.toLocaleString('pt-BR')} | repetidos_est=${s.derived.sessionDuplicatesEstimate.toLocaleString('pt-BR')}`,
     `Fase: ${s.phase || 'unknown'} | Ciclo: ${toNumber(s.cycle)} | Atualizado: ${s.updatedAt ? new Date(s.updatedAt).toISOString() : 'n/a'}`,
+  ];
+}
+
+function toIntInRange(value, minValue, maxValue, fallbackValue) {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n)) return fallbackValue;
+  return Math.max(minValue, Math.min(maxValue, n));
+}
+
+function formatMaybePct(value) {
+  return Number.isFinite(value) ? `${value.toFixed(2)}%` : 'n/a';
+}
+
+function buildVivinoMetricsLines(metrics) {
+  const m = metrics || {};
+  const base = m.base || {};
+  const throughput = m.throughput || {};
+  const wines = throughput.wines || {};
+  const reviews = throughput.reviewsSum || {};
+  const cmpHour = (m.comparisons && m.comparisons.hour) || {};
+  const cmpDay = (m.comparisons && m.comparisons.day) || {};
+  const eta = m.eta || {};
+  const pending = m.pending || {};
+  const worker = m.worker || {};
+  const session = worker.session || {};
+  const rates = worker.rates || {};
+  const batch = worker.currentBatch || {};
+
+  return [
+    '======================================================================',
+    `VIVINO METRICS | generated_at=${m.generatedAt || 'n/a'} | tz=${m.timezone || 'n/a'}`,
+    '======================================================================',
+    `BASE: elegiveis ${toNumber(base.winesDoneTotal).toLocaleString('pt-BR')} / ${toNumber(base.winesEligibleTotal).toLocaleString('pt-BR')} (${toNumber(base.progressPct).toFixed(2)}%) | pendentes ${toNumber(base.winesPendingTotal).toLocaleString('pt-BR')} | ineligiveis ${toNumber(base.winesIneligibleTotal).toLocaleString('pt-BR')}`,
+    `REVIEWS BASE: rows=${toNumber(base.reviewsRowsTotal).toLocaleString('pt-BR')} | sum_done=${toNumber(base.reviewsSumDoneWines).toLocaleString('pt-BR')} | avg_por_vinho=${toNumber(base.avgReviewsPerDoneWine).toFixed(2)} | coverage=${formatMaybePct(Number(base.reviewsRowsVsSumPct))}`,
+    `THROUGHPUT VINHOS: 5m=${toNumber(wines.last5m)} | 15m=${toNumber(wines.last15m)} | 1h=${toNumber(wines.last1h)} | 6h=${toNumber(wines.last6h)} | 24h=${toNumber(wines.last24h)} | 7d=${toNumber(wines.last7d)}`,
+    `THROUGHPUT REVIEWS_SUM: 5m=${toNumber(reviews.last5m)} | 15m=${toNumber(reviews.last15m)} | 1h=${toNumber(reviews.last1h)} | 6h=${toNumber(reviews.last6h)} | 24h=${toNumber(reviews.last24h)} | 7d=${toNumber(reviews.last7d)}`,
+    `COMPARACAO HORA: atual=${toNumber(cmpHour.current && cmpHour.current.winesDone)} vs anterior=${toNumber(cmpHour.previous && cmpHour.previous.winesDone)} | delta=${toNumber(cmpHour.delta && cmpHour.delta.winesAbs)} | ${formatMaybePct(Number(cmpHour.delta && cmpHour.delta.winesPct))}`,
+    `COMPARACAO DIA: atual=${toNumber(cmpDay.current && cmpDay.current.winesDone)} vs anterior=${toNumber(cmpDay.previous && cmpDay.previous.winesDone)} | delta=${toNumber(cmpDay.delta && cmpDay.delta.winesAbs)} | ${formatMaybePct(Number(cmpDay.delta && cmpDay.delta.winesPct))}`,
+    `ETA: best=${eta.bestHuman || 'n/a'} | live=${eta.byLiveRateHuman || 'n/a'} | 1h=${eta.byLastHourHuman || 'n/a'} | 24h=${eta.byLast24hHuman || 'n/a'}`,
+    `PENDENTES: count=${toNumber(pending.count)} | ratings[min/avg/max]=${toNumber(pending.minRatings)}/${toNumber(pending.avgRatings).toFixed(2)}/${toNumber(pending.maxRatings)}`,
+    `WORKER: phase=${worker.phase || 'n/a'} | cycle=${toNumber(worker.cycle)} | cooldown=${toNumber(worker.retryCooldownCount)} | rate_batch=${toNumber(rates.batchWinesPerSec).toFixed(2)} vinhos/s | rate_global=${toNumber(rates.globalWinesPerSec).toFixed(2)} vinhos/s`,
+    `SESSAO: +vinhos=${toNumber(session.winesDone)} | reviews_fetch=${toNumber(session.reviewsFetched)} | novos_rows=${toNumber(session.reviewsRowsDelta)} | repetidos_est=${toNumber(session.duplicatesEstimate)}`,
+    `LOTE: ${toNumber(batch.processed)}/${toNumber(batch.target)} | ok=${toNumber(batch.ok)} | retry=${toNumber(batch.retryLater)} | pending_before=${toNumber(batch.pendingBefore)} | pending_after=${toNumber(batch.pendingAfter)}`,
+    '======================================================================',
   ];
 }
 
@@ -485,6 +533,59 @@ app.get('/api/vivino/progress.txt', basicAuth, (req, res) => {
   res.send(lines.join('\n'));
 });
 
+app.get('/api/vivino/metrics', basicAuth, async (req, res) => {
+  try {
+    const hourlyHours = toIntInRange(req.query.hourly_hours, 6, 168, 48);
+    const dailyDays = toIntInRange(req.query.daily_days, 7, 120, 30);
+    const metrics = await getVivinoWorkerMetrics({ hourlyHours, dailyDays });
+    if (!metrics || metrics.ok === false) {
+      return res.status(503).json({
+        ok: false,
+        at: new Date().toISOString(),
+        error: metrics && metrics.error ? metrics.error : 'metrics indisponiveis',
+        metrics: metrics || null,
+      });
+    }
+    return res.json({
+      ok: true,
+      at: new Date().toISOString(),
+      metrics,
+    });
+  } catch (e) {
+    return res.status(500).json({
+      ok: false,
+      at: new Date().toISOString(),
+      error: e?.message || String(e),
+    });
+  }
+});
+
+app.get('/api/vivino/metrics.txt', basicAuth, async (req, res) => {
+  try {
+    const hourlyHours = toIntInRange(req.query.hourly_hours, 6, 168, 48);
+    const dailyDays = toIntInRange(req.query.daily_days, 7, 120, 30);
+    const metrics = await getVivinoWorkerMetrics({ hourlyHours, dailyDays });
+    const lines = metrics && metrics.ok !== false
+      ? buildVivinoMetricsLines(metrics)
+      : [
+          '======================================================================',
+          `VIVINO METRICS indisponivel: ${(metrics && metrics.error) ? metrics.error : 'erro desconhecido'}`,
+          '======================================================================',
+        ];
+    res.type('text/plain; charset=utf-8');
+    return res.send(lines.join('\n'));
+  } catch (e) {
+    res.type('text/plain; charset=utf-8');
+    return res.status(500).send(
+      [
+        '======================================================================',
+        `VIVINO METRICS erro: ${e?.message || String(e)}`,
+        '======================================================================',
+      ].join('\n'),
+    );
+  }
+});
+
 // QR em SVG (com auto-refresh se não disponível)
 app.get('/qr/:id', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -768,6 +869,8 @@ app.get(['/','/admin'], basicAuth, async (req, res) => {
       <div class="actions">
         <a class="qr" href="/api/vivino/progress" target="_blank">JSON progresso</a>
         <a class="qr" href="/api/vivino/progress.txt" target="_blank">TXT progresso</a>
+        <a class="qr" href="/api/vivino/metrics" target="_blank">JSON metrics</a>
+        <a class="qr" href="/api/vivino/metrics.txt" target="_blank">TXT metrics</a>
       </div>
     </div>
     <div class="grid">

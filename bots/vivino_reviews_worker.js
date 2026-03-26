@@ -33,6 +33,8 @@ const STEEL_API_KEY = process.env.VIVINO_STEEL_API_KEY || process.env.STEEL_API_
 const STEEL_WS_ENDPOINT = process.env.VIVINO_STEEL_WS_ENDPOINT || 'wss://connect.steel.dev';
 const STEEL_TIMEOUT_MS = Number(process.env.VIVINO_STEEL_TIMEOUT_MS || 45000);
 const STEEL_MAX_REQUESTS_PER_SESSION = Number(process.env.VIVINO_STEEL_MAX_REQUESTS_PER_SESSION || 25);
+const METRICS_HOURLY_HOURS = Number(process.env.VIVINO_METRICS_HOURLY_HOURS || 48);
+const METRICS_DAILY_DAYS = Number(process.env.VIVINO_METRICS_DAILY_DAYS || 30);
 
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -48,6 +50,8 @@ let steelContext = null;
 let steelPage = null;
 let steelRequestCount = 0;
 let steelLock = Promise.resolve();
+let workerPool = null;
+let metricsPool = null;
 const retryLaterUntilByWine = new Map();
 const workerProgress = {
   enabled: WORKER_ENABLED,
@@ -576,6 +580,422 @@ function getVivinoWorkerProgress() {
   };
 }
 
+function toMetricNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function toIsoOrNull(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
+function pctChange(current, previous) {
+  if (!Number.isFinite(current) || !Number.isFinite(previous) || previous <= 0) return null;
+  return ((current - previous) / previous) * 100;
+}
+
+function estimateEtaSeconds(pendingCount, completedInWindow, windowSeconds) {
+  if (!Number.isFinite(pendingCount) || pendingCount <= 0) return 0;
+  if (!Number.isFinite(completedInWindow) || completedInWindow <= 0) return null;
+  if (!Number.isFinite(windowSeconds) || windowSeconds <= 0) return null;
+  const rate = completedInWindow / windowSeconds;
+  if (!Number.isFinite(rate) || rate <= 0) return null;
+  return pendingCount / rate;
+}
+
+function clampIntRange(value, minValue, maxValue) {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n)) return minValue;
+  return Math.max(minValue, Math.min(maxValue, n));
+}
+
+function getPoolConfig(maxConnections) {
+  return {
+    connectionString: VIVINO_DATABASE_URL,
+    max: maxConnections,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 10000,
+    ssl: process.env.PGSSLMODE === 'disable' ? false : { rejectUnauthorized: false },
+  };
+}
+
+function getMetricsPool() {
+  if (workerPool) return workerPool;
+  if (metricsPool) return metricsPool;
+  if (!VIVINO_DATABASE_URL) return null;
+  metricsPool = new Pool(getPoolConfig(3));
+  metricsPool.on('error', (err) => {
+    const msg = String(err && err.message ? err.message : err);
+    console.error('[vivino-worker] erro no metrics pool:', msg);
+  });
+  return metricsPool;
+}
+
+async function getVivinoWorkerMetrics(options = {}) {
+  const pool = getMetricsPool();
+  if (!pool) {
+    return {
+      ok: false,
+      generatedAt: nowIso(),
+      error: 'VIVINO_DATABASE_URL/DATABASE_URL ausente',
+      worker: getVivinoWorkerProgress(),
+    };
+  }
+
+  const hourlyHours = clampIntRange(
+    options && options.hourlyHours != null ? options.hourlyHours : METRICS_HOURLY_HOURS,
+    6,
+    168,
+  );
+  const dailyDays = clampIntRange(
+    options && options.dailyDays != null ? options.dailyDays : METRICS_DAILY_DAYS,
+    7,
+    120,
+  );
+
+  const summarySql = `
+    SELECT
+      COUNT(*)::bigint AS wines_total,
+      COUNT(*) FILTER (WHERE total_ratings >= $1)::bigint AS wines_eligible_total,
+      COUNT(*) FILTER (WHERE total_ratings < $1)::bigint AS wines_ineligible_total,
+      COUNT(*) FILTER (WHERE total_ratings >= $1 AND reviews_coletados = TRUE)::bigint AS wines_done_total,
+      COUNT(*) FILTER (WHERE total_ratings >= $1 AND reviews_coletados = FALSE)::bigint AS wines_pending_total,
+      COALESCE(SUM(total_reviews_db) FILTER (WHERE total_ratings >= $1 AND reviews_coletados = TRUE), 0)::bigint AS reviews_sum_done,
+      COUNT(*) FILTER (WHERE total_ratings >= $1 AND reviews_coletados = TRUE AND reviews_atualizado_em >= NOW() - INTERVAL '5 minutes')::bigint AS wines_5m,
+      COUNT(*) FILTER (WHERE total_ratings >= $1 AND reviews_coletados = TRUE AND reviews_atualizado_em >= NOW() - INTERVAL '15 minutes')::bigint AS wines_15m,
+      COUNT(*) FILTER (WHERE total_ratings >= $1 AND reviews_coletados = TRUE AND reviews_atualizado_em >= NOW() - INTERVAL '1 hour')::bigint AS wines_1h,
+      COUNT(*) FILTER (WHERE total_ratings >= $1 AND reviews_coletados = TRUE AND reviews_atualizado_em >= NOW() - INTERVAL '6 hours')::bigint AS wines_6h,
+      COUNT(*) FILTER (WHERE total_ratings >= $1 AND reviews_coletados = TRUE AND reviews_atualizado_em >= NOW() - INTERVAL '24 hours')::bigint AS wines_24h,
+      COUNT(*) FILTER (WHERE total_ratings >= $1 AND reviews_coletados = TRUE AND reviews_atualizado_em >= NOW() - INTERVAL '7 days')::bigint AS wines_7d,
+      COALESCE(SUM(total_reviews_db) FILTER (WHERE total_ratings >= $1 AND reviews_coletados = TRUE AND reviews_atualizado_em >= NOW() - INTERVAL '5 minutes'), 0)::bigint AS reviews_5m,
+      COALESCE(SUM(total_reviews_db) FILTER (WHERE total_ratings >= $1 AND reviews_coletados = TRUE AND reviews_atualizado_em >= NOW() - INTERVAL '15 minutes'), 0)::bigint AS reviews_15m,
+      COALESCE(SUM(total_reviews_db) FILTER (WHERE total_ratings >= $1 AND reviews_coletados = TRUE AND reviews_atualizado_em >= NOW() - INTERVAL '1 hour'), 0)::bigint AS reviews_1h,
+      COALESCE(SUM(total_reviews_db) FILTER (WHERE total_ratings >= $1 AND reviews_coletados = TRUE AND reviews_atualizado_em >= NOW() - INTERVAL '6 hours'), 0)::bigint AS reviews_6h,
+      COALESCE(SUM(total_reviews_db) FILTER (WHERE total_ratings >= $1 AND reviews_coletados = TRUE AND reviews_atualizado_em >= NOW() - INTERVAL '24 hours'), 0)::bigint AS reviews_24h,
+      COALESCE(SUM(total_reviews_db) FILTER (WHERE total_ratings >= $1 AND reviews_coletados = TRUE AND reviews_atualizado_em >= NOW() - INTERVAL '7 days'), 0)::bigint AS reviews_7d,
+      COUNT(*) FILTER (
+        WHERE total_ratings >= $1
+          AND reviews_coletados = TRUE
+          AND reviews_atualizado_em >= date_trunc('hour', NOW())
+          AND reviews_atualizado_em < date_trunc('hour', NOW()) + INTERVAL '1 hour'
+      )::bigint AS wines_current_hour,
+      COUNT(*) FILTER (
+        WHERE total_ratings >= $1
+          AND reviews_coletados = TRUE
+          AND reviews_atualizado_em >= date_trunc('hour', NOW()) - INTERVAL '1 hour'
+          AND reviews_atualizado_em < date_trunc('hour', NOW())
+      )::bigint AS wines_previous_hour,
+      COALESCE(SUM(total_reviews_db) FILTER (
+        WHERE total_ratings >= $1
+          AND reviews_coletados = TRUE
+          AND reviews_atualizado_em >= date_trunc('hour', NOW())
+          AND reviews_atualizado_em < date_trunc('hour', NOW()) + INTERVAL '1 hour'
+      ), 0)::bigint AS reviews_current_hour,
+      COALESCE(SUM(total_reviews_db) FILTER (
+        WHERE total_ratings >= $1
+          AND reviews_coletados = TRUE
+          AND reviews_atualizado_em >= date_trunc('hour', NOW()) - INTERVAL '1 hour'
+          AND reviews_atualizado_em < date_trunc('hour', NOW())
+      ), 0)::bigint AS reviews_previous_hour,
+      COUNT(*) FILTER (
+        WHERE total_ratings >= $1
+          AND reviews_coletados = TRUE
+          AND reviews_atualizado_em >= date_trunc('day', NOW())
+          AND reviews_atualizado_em < date_trunc('day', NOW()) + INTERVAL '1 day'
+      )::bigint AS wines_current_day,
+      COUNT(*) FILTER (
+        WHERE total_ratings >= $1
+          AND reviews_coletados = TRUE
+          AND reviews_atualizado_em >= date_trunc('day', NOW()) - INTERVAL '1 day'
+          AND reviews_atualizado_em < date_trunc('day', NOW())
+      )::bigint AS wines_previous_day,
+      COALESCE(SUM(total_reviews_db) FILTER (
+        WHERE total_ratings >= $1
+          AND reviews_coletados = TRUE
+          AND reviews_atualizado_em >= date_trunc('day', NOW())
+          AND reviews_atualizado_em < date_trunc('day', NOW()) + INTERVAL '1 day'
+      ), 0)::bigint AS reviews_current_day,
+      COALESCE(SUM(total_reviews_db) FILTER (
+        WHERE total_ratings >= $1
+          AND reviews_coletados = TRUE
+          AND reviews_atualizado_em >= date_trunc('day', NOW()) - INTERVAL '1 day'
+          AND reviews_atualizado_em < date_trunc('day', NOW())
+      ), 0)::bigint AS reviews_previous_day,
+      MIN(reviews_atualizado_em) FILTER (WHERE total_ratings >= $1 AND reviews_coletados = TRUE) AS first_done_at,
+      MAX(reviews_atualizado_em) FILTER (WHERE total_ratings >= $1 AND reviews_coletados = TRUE) AS last_done_at
+    FROM vivino_vinhos
+  `;
+
+  const reviewsRowsSql = `SELECT COUNT(*)::bigint AS reviews_rows_total FROM vivino_reviews`;
+
+  const pendingStatsSql = `
+    SELECT
+      COUNT(*)::bigint AS pending_count,
+      COALESCE(MIN(total_ratings), 0)::bigint AS pending_min_ratings,
+      COALESCE(MAX(total_ratings), 0)::bigint AS pending_max_ratings,
+      COALESCE(AVG(total_ratings), 0)::numeric(20,4) AS pending_avg_ratings
+    FROM vivino_vinhos
+    WHERE total_ratings >= $1
+      AND reviews_coletados = FALSE
+  `;
+
+  const topPendingSql = `
+    SELECT id, total_ratings, total_reviews_db
+    FROM vivino_vinhos
+    WHERE total_ratings >= $1
+      AND reviews_coletados = FALSE
+    ORDER BY total_ratings DESC, id DESC
+    LIMIT 10
+  `;
+
+  const hourlyHistorySql = `
+    WITH bounds AS (
+      SELECT
+        date_trunc('hour', NOW()) AS hour_end,
+        date_trunc('hour', NOW()) - (($1::int - 1) * INTERVAL '1 hour') AS hour_start
+    ),
+    series AS (
+      SELECT generate_series(bounds.hour_start, bounds.hour_end, INTERVAL '1 hour') AS bucket
+      FROM bounds
+    ),
+    agg AS (
+      SELECT
+        date_trunc('hour', reviews_atualizado_em) AS bucket,
+        COUNT(*)::bigint AS wines_done,
+        COALESCE(SUM(total_reviews_db), 0)::bigint AS reviews_sum
+      FROM vivino_vinhos, bounds
+      WHERE total_ratings >= $2
+        AND reviews_coletados = TRUE
+        AND reviews_atualizado_em >= bounds.hour_start
+        AND reviews_atualizado_em < bounds.hour_end + INTERVAL '1 hour'
+      GROUP BY 1
+    )
+    SELECT
+      series.bucket,
+      COALESCE(agg.wines_done, 0)::bigint AS wines_done,
+      COALESCE(agg.reviews_sum, 0)::bigint AS reviews_sum
+    FROM series
+    LEFT JOIN agg ON agg.bucket = series.bucket
+    ORDER BY series.bucket ASC
+  `;
+
+  const dailyHistorySql = `
+    WITH bounds AS (
+      SELECT
+        date_trunc('day', NOW()) AS day_end,
+        date_trunc('day', NOW()) - (($1::int - 1) * INTERVAL '1 day') AS day_start
+    ),
+    series AS (
+      SELECT generate_series(bounds.day_start, bounds.day_end, INTERVAL '1 day') AS bucket
+      FROM bounds
+    ),
+    agg AS (
+      SELECT
+        date_trunc('day', reviews_atualizado_em) AS bucket,
+        COUNT(*)::bigint AS wines_done,
+        COALESCE(SUM(total_reviews_db), 0)::bigint AS reviews_sum
+      FROM vivino_vinhos, bounds
+      WHERE total_ratings >= $2
+        AND reviews_coletados = TRUE
+        AND reviews_atualizado_em >= bounds.day_start
+        AND reviews_atualizado_em < bounds.day_end + INTERVAL '1 day'
+      GROUP BY 1
+    )
+    SELECT
+      series.bucket,
+      COALESCE(agg.wines_done, 0)::bigint AS wines_done,
+      COALESCE(agg.reviews_sum, 0)::bigint AS reviews_sum
+    FROM series
+    LEFT JOIN agg ON agg.bucket = series.bucket
+    ORDER BY series.bucket ASC
+  `;
+
+  const [summaryResult, reviewsRowsResult, pendingStatsResult, topPendingResult, hourlyHistoryResult, dailyHistoryResult] = await Promise.all([
+    pool.query(summarySql, [MIN_RATINGS]),
+    pool.query(reviewsRowsSql),
+    pool.query(pendingStatsSql, [MIN_RATINGS]),
+    pool.query(topPendingSql, [MIN_RATINGS]),
+    pool.query(hourlyHistorySql, [hourlyHours, MIN_RATINGS]),
+    pool.query(dailyHistorySql, [dailyDays, MIN_RATINGS]),
+  ]);
+
+  const summary = summaryResult.rows[0] || {};
+  const reviewsRows = reviewsRowsResult.rows[0] || {};
+  const pendingStats = pendingStatsResult.rows[0] || {};
+  const progress = getVivinoWorkerProgress();
+
+  const winesPending = toMetricNumber(summary.wines_pending_total);
+  const winesDone = toMetricNumber(summary.wines_done_total);
+  const reviewsRowsTotal = toMetricNumber(reviewsRows.reviews_rows_total);
+  const reviewsSumDone = toMetricNumber(summary.reviews_sum_done);
+  const avgReviewsPerDoneWine = winesDone > 0 ? (reviewsSumDone / winesDone) : 0;
+
+  const winesCurrentHour = toMetricNumber(summary.wines_current_hour);
+  const winesPreviousHour = toMetricNumber(summary.wines_previous_hour);
+  const winesCurrentDay = toMetricNumber(summary.wines_current_day);
+  const winesPreviousDay = toMetricNumber(summary.wines_previous_day);
+  const reviewsCurrentHour = toMetricNumber(summary.reviews_current_hour);
+  const reviewsPreviousHour = toMetricNumber(summary.reviews_previous_hour);
+  const reviewsCurrentDay = toMetricNumber(summary.reviews_current_day);
+  const reviewsPreviousDay = toMetricNumber(summary.reviews_previous_day);
+
+  const liveGlobalRate = Number(progress && progress.rates ? progress.rates.globalWinesPerSec : 0);
+  const etaByLiveRateSeconds = liveGlobalRate > 0 ? (winesPending / liveGlobalRate) : null;
+  const etaByLastHourSeconds = estimateEtaSeconds(winesPending, toMetricNumber(summary.wines_1h), 3600);
+  const etaByLast24hSeconds = estimateEtaSeconds(winesPending, toMetricNumber(summary.wines_24h), 86400);
+  const etaBestSeconds = etaByLiveRateSeconds || etaByLastHourSeconds || etaByLast24hSeconds || null;
+
+  const hourlyHistory = hourlyHistoryResult.rows.map((row) => ({
+    bucketStart: toIsoOrNull(row.bucket),
+    winesDone: toMetricNumber(row.wines_done),
+    reviewsSum: toMetricNumber(row.reviews_sum),
+  }));
+
+  const dailyHistory = dailyHistoryResult.rows.map((row) => ({
+    bucketStart: toIsoOrNull(row.bucket),
+    winesDone: toMetricNumber(row.wines_done),
+    reviewsSum: toMetricNumber(row.reviews_sum),
+  }));
+
+  const topPending = topPendingResult.rows.map((row) => ({
+    id: toMetricNumber(row.id),
+    totalRatings: toMetricNumber(row.total_ratings),
+    totalReviewsDb: toMetricNumber(row.total_reviews_db),
+  }));
+
+  return {
+    ok: true,
+    generatedAt: nowIso(),
+    timezone: process.env.TZ || 'UTC',
+    config: {
+      minRatings: MIN_RATINGS,
+      workers: WORKERS,
+      batchSize: BATCH_SIZE,
+      maxPages: MAX_PAGES,
+      hourlyHistoryHours: hourlyHours,
+      dailyHistoryDays: dailyDays,
+    },
+    base: {
+      winesTotal: toMetricNumber(summary.wines_total),
+      winesEligibleTotal: toMetricNumber(summary.wines_eligible_total),
+      winesIneligibleTotal: toMetricNumber(summary.wines_ineligible_total),
+      winesDoneTotal: winesDone,
+      winesPendingTotal: winesPending,
+      progressPct: toMetricNumber(summary.wines_eligible_total) > 0
+        ? (winesDone / toMetricNumber(summary.wines_eligible_total)) * 100
+        : 0,
+      reviewsRowsTotal,
+      reviewsSumDoneWines: reviewsSumDone,
+      avgReviewsPerDoneWine,
+      reviewsRowsVsSumPct: reviewsSumDone > 0 ? (reviewsRowsTotal / reviewsSumDone) * 100 : null,
+      firstDoneAt: toIsoOrNull(summary.first_done_at),
+      lastDoneAt: toIsoOrNull(summary.last_done_at),
+    },
+    throughput: {
+      wines: {
+        last5m: toMetricNumber(summary.wines_5m),
+        last15m: toMetricNumber(summary.wines_15m),
+        last1h: toMetricNumber(summary.wines_1h),
+        last6h: toMetricNumber(summary.wines_6h),
+        last24h: toMetricNumber(summary.wines_24h),
+        last7d: toMetricNumber(summary.wines_7d),
+        avgPerHour24h: toMetricNumber(summary.wines_24h) / 24,
+        avgPerDay7d: toMetricNumber(summary.wines_7d) / 7,
+      },
+      reviewsSum: {
+        last5m: toMetricNumber(summary.reviews_5m),
+        last15m: toMetricNumber(summary.reviews_15m),
+        last1h: toMetricNumber(summary.reviews_1h),
+        last6h: toMetricNumber(summary.reviews_6h),
+        last24h: toMetricNumber(summary.reviews_24h),
+        last7d: toMetricNumber(summary.reviews_7d),
+        avgPerHour24h: toMetricNumber(summary.reviews_24h) / 24,
+        avgPerDay7d: toMetricNumber(summary.reviews_7d) / 7,
+      },
+    },
+    comparisons: {
+      hour: {
+        current: { winesDone: winesCurrentHour, reviewsSum: reviewsCurrentHour },
+        previous: { winesDone: winesPreviousHour, reviewsSum: reviewsPreviousHour },
+        delta: {
+          winesAbs: winesCurrentHour - winesPreviousHour,
+          winesPct: pctChange(winesCurrentHour, winesPreviousHour),
+          reviewsAbs: reviewsCurrentHour - reviewsPreviousHour,
+          reviewsPct: pctChange(reviewsCurrentHour, reviewsPreviousHour),
+        },
+      },
+      day: {
+        current: { winesDone: winesCurrentDay, reviewsSum: reviewsCurrentDay },
+        previous: { winesDone: winesPreviousDay, reviewsSum: reviewsPreviousDay },
+        delta: {
+          winesAbs: winesCurrentDay - winesPreviousDay,
+          winesPct: pctChange(winesCurrentDay, winesPreviousDay),
+          reviewsAbs: reviewsCurrentDay - reviewsPreviousDay,
+          reviewsPct: pctChange(reviewsCurrentDay, reviewsPreviousDay),
+        },
+      },
+    },
+    pending: {
+      count: toMetricNumber(pendingStats.pending_count),
+      minRatings: toMetricNumber(pendingStats.pending_min_ratings),
+      maxRatings: toMetricNumber(pendingStats.pending_max_ratings),
+      avgRatings: toMetricNumber(pendingStats.pending_avg_ratings),
+      topPendingByRatings: topPending,
+    },
+    eta: {
+      pendingWines: winesPending,
+      byLiveRateSeconds: etaByLiveRateSeconds,
+      byLastHourSeconds: etaByLastHourSeconds,
+      byLast24hSeconds: etaByLast24hSeconds,
+      bestSeconds: etaBestSeconds,
+      byLiveRateHuman: formatDuration(etaByLiveRateSeconds),
+      byLastHourHuman: formatDuration(etaByLastHourSeconds),
+      byLast24hHuman: formatDuration(etaByLast24hSeconds),
+      bestHuman: formatDuration(etaBestSeconds),
+    },
+    worker: {
+      enabled: Boolean(progress.enabled),
+      started: Boolean(progress.started),
+      startedAt: progress.startedAt ? toIsoOrNull(progress.startedAt) : null,
+      updatedAt: progress.updatedAt ? toIsoOrNull(progress.updatedAt) : null,
+      phase: progress.phase || 'idle',
+      cycle: toMetricNumber(progress.cycle),
+      retryCooldownCount: toMetricNumber(progress.retryCooldownCount),
+      rates: {
+        batchWinesPerSec: toMetricNumber(progress?.rates?.batchWinesPerSec),
+        globalWinesPerSec: toMetricNumber(progress?.rates?.globalWinesPerSec),
+      },
+      session: {
+        winesDone: toMetricNumber(progress.sessionWinesDone),
+        reviewsFetched: toMetricNumber(progress.sessionReviewsFetched),
+        reviewsRowsDelta: toMetricNumber(progress.sessionReviewsRowsDelta),
+        duplicatesEstimate: Math.max(
+          0,
+          toMetricNumber(progress.sessionReviewsFetched) - toMetricNumber(progress.sessionReviewsRowsDelta),
+        ),
+      },
+      currentBatch: {
+        target: toMetricNumber(progress?.currentBatch?.target),
+        processed: toMetricNumber(progress?.currentBatch?.processed),
+        ok: toMetricNumber(progress?.currentBatch?.ok),
+        retryLater: toMetricNumber(progress?.currentBatch?.retryLater),
+        pendingBefore: toMetricNumber(progress?.currentBatch?.pendingBefore),
+        pendingAfter: toMetricNumber(progress?.currentBatch?.pendingAfter),
+        startedAt: progress?.currentBatch?.startedAt ? toIsoOrNull(progress.currentBatch.startedAt) : null,
+        updatedAt: progress?.currentBatch?.updatedAt ? toIsoOrNull(progress.currentBatch.updatedAt) : null,
+      },
+      lastError: progress.lastError || null,
+    },
+    history: {
+      hourly: hourlyHistory,
+      daily: dailyHistory,
+    },
+  };
+}
+
 async function collectWine(pool, wineId) {
   const client = await pool.connect();
   try {
@@ -832,6 +1252,7 @@ async function startVivinoReviewsWorker() {
     connectionTimeoutMillis: 10000,
     ssl: process.env.PGSSLMODE === 'disable' ? false : { rejectUnauthorized: false },
   });
+  workerPool = pool;
 
   pool.on('error', (err) => {
     const msg = String(err && err.message ? err.message : err);
@@ -885,4 +1306,8 @@ async function startVivinoReviewsWorker() {
   }
 }
 
-module.exports = { startVivinoReviewsWorker, getVivinoWorkerProgress };
+module.exports = {
+  startVivinoReviewsWorker,
+  getVivinoWorkerProgress,
+  getVivinoWorkerMetrics,
+};
