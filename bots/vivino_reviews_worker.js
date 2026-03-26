@@ -192,6 +192,13 @@ async function ensureSteelPage() {
   steelPage.setDefaultNavigationTimeout(STEEL_TIMEOUT_MS);
   steelPage.setDefaultTimeout(STEEL_TIMEOUT_MS);
   await steelPage.setExtraHTTPHeaders(headers());
+
+  // Warm up a real session on Vivino before API calls.
+  await steelPage.goto(VIVINO_BASE_URL, {
+    waitUntil: 'domcontentloaded',
+    timeout: STEEL_TIMEOUT_MS,
+  }).catch(() => {});
+
   steelRequestCount = 0;
   return steelPage;
 }
@@ -199,25 +206,32 @@ async function ensureSteelPage() {
 async function fetchJsonViaSteel(url) {
   return withSteelLock(async () => {
     const page = await ensureSteelPage();
-    if (!page) return { ok: false, transient: true, status: 0 };
+    if (!page || !steelContext) return { ok: false, transient: true, status: 0 };
 
     try {
-      await page.setExtraHTTPHeaders(headers());
-      const response = await page.goto(url, {
-        waitUntil: 'domcontentloaded',
+      const response = await steelContext.request.get(url, {
+        headers: headers(),
         timeout: STEEL_TIMEOUT_MS,
       });
-      const status = response ? response.status() : 0;
-      const text = await page.locator('body').innerText().catch(async () => {
-        return page.evaluate(() => document.body?.innerText || document.documentElement?.innerText || '');
-      });
+      const status = response.status();
+      const text = await response.text();
       steelRequestCount += 1;
 
       if (status !== 200) {
-        return { ok: false, transient: status >= 500 || status === 0, status };
+        console.log(`[vivino-worker] Steel status=${status} em ${url}`);
+        return { ok: false, transient: true, status };
       }
 
-      const data = JSON.parse(text);
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch (parseErr) {
+        const preview = String(text || '').slice(0, 220).replace(/\s+/g, ' ');
+        console.log(`[vivino-worker] Steel retornou payload invalido em ${url}: ${preview}`);
+        await closeSteelBrowser();
+        return { ok: false, transient: true, status: 0 };
+      }
+
       return { ok: true, status, data, via: 'steel' };
     } catch (err) {
       const msg = String(err && err.message ? err.message : err);
