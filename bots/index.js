@@ -274,6 +274,7 @@ function setupEventListeners(ref) {
         if (!jid) return;
         if (msg?.key?.fromMe) return;
         if (jid.endsWith('@g.us')) return;
+        if (jid.endsWith('@newsletter')) return;
         if (jid === 'status@broadcast') return;
 
         // Cooldown: só responde 1x por pessoa POR INSTÂNCIA a cada 60s
