@@ -16,12 +16,14 @@ const SLEEP_WHEN_EMPTY_MS = Number(process.env.VIVINO_REVIEWS_SLEEP_WHEN_EMPTY_M
 const SLEEP_PER_WINE_MS = Number(process.env.VIVINO_REVIEWS_SLEEP_PER_WINE_MS || 150);
 const RETRY_429_MS = Number(process.env.VIVINO_REVIEWS_RETRY_429_MS || 30000);
 const RETRY_503_MS = Number(process.env.VIVINO_REVIEWS_RETRY_503_MS || 15000);
-const PROXY_ENABLED = String(process.env.VIVINO_PROXY_ENABLED || 'false') === 'true';
-const PROXY_URL = process.env.VIVINO_PROXY_URL || '';
-const PROXY_HOST = process.env.VIVINO_PROXY_HOST || '';
-const PROXY_PORT = process.env.VIVINO_PROXY_PORT || '';
-const PROXY_USER = process.env.VIVINO_PROXY_USER || '';
-const PROXY_PASS = process.env.VIVINO_PROXY_PASS || '';
+const PROXY_ENABLED = String(
+  process.env.VIVINO_PROXY_ENABLED ?? process.env.PROXY_ENABLED ?? 'false',
+).trim().toLowerCase() === 'true';
+const PROXY_URL = process.env.VIVINO_PROXY_URL || process.env.PROXY_URL || '';
+const PROXY_HOST = process.env.VIVINO_PROXY_HOST || process.env.PROXY_HOST || '';
+const PROXY_PORT = process.env.VIVINO_PROXY_PORT || process.env.PROXY_PORT || '';
+const PROXY_USER = process.env.VIVINO_PROXY_USER || process.env.PROXY_USER || '';
+const PROXY_PASS = process.env.VIVINO_PROXY_PASS || process.env.PROXY_PASS || '';
 
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -36,6 +38,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const nowIso = () => new Date().toISOString();
 
 function setupProxyIfEnabled() {
+  console.log(`[vivino-worker] proxy_enabled=${PROXY_ENABLED}`);
   if (!PROXY_ENABLED) return;
 
   let proxy = PROXY_URL;
@@ -55,7 +58,8 @@ function setupProxyIfEnabled() {
   }
 
   setGlobalDispatcher(new ProxyAgent(proxy));
-  console.log('[vivino-worker] proxy ativo para requests Vivino');
+  const masked = proxy.replace(/\/\/([^:@]+):([^@]+)@/, '//***:***@');
+  console.log(`[vivino-worker] proxy ativo para requests Vivino (${masked})`);
 }
 
 function headers() {
