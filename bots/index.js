@@ -44,6 +44,7 @@ const TZ = process.env.TZ || 'America/Sao_Paulo';
 const ADMIN_USER = process.env.ADMIN_USER || '';
 const ADMIN_PASS = process.env.ADMIN_PASSWORD || process.env.ADMIN_PASS || '';
 const WA_SESSION_BASE = process.env.WA_SESSION_BASE || './data/baileys-bots';
+const WA_BOTS_ENABLED = String(process.env.WA_BOTS_ENABLED ?? 'true').trim().toLowerCase() === 'true';
 
 // NOVO: Configurações de conexão controlada
 const INSTANCE_SPAWN_DELAY_MS = Number(process.env.WA_INSTANCE_SPAWN_DELAY_MS || 3000);
@@ -59,8 +60,11 @@ const WA_INSTANCE_IDS = String(process.env.WA_INSTANCE_IDS || '')
   .filter(Boolean);
 
 if (!WA_INSTANCE_IDS.length) {
-  console.error('Defina WA_INSTANCE_IDS com os números que serão conectados (ex: 4891167973,4891784533)');
-  process.exit(1);
+  if (WA_BOTS_ENABLED) {
+    console.error('Defina WA_INSTANCE_IDS com os números que serão conectados (ex: 4891167973,4891784533)');
+    process.exit(1);
+  }
+  console.log('[bots] WA_BOTS_ENABLED=false, instâncias WhatsApp não serão iniciadas.');
 }
 
 // ---------- Auth simples opcional ----------
@@ -319,7 +323,9 @@ async function spawnInstance(id) {
 }
 
 // MODIFICADO: Cria instâncias com delay entre elas
-(async () => {
+async function startWhatsAppInstances() {
+  if (!WA_BOTS_ENABLED) return;
+
   ensureDir(WA_SESSION_BASE);
   console.log(`[bots] Iniciando ${WA_INSTANCE_IDS.length} instâncias com ${INSTANCE_SPAWN_DELAY_MS}ms de delay entre cada...`);
   
@@ -337,7 +343,9 @@ async function spawnInstance(id) {
   }
   
   console.log(`[bots] Todas as ${WA_INSTANCE_IDS.length} instâncias foram iniciadas.`);
-})().catch(err => {
+}
+
+startWhatsAppInstances().catch(err => {
   console.error('Falha ao subir instâncias:', err?.message || err);
   process.exit(1);
 });
@@ -613,7 +621,8 @@ app.get(['/','/admin'], basicAuth, async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`[bots] online on :${PORT} TZ=${TZ} instances=${WA_INSTANCE_IDS.join(',')}`);
+  const instancesInfo = WA_BOTS_ENABLED ? WA_INSTANCE_IDS.join(',') : '(disabled)';
+  console.log(`[bots] online on :${PORT} TZ=${TZ} wa_enabled=${WA_BOTS_ENABLED} instances=${instancesInfo}`);
   startVivinoReviewsWorker().catch((e) => {
     console.error('[vivino-worker] falha ao iniciar:', e?.message || e);
   });
