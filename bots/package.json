@@ -7,6 +7,7 @@
     "@whiskeysockets/baileys": "^6.7.7",
     "express": "^4.19.2",
     "pg": "^8.13.1",
-    "qrcode": "^1.5.3"
+    "qrcode": "^1.5.3",
+    "undici": "^7.16.0"
   }
 }
