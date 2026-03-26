@@ -186,6 +186,7 @@ function buildVivinoMetricsLines(metrics) {
   const cmpHour = (m.comparisons && m.comparisons.hour) || {};
   const cmpDay = (m.comparisons && m.comparisons.day) || {};
   const eta = m.eta || {};
+  const job = m.job || {};
   const pending = m.pending || {};
   const worker = m.worker || {};
   const session = worker.session || {};
@@ -197,6 +198,8 @@ function buildVivinoMetricsLines(metrics) {
     `VIVINO METRICS | generated_at=${m.generatedAt || 'n/a'} | tz=${m.timezone || 'n/a'}`,
     '======================================================================',
     `BASE: elegiveis ${toNumber(base.winesDoneTotal).toLocaleString('pt-BR')} / ${toNumber(base.winesEligibleTotal).toLocaleString('pt-BR')} (${toNumber(base.progressPct).toFixed(2)}%) | pendentes ${toNumber(base.winesPendingTotal).toLocaleString('pt-BR')} | ineligiveis ${toNumber(base.winesIneligibleTotal).toLocaleString('pt-BR')}`,
+    `JOB: antes=${toNumber(job.doneBeforeJob).toLocaleString('pt-BR')} | meta=${toNumber(job.targetToExtract).toLocaleString('pt-BR')} | extraidos=${toNumber(job.extractedThisJob).toLocaleString('pt-BR')} (${toNumber(job.progressPct).toFixed(2)}%) | faltam=${toNumber(job.remainingThisJob).toLocaleString('pt-BR')}`,
+    `RITMO JOB: ${toNumber(job.ratePerMinute).toFixed(2)} vinhos/min | ${toNumber(job.ratePerHour).toFixed(2)} vinhos/h | ETA job=${job.etaHuman || 'n/a'} | inicio=${job.startedAt || 'n/a'}`,
     `REVIEWS BASE: rows=${toNumber(base.reviewsRowsTotal).toLocaleString('pt-BR')} | sum_done=${toNumber(base.reviewsSumDoneWines).toLocaleString('pt-BR')} | avg_por_vinho=${toNumber(base.avgReviewsPerDoneWine).toFixed(2)} | coverage=${formatMaybePct(Number(base.reviewsRowsVsSumPct))}`,
     `THROUGHPUT VINHOS: 5m=${toNumber(wines.last5m)} | 15m=${toNumber(wines.last15m)} | 1h=${toNumber(wines.last1h)} | 6h=${toNumber(wines.last6h)} | 24h=${toNumber(wines.last24h)} | 7d=${toNumber(wines.last7d)}`,
     `THROUGHPUT REVIEWS_SUM: 5m=${toNumber(reviews.last5m)} | 15m=${toNumber(reviews.last15m)} | 1h=${toNumber(reviews.last1h)} | 6h=${toNumber(reviews.last6h)} | 24h=${toNumber(reviews.last24h)} | 7d=${toNumber(reviews.last7d)}`,
@@ -753,12 +756,14 @@ app.get('/admin/vivino', basicAuth, (req, res) => {
     </div>
 
     <div class="cards">
-      <div class="card"><div class="k">Progresso</div><div id="cProgress" class="v">-</div><div id="cProgressSub" class="sub">-</div></div>
-      <div class="card"><div class="k">Pendentes</div><div id="cPending" class="v">-</div><div id="cPendingSub" class="sub">-</div></div>
-      <div class="card"><div class="k">Velocidade (1h)</div><div id="cRate1h" class="v">-</div><div id="cRate1hSub" class="sub">-</div></div>
-      <div class="card"><div class="k">Velocidade (24h)</div><div id="cRate24h" class="v">-</div><div id="cRate24hSub" class="sub">-</div></div>
-      <div class="card"><div class="k">ETA</div><div id="cEta" class="v">-</div><div id="cEtaSub" class="sub">-</div></div>
-      <div class="card"><div class="k">Worker</div><div id="cWorker" class="v">-</div><div id="cWorkerSub" class="sub">-</div></div>
+      <div class="card"><div class="k">Progresso Job</div><div id="cJobProgress" class="v">-</div><div id="cJobProgressSub" class="sub">-</div></div>
+      <div class="card"><div class="k">Extraidos Neste Job</div><div id="cJobExtracted" class="v">-</div><div id="cJobExtractedSub" class="sub">-</div></div>
+      <div class="card"><div class="k">Faltam Neste Job</div><div id="cJobRemaining" class="v">-</div><div id="cJobRemainingSub" class="sub">-</div></div>
+      <div class="card"><div class="k">Ja Na Base Antes</div><div id="cBeforeJob" class="v">-</div><div id="cBeforeJobSub" class="sub">-</div></div>
+      <div class="card"><div class="k">Ritmo Job</div><div id="cJobRate" class="v">-</div><div id="cJobRateSub" class="sub">-</div></div>
+      <div class="card"><div class="k">Ritmo 1h / 24h</div><div id="cWindowRate" class="v">-</div><div id="cWindowRateSub" class="sub">-</div></div>
+      <div class="card"><div class="k">ETA Job</div><div id="cJobEta" class="v">-</div><div id="cJobEtaSub" class="sub">-</div></div>
+      <div class="card"><div class="k">Base Total</div><div id="cBase" class="v">-</div><div id="cBaseSub" class="sub">-</div></div>
     </div>
 
     <div class="grid">
@@ -770,8 +775,8 @@ app.get('/admin/vivino', basicAuth, (req, res) => {
             <div class="mini">Lote atual<b id="mBatch">-</b></div>
             <div class="mini">OK / Retry<b id="mOkRetry">-</b></div>
             <div class="mini">Fase / Ciclo<b id="mPhase">-</b></div>
-            <div class="mini">Rate batch<b id="mRateBatch">-</b></div>
-            <div class="mini">Rate global<b id="mRateGlobal">-</b></div>
+            <div class="mini">Ritmo job<b id="mRateBatch">-</b></div>
+            <div class="mini">Ritmo janela<b id="mRateGlobal">-</b></div>
             <div class="mini">Reviews rows<b id="mRows">-</b></div>
           </div>
           <div id="mUpdated" class="footer">Atualizado: -</div>
@@ -824,6 +829,16 @@ app.get('/admin/vivino', basicAuth, (req, res) => {
     function toNum(v){ const n = Number(v); return Number.isFinite(n) ? n : 0; }
     function human(v){ return fmt.format(toNum(v)); }
     function pct(v){ return Number.isFinite(v) ? v.toFixed(2) + '%' : 'n/a'; }
+    function dur(seconds){
+      const s = Math.floor(toNum(seconds));
+      if (!Number.isFinite(s) || s <= 0) return '0s';
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const sec = s % 60;
+      if (h > 0) return h + 'h ' + m + 'm';
+      if (m > 0) return m + 'm ' + sec + 's';
+      return sec + 's';
+    }
 
     function cssClassByPhase(phase){
       if (phase === 'fatal_error' || phase === 'error') return 'err';
@@ -883,31 +898,44 @@ app.get('/admin/vivino', basicAuth, (req, res) => {
     function render(metrics){
       const m = metrics || {};
       const base = m.base || {};
+      const job = m.job || {};
       const tp = m.throughput || {};
       const wines = tp.wines || {};
       const eta = m.eta || {};
       const worker = m.worker || {};
       const batch = worker.currentBatch || {};
-      const rates = worker.rates || {};
       const pending = m.pending || {};
 
-      byId('cProgress').textContent = pct(base.progressPct);
-      byId('cProgressSub').textContent = human(base.winesDoneTotal) + ' / ' + human(base.winesEligibleTotal);
+      const jobTarget = toNum(job.targetToExtract);
+      const jobDone = toNum(job.extractedThisJob);
+      const jobRemaining = toNum(job.remainingThisJob);
+      const jobBefore = toNum(job.doneBeforeJob);
+      const jobRateMin = toNum(job.ratePerMinute);
+      const jobRateHour = toNum(job.ratePerHour);
 
-      byId('cPending').textContent = human(base.winesPendingTotal);
-      byId('cPendingSub').textContent = 'ratings avg ' + fmt2.format(toNum(pending.avgRatings));
+      byId('cJobProgress').textContent = pct(job.progressPct);
+      byId('cJobProgressSub').textContent = human(jobDone) + ' / ' + human(jobTarget);
 
-      byId('cRate1h').textContent = human(wines.last1h) + '/h';
-      byId('cRate1hSub').textContent = 'hora anterior comparada no bloco abaixo';
+      byId('cJobExtracted').textContent = human(jobDone);
+      byId('cJobExtractedSub').textContent = 'meta deste job: ' + human(jobTarget);
 
-      byId('cRate24h').textContent = human(wines.last24h) + '/24h';
-      byId('cRate24hSub').textContent = fmt2.format(toNum(wines.avgPerHour24h)) + ' por hora (média)';
+      byId('cJobRemaining').textContent = human(jobRemaining);
+      byId('cJobRemainingSub').textContent = 'pendentes no job atual';
 
-      byId('cEta').textContent = String(eta.bestHuman || 'n/a');
-      byId('cEtaSub').textContent = 'live: ' + String(eta.byLiveRateHuman || 'n/a');
+      byId('cBeforeJob').textContent = human(jobBefore);
+      byId('cBeforeJobSub').textContent = 'ja coletados antes desta execucao';
 
-      byId('cWorker').innerHTML = '<span class="' + cssClassByPhase(worker.phase) + '">' + String(worker.phase || 'n/a') + '</span>';
-      byId('cWorkerSub').textContent = 'ciclo ' + human(worker.cycle) + ' | cooldown ' + human(worker.retryCooldownCount);
+      byId('cJobRate').textContent = fmt2.format(jobRateMin) + '/min';
+      byId('cJobRateSub').textContent = fmt2.format(jobRateHour) + '/h no job atual';
+
+      byId('cWindowRate').textContent = human(wines.last1h) + '/h';
+      byId('cWindowRateSub').textContent = human(wines.last24h) + '/24h | media ' + fmt2.format(toNum(wines.avgPerHour24h)) + '/h';
+
+      byId('cJobEta').textContent = String(job.etaHuman || 'n/a');
+      byId('cJobEtaSub').textContent = 'live global: ' + String(eta.byLiveRateHuman || 'n/a');
+
+      byId('cBase').textContent = human(base.winesDoneTotal) + ' / ' + human(base.winesEligibleTotal);
+      byId('cBaseSub').textContent = pct(base.progressPct) + ' | pendentes ' + human(base.winesPendingTotal) + ' | ratings avg ' + fmt2.format(toNum(pending.avgRatings));
 
       const target = toNum(batch.target);
       const processed = toNum(batch.processed);
@@ -916,10 +944,10 @@ app.get('/admin/vivino', basicAuth, (req, res) => {
       byId('mBatch').textContent = processed + ' / ' + target + ' (' + pct(pctBatch) + ')';
       byId('mOkRetry').textContent = human(batch.ok) + ' / ' + human(batch.retryLater);
       byId('mPhase').textContent = String(worker.phase || 'n/a') + ' | ' + human(worker.cycle);
-      byId('mRateBatch').textContent = fmt2.format(toNum(rates.batchWinesPerSec)) + ' vinhos/s';
-      byId('mRateGlobal').textContent = fmt2.format(toNum(rates.globalWinesPerSec)) + ' vinhos/s';
-      byId('mRows').textContent = human(base.reviewsRowsTotal);
-      byId('mUpdated').textContent = 'Atualizado: ' + String(m.generatedAt || '-');
+      byId('mRateBatch').textContent = fmt2.format(jobRateMin) + ' vinhos/min';
+      byId('mRateGlobal').textContent = human(wines.last1h) + '/h | ' + human(wines.last24h) + '/24h';
+      byId('mRows').textContent = human(base.reviewsRowsTotal) + ' (sum=' + human(base.reviewsSumDoneWines) + ')';
+      byId('mUpdated').textContent = 'Atualizado: ' + String(m.generatedAt || '-') + ' | Job: ' + String(job.startedAt || '-') + ' | Elapsed: ' + dur(job.elapsedSeconds);
 
       renderBars('hourlyChart', m.history && m.history.hourly, 'winesDone', false);
       renderBars('dailyChart', m.history && m.history.daily, 'winesDone', true);

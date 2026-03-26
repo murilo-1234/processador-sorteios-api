@@ -74,6 +74,7 @@ const workerProgress = {
   sessionReviewsFetched: 0,
   sessionReviewsRowsDelta: 0,
   sessionBaseDoneEligible: 0,
+  sessionBasePendingEligible: 0,
   sessionBaseReviewsRows: 0,
   currentBatch: {
     target: 0,
@@ -911,6 +912,33 @@ async function getVivinoWorkerMetrics(options = {}) {
     totalReviewsDb: toMetricNumber(row.total_reviews_db),
   }));
 
+  const jobStartedAtMs = Number(progress?.startedAt || 0);
+  const jobStartedAt = jobStartedAtMs > 0 ? toIsoOrNull(jobStartedAtMs) : null;
+  const jobElapsedSeconds = jobStartedAtMs > 0
+    ? clampNonNegative((Date.now() - jobStartedAtMs) / 1000)
+    : 0;
+  const jobDoneBefore = toMetricNumber(progress?.sessionBaseDoneEligible);
+  const jobExtractedSession = toMetricNumber(progress?.sessionWinesDone);
+  const jobExtractedThisJob = jobExtractedSession > 0
+    ? jobExtractedSession
+    : clampNonNegative(winesDone - jobDoneBefore);
+  const jobTargetRaw = toMetricNumber(progress?.sessionBasePendingEligible);
+  const jobTargetToExtract = jobTargetRaw > 0
+    ? jobTargetRaw
+    : clampNonNegative(jobExtractedThisJob + winesPending);
+  const jobRemainingThisJob = Math.max(0, jobTargetToExtract - jobExtractedThisJob);
+  const jobProgressPct = jobTargetToExtract > 0
+    ? (jobExtractedThisJob / jobTargetToExtract) * 100
+    : (jobRemainingThisJob <= 0 ? 100 : 0);
+  const jobRatePerSecond = jobElapsedSeconds > 0
+    ? (jobExtractedThisJob / jobElapsedSeconds)
+    : 0;
+  const jobRatePerMinute = jobRatePerSecond * 60;
+  const jobRatePerHour = jobRatePerSecond * 3600;
+  const jobEtaSeconds = jobRemainingThisJob > 0 && jobRatePerSecond > 0
+    ? (jobRemainingThisJob / jobRatePerSecond)
+    : (jobRemainingThisJob <= 0 ? 0 : null);
+
   return {
     ok: true,
     generatedAt: nowIso(),
@@ -938,6 +966,22 @@ async function getVivinoWorkerMetrics(options = {}) {
       reviewsRowsVsSumPct: reviewsSumDone > 0 ? (reviewsRowsTotal / reviewsSumDone) * 100 : null,
       firstDoneAt: toIsoOrNull(summary.first_done_at),
       lastDoneAt: toIsoOrNull(summary.last_done_at),
+    },
+    job: {
+      started: Boolean(progress?.started),
+      startedAt: jobStartedAt,
+      elapsedSeconds: jobElapsedSeconds,
+      elapsedHuman: formatDuration(jobElapsedSeconds),
+      doneBeforeJob: jobDoneBefore,
+      targetToExtract: jobTargetToExtract,
+      extractedThisJob: jobExtractedThisJob,
+      remainingThisJob: jobRemainingThisJob,
+      progressPct: jobProgressPct,
+      ratePerSecond: jobRatePerSecond,
+      ratePerMinute: jobRatePerMinute,
+      ratePerHour: jobRatePerHour,
+      etaSeconds: jobEtaSeconds,
+      etaHuman: formatDuration(jobEtaSeconds),
     },
     throughput: {
       wines: {
@@ -1351,6 +1395,7 @@ async function startVivinoReviewsWorker() {
     workerProgress.totalReviewsRows = initial.totalReviewsRows;
     workerProgress.doneReviewsDbSum = initial.doneReviewsDbSum;
     workerProgress.sessionBaseDoneEligible = initial.doneEligible;
+    workerProgress.sessionBasePendingEligible = initial.pendingEligible;
     workerProgress.sessionBaseReviewsRows = initial.totalReviewsRows;
     workerProgress.sessionWinesDone = 0;
     workerProgress.sessionReviewsFetched = 0;
