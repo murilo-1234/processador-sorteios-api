@@ -208,6 +208,19 @@ async function fetchJsonViaSteel(url) {
     const page = await ensureSteelPage();
     if (!page || !steelContext) return { ok: false, transient: true, status: 0 };
 
+    const parseJsonText = (text) => {
+      try {
+        return { ok: true, data: JSON.parse(text) };
+      } catch (_) {
+        return { ok: false, data: null };
+      }
+    };
+
+    const logPayloadPreview = (prefix, text) => {
+      const preview = String(text || '').slice(0, 220).replace(/\s+/g, ' ');
+      console.log(`${prefix}: ${preview}`);
+    };
+
     try {
       const response = await steelContext.request.get(url, {
         headers: headers(),
@@ -217,22 +230,45 @@ async function fetchJsonViaSteel(url) {
       const text = await response.text();
       steelRequestCount += 1;
 
-      if (status !== 200) {
-        console.log(`[vivino-worker] Steel status=${status} em ${url}`);
-        return { ok: false, transient: true, status };
+      if (status === 200) {
+        const parsed = parseJsonText(text);
+        if (parsed.ok) {
+          return { ok: true, status, data: parsed.data, via: 'steel_request_context' };
+        }
+        logPayloadPreview(`[vivino-worker] Steel request_context payload invalido em ${url}`, text);
       }
 
-      let data;
       try {
-        data = JSON.parse(text);
-      } catch (parseErr) {
-        const preview = String(text || '').slice(0, 220).replace(/\s+/g, ' ');
-        console.log(`[vivino-worker] Steel retornou payload invalido em ${url}: ${preview}`);
-        await closeSteelBrowser();
-        return { ok: false, transient: true, status: 0 };
+        const browserFetch = await page.evaluate(async (targetUrl) => {
+          const res = await fetch(targetUrl, {
+            method: 'GET',
+            headers: {
+              Accept: 'application/json',
+              'X-Requested-With': 'XMLHttpRequest',
+            },
+          });
+          const body = await res.text();
+          return { status: res.status, body };
+        }, url);
+
+        steelRequestCount += 1;
+
+        if (browserFetch.status === 200) {
+          const parsed = parseJsonText(browserFetch.body);
+          if (parsed.ok) {
+            return { ok: true, status: browserFetch.status, data: parsed.data, via: 'steel_page_fetch' };
+          }
+          logPayloadPreview(`[vivino-worker] Steel page_fetch payload invalido em ${url}`, browserFetch.body);
+        } else {
+          console.log(`[vivino-worker] Steel page_fetch status=${browserFetch.status} em ${url}`);
+        }
+      } catch (fallbackErr) {
+        const fallbackMsg = String(fallbackErr && fallbackErr.message ? fallbackErr.message : fallbackErr);
+        console.log(`[vivino-worker] Steel page_fetch erro em ${url}: ${fallbackMsg}`);
       }
 
-      return { ok: true, status, data, via: 'steel' };
+      console.log(`[vivino-worker] Steel request_context status=${status} em ${url}`);
+      return { ok: false, transient: true, status };
     } catch (err) {
       const msg = String(err && err.message ? err.message : err);
       console.log(`[vivino-worker] erro Steel.dev em ${url}: ${msg}`);
