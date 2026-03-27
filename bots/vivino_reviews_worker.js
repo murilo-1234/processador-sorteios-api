@@ -1,14 +1,48 @@
 const { Pool } = require('pg');
 const { ProxyAgent } = require('undici');
 
-const VIVINO_BASE_URL = process.env.VIVINO_BASE_URL || 'https://www.vivino.com';
-const VIVINO_DATABASE_URL = process.env.VIVINO_DATABASE_URL || process.env.DATABASE_URL || '';
+function envString(name, fallback = '') {
+  const raw = process.env[name];
+  if (raw == null) return fallback;
+  const trimmed = String(raw).trim();
+  if (!trimmed) return fallback;
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"'))
+    || (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+function looksLikeProxyPlaceholder(value) {
+  if (!value) return false;
+  return /:\/\/(?:USER|USERNAME):(?:PASS|PASSWORD)@/i.test(value);
+}
+
+const VIVINO_BASE_URL = envString('VIVINO_BASE_URL', 'https://www.vivino.com');
+const EXPLICIT_VIVINO_DATABASE_URL = envString('VIVINO_DATABASE_URL', '');
+const FALLBACK_DATABASE_URL = envString('DATABASE_URL', '');
+const REQUIRE_EXPLICIT_VIVINO_DATABASE_URL = String(
+  process.env.VIVINO_REQUIRE_EXPLICIT_DATABASE_URL || 'true',
+).trim().toLowerCase() === 'true';
+const VIVINO_DATABASE_URL = EXPLICIT_VIVINO_DATABASE_URL
+  || (REQUIRE_EXPLICIT_VIVINO_DATABASE_URL ? '' : FALLBACK_DATABASE_URL);
+const DATABASE_SOURCE = EXPLICIT_VIVINO_DATABASE_URL
+  ? 'VIVINO_DATABASE_URL'
+  : (VIVINO_DATABASE_URL ? 'DATABASE_URL' : 'missing');
+const BROKER_BASE_URL = envString('VIVINO_BROKER_URL', '').replace(/\/+$/, '');
+const BROKER_TOKEN = envString('VIVINO_BROKER_TOKEN', '');
+const BROKER_TIMEOUT_MS = Number(process.env.VIVINO_BROKER_TIMEOUT_MS || 30000);
+const BROKER_ENABLED = Boolean(BROKER_BASE_URL);
+const STORAGE_MODE = BROKER_ENABLED ? 'broker' : 'database';
 const WORKER_ENABLED = String(process.env.VIVINO_REVIEWS_WORKER_ENABLED || 'true') === 'true';
 const WORKERS = Number(process.env.VIVINO_REVIEWS_WORKERS || 5);
 const BATCH_SIZE = Number(process.env.VIVINO_REVIEWS_BATCH_SIZE || 500);
 const MIN_RATINGS = Number(process.env.VIVINO_REVIEWS_MIN_RATINGS || 0);
 const MAX_PAGES = Number(process.env.VIVINO_REVIEWS_MAX_PAGES || 2);
 const PER_PAGE = Number(process.env.VIVINO_REVIEWS_PER_PAGE || 50);
+const MAX_REVIEWS_PER_WINE = MAX_PAGES * PER_PAGE;
 const MAX_RETRIES = Number(process.env.VIVINO_REVIEWS_MAX_RETRIES || 5);
 const REQUEST_TIMEOUT_MS = Number(process.env.VIVINO_REVIEWS_REQUEST_TIMEOUT_MS || 30000);
 const SLEEP_BETWEEN_BATCH_MS = Number(process.env.VIVINO_REVIEWS_SLEEP_BETWEEN_BATCH_MS || 5000);
@@ -23,19 +57,21 @@ const PROGRESS_LOG_INTERVAL_MS = Number(process.env.VIVINO_PROGRESS_LOG_INTERVAL
 const PROXY_ENABLED = String(
   process.env.VIVINO_PROXY_ENABLED ?? process.env.PROXY_ENABLED ?? 'false',
 ).trim().toLowerCase() === 'true';
-const PROXY_URL = process.env.VIVINO_PROXY_URL || process.env.PROXY_URL || '';
-const PROXY_HOST = process.env.VIVINO_PROXY_HOST || process.env.PROXY_HOST || '';
-const PROXY_PORT = process.env.VIVINO_PROXY_PORT || process.env.PROXY_PORT || '';
-const PROXY_USER = process.env.VIVINO_PROXY_USER || process.env.PROXY_USER || '';
-const PROXY_PASS = process.env.VIVINO_PROXY_PASS || process.env.PROXY_PASS || '';
+const PROXY_URL = envString('VIVINO_PROXY_URL', envString('PROXY_URL', ''));
+const PROXY_HOST = envString('VIVINO_PROXY_HOST', envString('PROXY_HOST', ''));
+const PROXY_PORT = envString('VIVINO_PROXY_PORT', envString('PROXY_PORT', ''));
+const PROXY_USER = envString('VIVINO_PROXY_USER', envString('PROXY_USER', ''));
+const PROXY_PASS = envString('VIVINO_PROXY_PASS', envString('PROXY_PASS', ''));
 const STEEL_ENABLED = String(process.env.VIVINO_STEEL_ENABLED || 'false').trim().toLowerCase() === 'true';
-const STEEL_API_KEY = process.env.VIVINO_STEEL_API_KEY || process.env.STEEL_API_KEY || '';
-const STEEL_WS_ENDPOINT = process.env.VIVINO_STEEL_WS_ENDPOINT || 'wss://connect.steel.dev';
+const STEEL_API_KEY = envString('VIVINO_STEEL_API_KEY', envString('STEEL_API_KEY', ''));
+const STEEL_WS_ENDPOINT = envString('VIVINO_STEEL_WS_ENDPOINT', 'wss://connect.steel.dev');
 const STEEL_TIMEOUT_MS = Number(process.env.VIVINO_STEEL_TIMEOUT_MS || 45000);
 const STEEL_MAX_REQUESTS_PER_SESSION = Number(process.env.VIVINO_STEEL_MAX_REQUESTS_PER_SESSION || 25);
 const METRICS_HOURLY_HOURS = Number(process.env.VIVINO_METRICS_HOURLY_HOURS || 48);
 const METRICS_DAILY_DAYS = Number(process.env.VIVINO_METRICS_DAILY_DAYS || 30);
 const EVENTS_MAX = Number(process.env.VIVINO_EVENTS_MAX || 300);
+const ESTIMATED_RATING_GLOBAL_MEAN = 3.5;
+const ESTIMATED_RATING_DUMMY_WEIGHT = 3.0;
 
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -121,6 +157,150 @@ function clampNonNegative(value) {
   return Math.max(0, value);
 }
 
+function toIntegerOrNull(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.round(n);
+}
+
+function toNumberOrNull(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function getDatabaseConfigError() {
+  if (BROKER_ENABLED) {
+    if (!BROKER_TOKEN) return 'VIVINO_BROKER_TOKEN ausente';
+    return null;
+  }
+  if (VIVINO_DATABASE_URL) return null;
+  if (REQUIRE_EXPLICIT_VIVINO_DATABASE_URL) return 'VIVINO_DATABASE_URL ausente';
+  return 'VIVINO_DATABASE_URL/DATABASE_URL ausente';
+}
+
+function describeDatabaseTarget(connectionString) {
+  const info = {
+    source: DATABASE_SOURCE,
+    explicitRequired: REQUIRE_EXPLICIT_VIVINO_DATABASE_URL,
+    configured: Boolean(connectionString),
+    host: null,
+    port: null,
+    database: null,
+    parseError: false,
+  };
+  if (!connectionString) return info;
+  try {
+    const parsed = new URL(connectionString);
+    info.host = parsed.hostname || null;
+    info.port = parsed.port ? Number(parsed.port) : null;
+    info.database = (parsed.pathname || '').replace(/^\/+/, '') || null;
+    return info;
+  } catch (_) {
+    info.parseError = true;
+    return info;
+  }
+}
+
+function describeBrokerTarget() {
+  return {
+    enabled: BROKER_ENABLED,
+    configured: BROKER_ENABLED,
+    url: BROKER_BASE_URL || null,
+    hasToken: Boolean(BROKER_TOKEN),
+  };
+}
+
+async function brokerRequest(path, options = {}) {
+  if (!BROKER_ENABLED) {
+    throw new Error('broker desabilitado');
+  }
+  if (!BROKER_TOKEN) {
+    throw new Error('VIVINO_BROKER_TOKEN ausente');
+  }
+
+  const method = options.method || 'GET';
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), BROKER_TIMEOUT_MS);
+  const url = path.startsWith('http') ? path : `${BROKER_BASE_URL}${path}`;
+  const headers = {
+    'Accept': 'application/json',
+    'Authorization': `Bearer ${BROKER_TOKEN}`,
+  };
+  if (options.body != null) {
+    headers['Content-Type'] = 'application/json';
+  }
+
+  try {
+    const response = await fetch(url, {
+      method,
+      headers,
+      body: options.body != null ? JSON.stringify(options.body) : undefined,
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch (_) {
+      data = null;
+    }
+    if (!response.ok || (data && data.ok === false)) {
+      throw new Error(`broker ${method} ${path} falhou: ${response.status} ${(data && data.error) || text || 'erro'}`);
+    }
+    return data || {};
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function getBrokerPendingWineIds(limit) {
+  const data = await brokerRequest(
+    `/api/vivino/broker/next-batch?limit=${encodeURIComponent(limit)}&min_ratings=${encodeURIComponent(MIN_RATINGS)}`,
+  );
+  return Array.isArray(data.ids) ? data.ids.map((id) => Number(id)) : [];
+}
+
+async function getBrokerGlobalProgressStats() {
+  const data = await brokerRequest(
+    `/api/vivino/broker/stats?min_ratings=${encodeURIComponent(MIN_RATINGS)}`,
+  );
+  const base = data.base || {};
+  return {
+    totalEligible: Number(base.totalEligible || 0),
+    doneEligible: Number(base.doneEligible || 0),
+    pendingEligible: Number(base.pendingEligible || 0),
+    doneReviewsDbSum: Number(base.doneReviewsDbSum || 0),
+    totalReviewsRows: Number(base.reviewsRowsTotal || 0),
+  };
+}
+
+async function brokerPersistCollectedWine(wineId, totalReviews, reviews) {
+  return brokerRequest('/api/vivino/broker/reviews', {
+    method: 'POST',
+    body: {
+      wineId,
+      totalReviews,
+      reviews,
+    },
+  });
+}
+
+async function getBrokerMetricsSnapshot(options = {}) {
+  const hourlyHours = clampIntRange(
+    options && options.hourlyHours != null ? options.hourlyHours : METRICS_HOURLY_HOURS,
+    6,
+    168,
+  );
+  const dailyDays = clampIntRange(
+    options && options.dailyDays != null ? options.dailyDays : METRICS_DAILY_DAYS,
+    7,
+    120,
+  );
+  return brokerRequest(
+    `/api/vivino/broker/metrics?min_ratings=${encodeURIComponent(MIN_RATINGS)}&hourly_hours=${encodeURIComponent(hourlyHours)}&daily_days=${encodeURIComponent(dailyDays)}`,
+  );
+}
+
 function formatDuration(seconds) {
   if (!Number.isFinite(seconds) || seconds < 0) return 'n/a';
   const s = Math.floor(seconds);
@@ -137,6 +317,9 @@ function setupProxyIfEnabled() {
   if (!PROXY_ENABLED) return;
 
   let proxy = PROXY_URL;
+  if (looksLikeProxyPlaceholder(proxy) && PROXY_HOST && PROXY_PORT) {
+    proxy = '';
+  }
   if (!proxy && PROXY_HOST && PROXY_PORT) {
     if (PROXY_USER || PROXY_PASS) {
       const user = encodeURIComponent(PROXY_USER);
@@ -148,7 +331,7 @@ function setupProxyIfEnabled() {
   }
 
   if (!proxy) {
-    console.log('[vivino-worker] VIVINO_PROXY_ENABLED=true, mas proxy nÃƒÂ£o configurado. seguindo sem proxy.');
+    console.log('[vivino-worker] VIVINO_PROXY_ENABLED=true, mas proxy nao configurado. seguindo sem proxy.');
     return;
   }
 
@@ -212,7 +395,7 @@ async function fetchJsonWithRetry(url) {
         continue;
       }
 
-      // Erros permanentes, nÃƒÂ£o insistir.
+      // Erros permanentes, nao insistir.
       return { ok: false, transient: false, status: res.status };
     } catch (err) {
       clearTimeout(timer);
@@ -392,25 +575,25 @@ function parseReview(item, wineId) {
   const vintageYear = Number.isInteger(vintage.year) ? vintage.year : null;
 
   return {
-    id: item.id,
-    vinho_id: wineId,
-    rating: item.rating ?? null,
+    id: toIntegerOrNull(item && item.id),
+    vinho_id: toIntegerOrNull(wineId),
+    rating: toNumberOrNull(item && item.rating),
     nota_texto: (item.note || '').replace(/\x00/g, ''),
     idioma: (item.language || '').replace(/\x00/g, ''),
-    usuario_id: user.id ?? null,
+    usuario_id: toIntegerOrNull(user.id),
     usuario_nome: ((user.alias || user.seo_name || '') || '').replace(/\x00/g, ''),
     safra_avaliada: vintageYear,
     criado_em: createdAt,
-    usuario_total_ratings: userStats.ratings_count ?? null,
-    usuario_total_reviews: userStats.reviews_count ?? null,
-    usuario_followers: userStats.followers_count ?? null,
-    usuario_followings: userStats.followings_count ?? null,
-    usuario_ratings_sum: userStats.ratings_sum ?? null,
+    usuario_total_ratings: toIntegerOrNull(userStats.ratings_count),
+    usuario_total_reviews: toIntegerOrNull(userStats.reviews_count),
+    usuario_followers: toIntegerOrNull(userStats.followers_count),
+    usuario_followings: toIntegerOrNull(userStats.followings_count),
+    usuario_ratings_sum: toIntegerOrNull(userStats.ratings_sum),
     usuario_seo_name: user.seo_name ?? null,
     usuario_is_premium: user.is_premium ?? null,
     usuario_idioma: user.language ?? null,
-    review_likes: activityStats.likes_count ?? null,
-    review_comments: activityStats.comments_count ?? null,
+    review_likes: toIntegerOrNull(activityStats.likes_count),
+    review_comments: toIntegerOrNull(activityStats.comments_count),
   };
 }
 
@@ -462,7 +645,74 @@ async function markWineDone(client, wineId, totalReviews) {
   );
 }
 
+async function recalculateEstimatedRating(client, wineId) {
+  const stats = await client.query(
+    `SELECT
+       COALESCE(
+         SUM(
+           rating::double precision
+           * GREATEST(
+             1.0,
+             SQRT(GREATEST(COALESCE(usuario_total_ratings, 0), 0)::double precision)
+           )
+         ),
+         0.0
+       ) AS weighted_sum,
+       COALESCE(
+         SUM(
+           GREATEST(
+             1.0,
+             SQRT(GREATEST(COALESCE(usuario_total_ratings, 0), 0)::double precision)
+           )
+         ),
+         0.0
+       ) AS weights
+     FROM vivino_reviews
+     WHERE vinho_id = $1
+       AND rating IS NOT NULL`,
+    [wineId],
+  );
+
+  const weightedSum = Number(stats.rows[0] && stats.rows[0].weighted_sum);
+  const weights = Number(stats.rows[0] && stats.rows[0].weights);
+  if (!Number.isFinite(weightedSum) || !Number.isFinite(weights) || weights <= 0) {
+    return null;
+  }
+
+  const weightedAverage = weightedSum / weights;
+  const estimated = (
+    (weights / (weights + ESTIMATED_RATING_DUMMY_WEIGHT)) * weightedAverage
+    + (ESTIMATED_RATING_DUMMY_WEIGHT / (weights + ESTIMATED_RATING_DUMMY_WEIGHT)) * ESTIMATED_RATING_GLOBAL_MEAN
+  );
+  const rounded = Math.round(estimated * 100) / 100;
+
+  await client.query(
+    `UPDATE vivino_vinhos
+     SET nota_estimada = $2
+     WHERE id = $1`,
+    [wineId, rounded],
+  );
+  return rounded;
+}
+
+async function tryRecalculateEstimatedRating(client, wineId) {
+  try {
+    return await recalculateEstimatedRating(client, wineId);
+  } catch (err) {
+    const msg = String(err && err.message ? err.message : err);
+    console.log(`[vivino-worker] erro nota_estimada wine=${wineId}: ${msg}`);
+    pushWorkerEvent('warn', 'estimated_rating_error', 'Falha ao recalcular nota_estimada', {
+      wineId: Number(wineId),
+      message: msg,
+    });
+    return null;
+  }
+}
+
 async function getPendingWineIds(pool, limit) {
+  if (BROKER_ENABLED) {
+    return getBrokerPendingWineIds(limit);
+  }
   const sql = `
     SELECT id
     FROM vivino_vinhos
@@ -503,6 +753,10 @@ function buildBatchWithRetryCooldown(candidateIds, batchSize, nowMs) {
 }
 
 async function getPendingCount(pool) {
+  if (BROKER_ENABLED) {
+    const stats = await getBrokerGlobalProgressStats();
+    return Number(stats.pendingEligible || 0);
+  }
   const r = await pool.query(
     `SELECT COUNT(*)::bigint AS n
      FROM vivino_vinhos
@@ -514,6 +768,9 @@ async function getPendingCount(pool) {
 }
 
 async function getGlobalProgressStats(pool) {
+  if (BROKER_ENABLED) {
+    return getBrokerGlobalProgressStats();
+  }
   const vinhoStats = await pool.query(
     `SELECT
        COUNT(*) FILTER (WHERE total_ratings >= $1)::bigint AS total_eligible,
@@ -576,7 +833,7 @@ function logProgressDashboard(extra = {}) {
 
   console.log('[vivino-worker] ======================================================================');
   console.log(
-    `[vivino-worker] PROGRESSO Ã¢â‚¬â€ ${workerProgress.doneEligible.toLocaleString('pt-BR')} / ${workerProgress.totalEligible.toLocaleString('pt-BR')} (${pct}%)`,
+    `[vivino-worker] PROGRESSO - ${workerProgress.doneEligible.toLocaleString('pt-BR')} / ${workerProgress.totalEligible.toLocaleString('pt-BR')} (${pct}%)`,
   );
   console.log(
     `[vivino-worker]   Pendentes: ${workerProgress.pendingEligible.toLocaleString('pt-BR')} | RetryCooldown: ${retryLaterUntilByWine.size.toLocaleString('pt-BR')}`,
@@ -620,6 +877,9 @@ function logProgressDashboard(extra = {}) {
 function getVivinoWorkerProgress() {
   return {
     ...workerProgress,
+    storageMode: STORAGE_MODE,
+    broker: BROKER_ENABLED ? describeBrokerTarget() : null,
+    database: describeDatabaseTarget(VIVINO_DATABASE_URL),
     retryCooldownCount: retryLaterUntilByWine.size,
     now: nowIso(),
   };
@@ -680,17 +940,6 @@ function getMetricsPool() {
 }
 
 async function getVivinoWorkerMetrics(options = {}) {
-  const pool = getMetricsPool();
-  if (!pool) {
-    return {
-      ok: false,
-      generatedAt: nowIso(),
-      error: 'VIVINO_DATABASE_URL/DATABASE_URL ausente',
-      worker: getVivinoWorkerProgress(),
-      events: getVivinoWorkerEvents(200),
-    };
-  }
-
   const hourlyHours = clampIntRange(
     options && options.hourlyHours != null ? options.hourlyHours : METRICS_HOURLY_HOURS,
     6,
@@ -701,6 +950,160 @@ async function getVivinoWorkerMetrics(options = {}) {
     7,
     120,
   );
+
+  if (BROKER_ENABLED) {
+    try {
+      const brokerMetrics = await getBrokerMetricsSnapshot({ hourlyHours, dailyDays });
+      const progress = getVivinoWorkerProgress();
+      const winesPending = toMetricNumber(brokerMetrics?.base?.winesPendingTotal);
+      const winesDone = toMetricNumber(brokerMetrics?.base?.winesDoneTotal);
+      const lastHourWines = toMetricNumber(brokerMetrics?.throughput?.wines?.last1h);
+      const last24hWines = toMetricNumber(brokerMetrics?.throughput?.wines?.last24h);
+      const jobStartedAtMs = Number(progress?.startedAt || 0);
+      const jobStartedAt = jobStartedAtMs > 0 ? toIsoOrNull(jobStartedAtMs) : null;
+      const jobElapsedSeconds = jobStartedAtMs > 0
+        ? clampNonNegative((Date.now() - jobStartedAtMs) / 1000)
+        : 0;
+      const jobDoneBefore = toMetricNumber(progress?.sessionBaseDoneEligible);
+      const jobExtractedSession = toMetricNumber(progress?.sessionWinesDone);
+      const jobExtractedThisJob = jobExtractedSession > 0
+        ? jobExtractedSession
+        : clampNonNegative(winesDone - jobDoneBefore);
+      const jobTargetRaw = toMetricNumber(progress?.sessionBasePendingEligible);
+      const jobTargetToExtract = jobTargetRaw > 0
+        ? jobTargetRaw
+        : clampNonNegative(jobExtractedThisJob + winesPending);
+      const jobRemainingThisJob = Math.max(0, jobTargetToExtract - jobExtractedThisJob);
+      const jobProgressPct = jobTargetToExtract > 0
+        ? (jobExtractedThisJob / jobTargetToExtract) * 100
+        : (jobRemainingThisJob <= 0 ? 100 : 0);
+      const jobRatePerSecond = jobElapsedSeconds > 0
+        ? (jobExtractedThisJob / jobElapsedSeconds)
+        : 0;
+      const jobEtaSeconds = jobRemainingThisJob > 0 && jobRatePerSecond > 0
+        ? (jobRemainingThisJob / jobRatePerSecond)
+        : (jobRemainingThisJob <= 0 ? 0 : null);
+      const liveGlobalRate = Number(progress?.rates?.globalWinesPerSec || 0);
+      const etaByLiveRateSeconds = liveGlobalRate > 0 ? (winesPending / liveGlobalRate) : null;
+      const etaByLastHourSeconds = estimateEtaSeconds(winesPending, lastHourWines, 3600);
+      const etaByLast24hSeconds = estimateEtaSeconds(winesPending, last24hWines, 86400);
+      const etaBestSeconds = etaByLiveRateSeconds || etaByLastHourSeconds || etaByLast24hSeconds || null;
+
+      return {
+        ok: true,
+        generatedAt: brokerMetrics.generatedAt || nowIso(),
+        timezone: brokerMetrics.timezone || process.env.TZ || 'UTC',
+        config: {
+          minRatings: MIN_RATINGS,
+          workers: WORKERS,
+          batchSize: BATCH_SIZE,
+          maxPages: MAX_PAGES,
+          perPage: PER_PAGE,
+          maxReviewsPerWine: MAX_REVIEWS_PER_WINE,
+          hourlyHistoryHours: hourlyHours,
+          dailyHistoryDays: dailyDays,
+        },
+        database: describeDatabaseTarget(VIVINO_DATABASE_URL),
+        broker: describeBrokerTarget(),
+        base: brokerMetrics.base || {},
+        job: {
+          started: Boolean(progress?.started),
+          startedAt: jobStartedAt,
+          elapsedSeconds: jobElapsedSeconds,
+          elapsedHuman: formatDuration(jobElapsedSeconds),
+          doneBeforeJob: jobDoneBefore,
+          targetToExtract: jobTargetToExtract,
+          extractedThisJob: jobExtractedThisJob,
+          remainingThisJob: jobRemainingThisJob,
+          progressPct: jobProgressPct,
+          ratePerSecond: jobRatePerSecond,
+          ratePerMinute: jobRatePerSecond * 60,
+          ratePerHour: jobRatePerSecond * 3600,
+          etaSeconds: jobEtaSeconds,
+          etaHuman: formatDuration(jobEtaSeconds),
+        },
+        throughput: brokerMetrics.throughput || {},
+        comparisons: brokerMetrics.comparisons || {},
+        pending: brokerMetrics.pending || {
+          count: winesPending,
+          minRatings: 0,
+          maxRatings: 0,
+          avgRatings: 0,
+          topPendingByRatings: [],
+        },
+        eta: {
+          pendingWines: winesPending,
+          byLiveRateSeconds: etaByLiveRateSeconds,
+          byLastHourSeconds: etaByLastHourSeconds,
+          byLast24hSeconds: etaByLast24hSeconds,
+          bestSeconds: etaBestSeconds,
+          byLiveRateHuman: formatDuration(etaByLiveRateSeconds),
+          byLastHourHuman: formatDuration(etaByLastHourSeconds),
+          byLast24hHuman: formatDuration(etaByLast24hSeconds),
+          bestHuman: formatDuration(etaBestSeconds),
+        },
+        worker: {
+          enabled: Boolean(progress.enabled),
+          started: Boolean(progress.started),
+          startedAt: progress.startedAt ? toIsoOrNull(progress.startedAt) : null,
+          updatedAt: progress.updatedAt ? toIsoOrNull(progress.updatedAt) : null,
+          phase: progress.phase || 'idle',
+          cycle: toMetricNumber(progress.cycle),
+          retryCooldownCount: toMetricNumber(progress.retryCooldownCount),
+          rates: {
+            batchWinesPerSec: toMetricNumber(progress?.rates?.batchWinesPerSec),
+            globalWinesPerSec: toMetricNumber(progress?.rates?.globalWinesPerSec),
+          },
+          session: {
+            winesDone: toMetricNumber(progress.sessionWinesDone),
+            reviewsFetched: toMetricNumber(progress.sessionReviewsFetched),
+            reviewsRowsDelta: toMetricNumber(progress.sessionReviewsRowsDelta),
+            duplicatesEstimate: Math.max(
+              0,
+              toMetricNumber(progress.sessionReviewsFetched) - toMetricNumber(progress.sessionReviewsRowsDelta),
+            ),
+          },
+          currentBatch: {
+            target: toMetricNumber(progress?.currentBatch?.target),
+            processed: toMetricNumber(progress?.currentBatch?.processed),
+            ok: toMetricNumber(progress?.currentBatch?.ok),
+            retryLater: toMetricNumber(progress?.currentBatch?.retryLater),
+            pendingBefore: toMetricNumber(progress?.currentBatch?.pendingBefore),
+            pendingAfter: toMetricNumber(progress?.currentBatch?.pendingAfter),
+            startedAt: progress?.currentBatch?.startedAt ? toIsoOrNull(progress.currentBatch.startedAt) : null,
+            updatedAt: progress?.currentBatch?.updatedAt ? toIsoOrNull(progress.currentBatch.updatedAt) : null,
+          },
+          lastError: progress.lastError || null,
+        },
+        history: brokerMetrics.history || { hourly: [], daily: [] },
+        events: getVivinoWorkerEvents(200),
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        generatedAt: nowIso(),
+        error: String(err && err.message ? err.message : err),
+        database: describeDatabaseTarget(VIVINO_DATABASE_URL),
+        broker: describeBrokerTarget(),
+        worker: getVivinoWorkerProgress(),
+        events: getVivinoWorkerEvents(200),
+      };
+    }
+  }
+
+  const pool = getMetricsPool();
+  if (!pool) {
+    const dbConfigError = getDatabaseConfigError();
+    return {
+      ok: false,
+      generatedAt: nowIso(),
+      error: dbConfigError || 'Banco Vivino nao configurado',
+      database: describeDatabaseTarget(VIVINO_DATABASE_URL),
+      broker: describeBrokerTarget(),
+      worker: getVivinoWorkerProgress(),
+      events: getVivinoWorkerEvents(200),
+    };
+  }
 
   const summarySql = `
     SELECT
@@ -948,9 +1351,12 @@ async function getVivinoWorkerMetrics(options = {}) {
       workers: WORKERS,
       batchSize: BATCH_SIZE,
       maxPages: MAX_PAGES,
+      perPage: PER_PAGE,
+      maxReviewsPerWine: MAX_REVIEWS_PER_WINE,
       hourlyHistoryHours: hourlyHours,
       dailyHistoryDays: dailyDays,
     },
+    database: describeDatabaseTarget(VIVINO_DATABASE_URL),
     base: {
       winesTotal: toMetricNumber(summary.wines_total),
       winesEligibleTotal: toMetricNumber(summary.wines_eligible_total),
@@ -1087,7 +1493,8 @@ async function getVivinoWorkerMetrics(options = {}) {
 }
 
 async function collectWine(pool, wineId) {
-  const client = await pool.connect();
+  const client = pool ? await pool.connect() : null;
+  const brokerReviews = [];
   try {
     let total = 0;
 
@@ -1096,39 +1503,61 @@ async function collectWine(pool, wineId) {
       const result = await fetchJsonWithRetry(url);
 
       if (!result.ok) {
-        // Erro transitÃƒÂ³rio: nÃƒÂ£o marcar como coletado, tenta em lote futuro.
+        // Erro transitorio: nao marcar como coletado, tenta em lote futuro.
         if (result.transient) {
           return { ok: false, retryLater: true, wineId, total };
         }
-        // Erro permanente: marcar como coletado com o que jÃƒÂ¡ temos.
+        // Erro permanente: marcar como coletado com o que ja temos.
+        if (BROKER_ENABLED) {
+          const persisted = await brokerPersistCollectedWine(wineId, total, brokerReviews);
+          return { ok: true, done: true, wineId, total, status: result.status, estimatedRating: persisted.estimatedRating ?? null };
+        }
         await markWineDone(client, wineId, total);
-        return { ok: true, done: true, wineId, total, status: result.status };
+        const estimatedRating = await tryRecalculateEstimatedRating(client, wineId);
+        return { ok: true, done: true, wineId, total, status: result.status, estimatedRating };
       }
 
       const items = (result.data && Array.isArray(result.data.reviews)) ? result.data.reviews : [];
       if (!items.length) break;
 
-      await client.query('BEGIN');
-      for (const item of items) {
-        if (!item || !item.id) continue;
-        const parsed = parseReview(item, wineId);
-        await upsertReview(client, parsed);
+      if (BROKER_ENABLED) {
+        for (const item of items) {
+          if (!item || !item.id) continue;
+          brokerReviews.push(parseReview(item, wineId));
+        }
+      } else {
+        await client.query('BEGIN');
+        for (const item of items) {
+          if (!item || !item.id) continue;
+          const parsed = parseReview(item, wineId);
+          await upsertReview(client, parsed);
+        }
+        await client.query('COMMIT');
       }
-      await client.query('COMMIT');
 
       total += items.length;
       if (items.length < PER_PAGE) break;
       if (SLEEP_PER_WINE_MS > 0) await sleep(SLEEP_PER_WINE_MS);
     }
 
+    if (BROKER_ENABLED) {
+      const persisted = await brokerPersistCollectedWine(wineId, total, brokerReviews);
+      return { ok: true, done: true, wineId, total, estimatedRating: persisted.estimatedRating ?? null };
+    }
+
     await markWineDone(client, wineId, total);
-    return { ok: true, done: true, wineId, total };
+    const estimatedRating = await tryRecalculateEstimatedRating(client, wineId);
+    return { ok: true, done: true, wineId, total, estimatedRating };
   } catch (err) {
-    try { await client.query('ROLLBACK'); } catch (_) {}
+    if (client) {
+      try { await client.query('ROLLBACK'); } catch (_) {}
+    }
     const msg = String(err && err.message ? err.message : err);
     return { ok: false, retryLater: true, wineId, error: msg };
   } finally {
-    client.release();
+    if (client) {
+      client.release();
+    }
   }
 }
 
@@ -1353,16 +1782,19 @@ async function startVivinoReviewsWorker() {
     return;
   }
 
-  if (!VIVINO_DATABASE_URL) {
+  const dbConfigError = getDatabaseConfigError();
+  if (dbConfigError) {
     workerProgress.phase = 'error';
-    workerProgress.lastError = 'VIVINO_DATABASE_URL/DATABASE_URL ausente';
+    workerProgress.lastError = dbConfigError || 'Banco Vivino nao configurado';
     workerProgress.updatedAt = Date.now();
-    pushWorkerEvent('error', 'config_error', 'DATABASE_URL ausente');
-    console.log('[vivino-worker] VIVINO_DATABASE_URL/DATABASE_URL ausente. worker nÃƒÂ£o iniciado.');
+    pushWorkerEvent('error', 'config_error', workerProgress.lastError, {
+      database: describeDatabaseTarget(VIVINO_DATABASE_URL),
+      broker: describeBrokerTarget(),
+    });
+    console.log(`[vivino-worker] ${workerProgress.lastError}. worker nao iniciado.`);
     return;
   }
-
-  const pool = new Pool({
+  const pool = BROKER_ENABLED ? null : new Pool({
     connectionString: VIVINO_DATABASE_URL,
     max: Math.max(2, WORKERS + 2),
     idleTimeoutMillis: 30000,
@@ -1371,22 +1803,35 @@ async function startVivinoReviewsWorker() {
   });
   workerPool = pool;
 
-  pool.on('error', (err) => {
-    const msg = String(err && err.message ? err.message : err);
-    console.error('[vivino-worker] erro no pool:', msg);
-    workerProgress.lastError = msg;
-    workerProgress.updatedAt = Date.now();
-    pushWorkerEvent('error', 'pool_error', 'Erro no pool PG', { message: msg });
-  });
+  if (pool) {
+    pool.on('error', (err) => {
+      const msg = String(err && err.message ? err.message : err);
+      console.error('[vivino-worker] erro no pool:', msg);
+      workerProgress.lastError = msg;
+      workerProgress.updatedAt = Date.now();
+      pushWorkerEvent('error', 'pool_error', 'Erro no pool PG', { message: msg });
+    });
+  }
 
   setupProxyIfEnabled();
   if (STEEL_ENABLED) {
     console.log(`[vivino-worker] Steel.dev fallback ${STEEL_API_KEY ? 'habilitado' : 'configurado sem API key'}`);
   }
+  if (!BROKER_ENABLED && DATABASE_SOURCE === 'DATABASE_URL') {
+    console.log('[vivino-worker] usando fallback DATABASE_URL. configure VIVINO_DATABASE_URL para evitar gravar na base errada.');
+    pushWorkerEvent('warn', 'database_fallback', 'Usando fallback DATABASE_URL', {
+      database: describeDatabaseTarget(VIVINO_DATABASE_URL),
+    });
+  }
+  if (BROKER_ENABLED) {
+    console.log(`[vivino-worker] broker HTTP ativo em ${BROKER_BASE_URL}`);
+    pushWorkerEvent('info', 'broker_enabled', 'Broker HTTP ativo', {
+      broker: describeBrokerTarget(),
+    });
+  }
   console.log(
-    `[vivino-worker] iniciado | workers=${WORKERS} batch=${BATCH_SIZE} min_ratings=${MIN_RATINGS} max_pages=${MAX_PAGES} retry_cooldown_ms=${RETRY_WINE_COOLDOWN_MS} retry_multiplier=${RETRY_SELECTION_MULTIPLIER}`,
+    `[vivino-worker] iniciado | mode=${STORAGE_MODE} ${BROKER_ENABLED ? `broker=${BROKER_BASE_URL}` : `db_source=${DATABASE_SOURCE}`} workers=${WORKERS} batch=${BATCH_SIZE} min_ratings=${MIN_RATINGS} max_pages=${MAX_PAGES} per_page=${PER_PAGE} max_reviews_per_wine=${MAX_REVIEWS_PER_WINE} retry_cooldown_ms=${RETRY_WINE_COOLDOWN_MS} retry_multiplier=${RETRY_SELECTION_MULTIPLIER}`,
   );
-
   try {
     const initial = await getGlobalProgressStats(pool);
     workerProgress.totalEligible = initial.totalEligible;
