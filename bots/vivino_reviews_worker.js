@@ -33,7 +33,13 @@ const DATABASE_SOURCE = EXPLICIT_VIVINO_DATABASE_URL
   : (VIVINO_DATABASE_URL ? 'DATABASE_URL' : 'missing');
 const BROKER_BASE_URL = envString('VIVINO_BROKER_URL', '').replace(/\/+$/, '');
 const BROKER_TOKEN = envString('VIVINO_BROKER_TOKEN', '');
-const BROKER_TIMEOUT_MS = Number(process.env.VIVINO_BROKER_TIMEOUT_MS || 30000);
+const BROKER_TIMEOUT_MS = Number(process.env.VIVINO_BROKER_TIMEOUT_MS || 60000);
+const BROKER_STATS_TIMEOUT_MS = Number(
+  process.env.VIVINO_BROKER_STATS_TIMEOUT_MS || Math.max(BROKER_TIMEOUT_MS, 90000),
+);
+const BROKER_RETRIES = Math.max(1, Number(process.env.VIVINO_BROKER_RETRIES || 3));
+const BROKER_RETRY_BASE_MS = Number(process.env.VIVINO_BROKER_RETRY_BASE_MS || 1500);
+const BROKER_RECOVERY_SLEEP_MS = Number(process.env.VIVINO_BROKER_RECOVERY_SLEEP_MS || 10000);
 const BROKER_ENABLED = Boolean(BROKER_BASE_URL);
 const STORAGE_MODE = BROKER_ENABLED ? 'broker' : 'database';
 const WORKER_ENABLED = String(process.env.VIVINO_REVIEWS_WORKER_ENABLED || 'true') === 'true';
@@ -210,6 +216,22 @@ function describeBrokerTarget() {
   };
 }
 
+function shouldRetryBrokerStatus(status) {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+function isTransientBrokerError(err) {
+  if (!err) return false;
+  if (err.name === 'AbortError') return true;
+  const msg = String(err.message || err);
+  return /aborted|timeout|timed out|fetch failed|socket hang up|econnreset|econnrefused|ehostunreach|enotfound|etimedout/i.test(msg);
+}
+
+function brokerRetryDelayMs(attempt) {
+  const exp = Math.max(0, attempt - 1);
+  return Math.min(15000, Math.max(500, BROKER_RETRY_BASE_MS * (2 ** exp)));
+}
+
 async function brokerRequest(path, options = {}) {
   if (!BROKER_ENABLED) {
     throw new Error('broker desabilitado');
@@ -218,9 +240,7 @@ async function brokerRequest(path, options = {}) {
     throw new Error('VIVINO_BROKER_TOKEN ausente');
   }
 
-  const method = options.method || 'GET';
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), BROKER_TIMEOUT_MS);
+  const method = String(options.method || 'GET').toUpperCase();
   const url = path.startsWith('http') ? path : `${BROKER_BASE_URL}${path}`;
   const headers = {
     'Accept': 'application/json',
@@ -229,28 +249,58 @@ async function brokerRequest(path, options = {}) {
   if (options.body != null) {
     headers['Content-Type'] = 'application/json';
   }
+  const timeoutMs = Math.max(
+    1000,
+    Number(options.timeoutMs || BROKER_TIMEOUT_MS),
+  );
+  const maxAttempts = Math.max(
+    1,
+    Number(options.maxAttempts || (method === 'GET' ? BROKER_RETRIES : Math.min(2, BROKER_RETRIES))),
+  );
 
-  try {
-    const response = await fetch(url, {
-      method,
-      headers,
-      body: options.body != null ? JSON.stringify(options.body) : undefined,
-      signal: controller.signal,
-    });
-    const text = await response.text();
-    let data = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
     try {
-      data = text ? JSON.parse(text) : null;
-    } catch (_) {
-      data = null;
+      const response = await fetch(url, {
+        method,
+        headers,
+        body: options.body != null ? JSON.stringify(options.body) : undefined,
+        signal: controller.signal,
+      });
+      const text = await response.text();
+      let data = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch (_) {
+        data = null;
+      }
+      if (!response.ok || (data && data.ok === false)) {
+        const err = new Error(`broker ${method} ${path} falhou: ${response.status} ${(data && data.error) || text || 'erro'}`);
+        err.status = response.status;
+        err.retryable = shouldRetryBrokerStatus(response.status);
+        throw err;
+      }
+      return data || {};
+    } catch (err) {
+      const retryable = Boolean(err && err.retryable) || isTransientBrokerError(err);
+      if (attempt < maxAttempts && retryable) {
+        const waitMs = brokerRetryDelayMs(attempt);
+        const msg = String(err && err.message ? err.message : err);
+        console.warn(
+          `[vivino-worker] broker retry ${attempt}/${maxAttempts - 1} em ${method} ${path}: ${msg} | aguardando ${waitMs}ms`,
+        );
+        await sleep(waitMs);
+        continue;
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
     }
-    if (!response.ok || (data && data.ok === false)) {
-      throw new Error(`broker ${method} ${path} falhou: ${response.status} ${(data && data.error) || text || 'erro'}`);
-    }
-    return data || {};
-  } finally {
-    clearTimeout(timer);
   }
+
+  throw new Error(`broker ${method} ${path} excedeu tentativas`);
 }
 
 async function getBrokerPendingWineIds(limit) {
@@ -263,6 +313,10 @@ async function getBrokerPendingWineIds(limit) {
 async function getBrokerGlobalProgressStats() {
   const data = await brokerRequest(
     `/api/vivino/broker/stats?min_ratings=${encodeURIComponent(MIN_RATINGS)}`,
+    {
+      timeoutMs: BROKER_STATS_TIMEOUT_MS,
+      maxAttempts: Math.max(2, BROKER_RETRIES),
+    },
   );
   const base = data.base || {};
   return {
@@ -298,6 +352,10 @@ async function getBrokerMetricsSnapshot(options = {}) {
   );
   return brokerRequest(
     `/api/vivino/broker/metrics?min_ratings=${encodeURIComponent(MIN_RATINGS)}&hourly_hours=${encodeURIComponent(hourlyHours)}&daily_days=${encodeURIComponent(dailyDays)}`,
+    {
+      timeoutMs: BROKER_STATS_TIMEOUT_MS,
+      maxAttempts: Math.max(2, BROKER_RETRIES),
+    },
   );
 }
 
@@ -793,6 +851,58 @@ async function getGlobalProgressStats(pool) {
     doneReviewsDbSum: Number(row.done_reviews_sum || 0),
     totalReviewsRows: Number(rowReviews.reviews_rows || 0),
   };
+}
+
+function applyGlobalProgressStats(stats) {
+  workerProgress.totalEligible = Number(stats.totalEligible || 0);
+  workerProgress.doneEligible = Number(stats.doneEligible || 0);
+  workerProgress.pendingEligible = Number(stats.pendingEligible || 0);
+  workerProgress.totalReviewsRows = Number(stats.totalReviewsRows || 0);
+  workerProgress.doneReviewsDbSum = Number(stats.doneReviewsDbSum || 0);
+  workerProgress.sessionWinesDone = clampNonNegative(workerProgress.doneEligible - workerProgress.sessionBaseDoneEligible);
+  workerProgress.sessionReviewsRowsDelta = clampNonNegative(workerProgress.totalReviewsRows - workerProgress.sessionBaseReviewsRows);
+}
+
+function buildProgressSnapshot(overrides = {}) {
+  return {
+    totalEligible: Number.isFinite(Number(overrides.totalEligible))
+      ? Number(overrides.totalEligible)
+      : Number(workerProgress.totalEligible || 0),
+    doneEligible: Number.isFinite(Number(overrides.doneEligible))
+      ? Number(overrides.doneEligible)
+      : Number(workerProgress.doneEligible || 0),
+    pendingEligible: Number.isFinite(Number(overrides.pendingEligible))
+      ? Number(overrides.pendingEligible)
+      : Number(workerProgress.pendingEligible || 0),
+    totalReviewsRows: Number.isFinite(Number(overrides.totalReviewsRows))
+      ? Number(overrides.totalReviewsRows)
+      : Number(workerProgress.totalReviewsRows || 0),
+    doneReviewsDbSum: Number.isFinite(Number(overrides.doneReviewsDbSum))
+      ? Number(overrides.doneReviewsDbSum)
+      : Number(workerProgress.doneReviewsDbSum || 0),
+  };
+}
+
+async function refreshGlobalProgress(pool, options = {}) {
+  const stage = String(options.stage || 'progress_refresh');
+  const required = Boolean(options.required);
+  try {
+    const stats = await getGlobalProgressStats(pool);
+    applyGlobalProgressStats(stats);
+    return stats;
+  } catch (err) {
+    if (required) throw err;
+    const msg = String(err && err.message ? err.message : err);
+    const snapshot = buildProgressSnapshot(options.fallback || {});
+    applyGlobalProgressStats(snapshot);
+    workerProgress.updatedAt = Date.now();
+    console.warn(`[vivino-worker] refresh de progresso falhou em ${stage}: ${msg}`);
+    pushWorkerEvent('warn', stage, 'Falha ao atualizar progresso; usando snapshot local', {
+      message: msg,
+      fallback: snapshot,
+    });
+    return snapshot;
+  }
 }
 
 function updateRatesAndEta() {
@@ -1585,14 +1695,10 @@ async function loop(pool) {
     workerProgress.updatedAt = Date.now();
     pushWorkerEvent('info', 'cycle_start', `Iniciando ciclo ${cycle}`);
 
-    const globalBefore = await getGlobalProgressStats(pool);
-    workerProgress.totalEligible = globalBefore.totalEligible;
-    workerProgress.doneEligible = globalBefore.doneEligible;
-    workerProgress.pendingEligible = globalBefore.pendingEligible;
-    workerProgress.totalReviewsRows = globalBefore.totalReviewsRows;
-    workerProgress.doneReviewsDbSum = globalBefore.doneReviewsDbSum;
-    workerProgress.sessionWinesDone = clampNonNegative(workerProgress.doneEligible - workerProgress.sessionBaseDoneEligible);
-    workerProgress.sessionReviewsRowsDelta = clampNonNegative(workerProgress.totalReviewsRows - workerProgress.sessionBaseReviewsRows);
+    const globalBefore = await refreshGlobalProgress(pool, {
+      stage: 'cycle_start_stats',
+      required: false,
+    });
     updateRatesAndEta();
 
     const pendingBefore = globalBefore.pendingEligible;
@@ -1616,7 +1722,23 @@ async function loop(pool) {
     cleanupRetryLaterMap(Date.now());
 
     const candidateLimit = Math.max(BATCH_SIZE, BATCH_SIZE * Math.max(1, RETRY_SELECTION_MULTIPLIER));
-    const candidateIds = await getPendingWineIds(pool, candidateLimit);
+    let candidateIds = [];
+    try {
+      candidateIds = await getPendingWineIds(pool, candidateLimit);
+    } catch (err) {
+      if (!BROKER_ENABLED) throw err;
+      const msg = String(err && err.message ? err.message : err);
+      workerProgress.phase = 'broker_recovery_wait';
+      workerProgress.updatedAt = Date.now();
+      console.warn(`[vivino-worker] falha buscando candidatos no broker: ${msg}`);
+      pushWorkerEvent('warn', 'candidate_fetch', 'Falha buscando candidatos no broker; aguardando para tentar novamente', {
+        message: msg,
+        candidateLimit,
+        sleepMs: BROKER_RECOVERY_SLEEP_MS,
+      });
+      await sleep(BROKER_RECOVERY_SLEEP_MS);
+      continue;
+    }
     if (!candidateIds.length) {
       workerProgress.phase = 'idle_no_candidates';
       workerProgress.currentBatch = {
@@ -1741,14 +1863,15 @@ async function loop(pool) {
       }
     });
 
-    const globalAfter = await getGlobalProgressStats(pool);
-    workerProgress.totalEligible = globalAfter.totalEligible;
-    workerProgress.doneEligible = globalAfter.doneEligible;
-    workerProgress.pendingEligible = globalAfter.pendingEligible;
-    workerProgress.totalReviewsRows = globalAfter.totalReviewsRows;
-    workerProgress.doneReviewsDbSum = globalAfter.doneReviewsDbSum;
-    workerProgress.sessionWinesDone = clampNonNegative(workerProgress.doneEligible - workerProgress.sessionBaseDoneEligible);
-    workerProgress.sessionReviewsRowsDelta = clampNonNegative(workerProgress.totalReviewsRows - workerProgress.sessionBaseReviewsRows);
+    const globalAfter = await refreshGlobalProgress(pool, {
+      stage: 'batch_done_stats',
+      required: false,
+      fallback: {
+        totalEligible: workerProgress.totalEligible,
+        doneEligible: workerProgress.doneEligible + okWines,
+        pendingEligible: Math.max(0, pendingBefore - okWines),
+      },
+    });
     workerProgress.currentBatch.pendingAfter = globalAfter.pendingEligible;
     workerProgress.currentBatch.updatedAt = Date.now();
     workerProgress.phase = 'batch_done';
@@ -1833,12 +1956,10 @@ async function startVivinoReviewsWorker() {
     `[vivino-worker] iniciado | mode=${STORAGE_MODE} ${BROKER_ENABLED ? `broker=${BROKER_BASE_URL}` : `db_source=${DATABASE_SOURCE}`} workers=${WORKERS} batch=${BATCH_SIZE} min_ratings=${MIN_RATINGS} max_pages=${MAX_PAGES} per_page=${PER_PAGE} max_reviews_per_wine=${MAX_REVIEWS_PER_WINE} retry_cooldown_ms=${RETRY_WINE_COOLDOWN_MS} retry_multiplier=${RETRY_SELECTION_MULTIPLIER}`,
   );
   try {
-    const initial = await getGlobalProgressStats(pool);
-    workerProgress.totalEligible = initial.totalEligible;
-    workerProgress.doneEligible = initial.doneEligible;
-    workerProgress.pendingEligible = initial.pendingEligible;
-    workerProgress.totalReviewsRows = initial.totalReviewsRows;
-    workerProgress.doneReviewsDbSum = initial.doneReviewsDbSum;
+    const initial = await refreshGlobalProgress(pool, {
+      stage: 'boot_stats',
+      required: true,
+    });
     workerProgress.sessionBaseDoneEligible = initial.doneEligible;
     workerProgress.sessionBasePendingEligible = initial.pendingEligible;
     workerProgress.sessionBaseReviewsRows = initial.totalReviewsRows;
