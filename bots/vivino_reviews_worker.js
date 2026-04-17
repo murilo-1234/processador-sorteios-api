@@ -46,6 +46,8 @@ const WORKER_ENABLED = String(process.env.VIVINO_REVIEWS_WORKER_ENABLED || 'true
 const WORKERS = Number(process.env.VIVINO_REVIEWS_WORKERS || 5);
 const BATCH_SIZE = Number(process.env.VIVINO_REVIEWS_BATCH_SIZE || 500);
 const MIN_RATINGS = Number(process.env.VIVINO_REVIEWS_MIN_RATINGS || 0);
+const PARTITION = envString('VIVINO_REVIEWS_PARTITION', '').toUpperCase();
+const PARTITION_IDX = PARTITION === 'A' ? 0 : (PARTITION === 'B' ? 1 : (PARTITION === 'C' ? 2 : null));
 const MAX_PAGES = Number(process.env.VIVINO_REVIEWS_MAX_PAGES || 2);
 const PER_PAGE = Number(process.env.VIVINO_REVIEWS_PER_PAGE || 50);
 const MAX_REVIEWS_PER_WINE = MAX_PAGES * PER_PAGE;
@@ -771,11 +773,13 @@ async function getPendingWineIds(pool, limit) {
   if (BROKER_ENABLED) {
     return getBrokerPendingWineIds(limit);
   }
+  const partitionClause = PARTITION_IDX !== null ? ` AND (id % 3) = ${PARTITION_IDX}` : '';
   const sql = `
     SELECT id
     FROM vivino_vinhos
     WHERE reviews_coletados = FALSE
       AND total_ratings >= $1
+      ${partitionClause}
     ORDER BY total_ratings DESC
     LIMIT $2
   `;
