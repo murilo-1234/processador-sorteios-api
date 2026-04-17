@@ -306,8 +306,9 @@ async function brokerRequest(path, options = {}) {
 }
 
 async function getBrokerPendingWineIds(limit) {
+  const partitionParam = PARTITION ? `&partition=${encodeURIComponent(PARTITION)}` : '';
   const data = await brokerRequest(
-    `/api/vivino/broker/next-batch?limit=${encodeURIComponent(limit)}&min_ratings=${encodeURIComponent(MIN_RATINGS)}`,
+    `/api/vivino/broker/next-batch?limit=${encodeURIComponent(limit)}&min_ratings=${encodeURIComponent(MIN_RATINGS)}${partitionParam}`,
   );
   return Array.isArray(data.ids) ? data.ids.map((id) => Number(id)) : [];
 }
