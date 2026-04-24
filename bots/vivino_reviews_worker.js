@@ -236,10 +236,12 @@ function brokerRetryDelayMs(attempt) {
 
 async function brokerRequest(path, options = {}) {
   if (!BROKER_ENABLED) {
-    throw new Error('broker desabilitado');
+    console.warn('[vivino-worker] brokerRequest chamado com broker desabilitado');
+    return null;
   }
   if (!BROKER_TOKEN) {
-    throw new Error('VIVINO_BROKER_TOKEN ausente');
+    console.warn('[vivino-worker] brokerRequest abortado: VIVINO_BROKER_TOKEN ausente');
+    return null;
   }
 
   const method = String(options.method || 'GET').toUpperCase();
@@ -253,12 +255,13 @@ async function brokerRequest(path, options = {}) {
   }
   const timeoutMs = Math.max(
     1000,
-    Number(options.timeoutMs || BROKER_TIMEOUT_MS),
+    Number(options.timeoutMs || BROKER_TIMEOUT_MS || 15000),
   );
   const maxAttempts = Math.max(
     1,
     Number(options.maxAttempts || (method === 'GET' ? BROKER_RETRIES : Math.min(2, BROKER_RETRIES))),
   );
+  const fixedWaits = [1500, 3000, 6000];
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const controller = new AbortController();
@@ -287,22 +290,28 @@ async function brokerRequest(path, options = {}) {
       return data || {};
     } catch (err) {
       const retryable = Boolean(err && err.retryable) || isTransientBrokerError(err);
+      const msg = String(err && err.message ? err.message : err);
       if (attempt < maxAttempts && retryable) {
-        const waitMs = brokerRetryDelayMs(attempt);
-        const msg = String(err && err.message ? err.message : err);
+        const waitMs = fixedWaits[attempt - 1] != null
+          ? fixedWaits[attempt - 1]
+          : brokerRetryDelayMs(attempt);
         console.warn(
           `[vivino-worker] broker retry ${attempt}/${maxAttempts - 1} em ${method} ${path}: ${msg} | aguardando ${waitMs}ms`,
         );
         await sleep(waitMs);
         continue;
       }
-      throw err;
+      console.warn(
+        `[vivino-worker] brokerRequest falhou definitivamente em ${method} ${path} (tentativa ${attempt}/${maxAttempts}): ${msg}`,
+      );
+      return null;
     } finally {
       clearTimeout(timer);
     }
   }
 
-  throw new Error(`broker ${method} ${path} excedeu tentativas`);
+  console.warn(`[vivino-worker] broker ${method} ${path} excedeu tentativas`);
+  return null;
 }
 
 async function getBrokerPendingWineIds(limit) {
@@ -314,21 +323,38 @@ async function getBrokerPendingWineIds(limit) {
 }
 
 async function getBrokerGlobalProgressStats() {
-  const data = await brokerRequest(
-    `/api/vivino/broker/stats?min_ratings=${encodeURIComponent(MIN_RATINGS)}`,
-    {
-      timeoutMs: BROKER_STATS_TIMEOUT_MS,
-      maxAttempts: Math.max(2, BROKER_RETRIES),
-    },
-  );
-  const base = data.base || {};
-  return {
-    totalEligible: Number(base.totalEligible || 0),
-    doneEligible: Number(base.doneEligible || 0),
-    pendingEligible: Number(base.pendingEligible || 0),
-    doneReviewsDbSum: Number(base.doneReviewsDbSum || 0),
-    totalReviewsRows: Number(base.reviewsRowsTotal || 0),
+  const defaults = {
+    totalEligible: 0,
+    doneEligible: 0,
+    pendingEligible: 0,
+    doneReviewsDbSum: 0,
+    totalReviewsRows: 0,
   };
+  try {
+    const data = await brokerRequest(
+      `/api/vivino/broker/stats?min_ratings=${encodeURIComponent(MIN_RATINGS)}`,
+      {
+        timeoutMs: BROKER_STATS_TIMEOUT_MS,
+        maxAttempts: Math.max(2, BROKER_RETRIES),
+      },
+    );
+    if (!data) {
+      console.warn('[vivino-worker] getBrokerGlobalProgressStats: brokerRequest retornou null, usando defaults');
+      return { ...defaults };
+    }
+    const base = data.base || {};
+    return {
+      totalEligible: Number(base.totalEligible || 0),
+      doneEligible: Number(base.doneEligible || 0),
+      pendingEligible: Number(base.pendingEligible || 0),
+      doneReviewsDbSum: Number(base.doneReviewsDbSum || 0),
+      totalReviewsRows: Number(base.reviewsRowsTotal || 0),
+    };
+  } catch (err) {
+    const msg = String(err && err.message ? err.message : err);
+    console.warn(`[vivino-worker] getBrokerGlobalProgressStats: erro ignorado e retornando defaults: ${msg}`);
+    return { ...defaults };
+  }
 }
 
 async function brokerPersistCollectedWine(wineId, totalReviews, reviews) {
@@ -890,13 +916,11 @@ function buildProgressSnapshot(overrides = {}) {
 
 async function refreshGlobalProgress(pool, options = {}) {
   const stage = String(options.stage || 'progress_refresh');
-  const required = Boolean(options.required);
   try {
     const stats = await getGlobalProgressStats(pool);
     applyGlobalProgressStats(stats);
     return stats;
   } catch (err) {
-    if (required) throw err;
     const msg = String(err && err.message ? err.message : err);
     const snapshot = buildProgressSnapshot(options.fallback || {});
     applyGlobalProgressStats(snapshot);
@@ -1960,40 +1984,43 @@ async function startVivinoReviewsWorker() {
   console.log(
     `[vivino-worker] iniciado | mode=${STORAGE_MODE} ${BROKER_ENABLED ? `broker=${BROKER_BASE_URL}` : `db_source=${DATABASE_SOURCE}`} workers=${WORKERS} batch=${BATCH_SIZE} min_ratings=${MIN_RATINGS} max_pages=${MAX_PAGES} per_page=${PER_PAGE} max_reviews_per_wine=${MAX_REVIEWS_PER_WINE} retry_cooldown_ms=${RETRY_WINE_COOLDOWN_MS} retry_multiplier=${RETRY_SELECTION_MULTIPLIER}`,
   );
-  try {
-    const initial = await refreshGlobalProgress(pool, {
-      stage: 'boot_stats',
-      required: true,
-    });
-    workerProgress.sessionBaseDoneEligible = initial.doneEligible;
-    workerProgress.sessionBasePendingEligible = initial.pendingEligible;
-    workerProgress.sessionBaseReviewsRows = initial.totalReviewsRows;
-    workerProgress.sessionWinesDone = 0;
-    workerProgress.sessionReviewsFetched = 0;
-    workerProgress.sessionReviewsRowsDelta = 0;
-    workerProgress.currentBatch = {
-      target: 0,
-      processed: 0,
-      ok: 0,
-      retryLater: 0,
-      pendingBefore: initial.pendingEligible,
-      pendingAfter: initial.pendingEligible,
-      startedAt: Date.now(),
-      updatedAt: Date.now(),
-    };
-    workerProgress.phase = 'ready';
-    workerProgress.updatedAt = Date.now();
-    updateRatesAndEta();
-    logProgressDashboard({ stage: 'ready', message: 'Worker iniciado e monitoramento ativo.' });
+  while (true) {
+    try {
+      const initial = await refreshGlobalProgress(pool, {
+        stage: 'boot_stats',
+      });
+      workerProgress.sessionBaseDoneEligible = initial.doneEligible;
+      workerProgress.sessionBasePendingEligible = initial.pendingEligible;
+      workerProgress.sessionBaseReviewsRows = initial.totalReviewsRows;
+      workerProgress.sessionWinesDone = 0;
+      workerProgress.sessionReviewsFetched = 0;
+      workerProgress.sessionReviewsRowsDelta = 0;
+      workerProgress.currentBatch = {
+        target: 0,
+        processed: 0,
+        ok: 0,
+        retryLater: 0,
+        pendingBefore: initial.pendingEligible,
+        pendingAfter: initial.pendingEligible,
+        startedAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      workerProgress.phase = 'ready';
+      workerProgress.updatedAt = Date.now();
+      updateRatesAndEta();
+      logProgressDashboard({ stage: 'ready', message: 'Worker iniciado e monitoramento ativo.' });
 
-    await loop(pool);
-  } catch (err) {
-    const msg = String(err && err.stack ? err.stack : (err && err.message ? err.message : err));
-    workerProgress.phase = 'fatal_error';
-    workerProgress.lastError = msg;
-    workerProgress.updatedAt = Date.now();
-    console.error('[vivino-worker] loop finalizado por erro fatal:', msg);
-    pushWorkerEvent('error', 'fatal_error', 'Loop finalizado por erro fatal', { message: msg });
+      await loop(pool);
+      break;
+    } catch (err) {
+      const msg = String(err && err.stack ? err.stack : (err && err.message ? err.message : err));
+      workerProgress.phase = 'fatal_error';
+      workerProgress.lastError = msg;
+      workerProgress.updatedAt = Date.now();
+      console.error('[vivino-worker] erro no loop, reiniciando em 30s:', err && err.message, err && err.stack);
+      pushWorkerEvent('error', 'fatal_error', 'Loop finalizado por erro fatal, reiniciando em 30s', { message: msg });
+      await new Promise((r) => setTimeout(r, 30000));
+    }
   }
 }
 

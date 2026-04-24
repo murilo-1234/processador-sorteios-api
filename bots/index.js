@@ -20,6 +20,13 @@ const {
   getVivinoWorkerMetrics,
 } = require('./vivino_reviews_worker');
 
+process.on('uncaughtException', (err) => {
+  console.error('[global] uncaughtException:', err && err.message, err && err.stack);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[global] unhandledRejection:', reason);
+});
+
 // Reuso do seu código existente
 const WhatsAppClient = require('../whatsapp-automation/src/services/whatsapp-client');
 // ========== AUTO-RESPONDER (mensagem fixa) ==========
