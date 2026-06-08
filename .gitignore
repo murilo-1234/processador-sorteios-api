@@ -1,0 +1,13 @@
+
+# Credenciais (adicionado 2026-06-08 - seguranca)
+*.json
+!**/package.json
+!**/package-lock.json
+!**/*.example
+!whatsapp-automation/src/data/*.json
+lithe-augury-*.json
+*credentials*.json
+*service*account*.json
+.env.*
+*.pem
+*.key
