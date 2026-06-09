@@ -19,6 +19,7 @@ const {
   getVivinoWorkerProgress,
   getVivinoWorkerMetrics,
 } = require('./vivino_reviews_worker');
+const diskCleanup = require('./disk-cleanup');
 
 process.on('uncaughtException', (err) => {
   console.error('[global] uncaughtException:', err && err.message, err && err.stack);
@@ -1110,6 +1111,27 @@ app.post('/api/reconnect-all', basicAuth, async (req, res) => {
   res.json({ ok: true, results });
 });
 
+// NOVO: uso de disco por área (sessões + mídia) e espaço livre
+app.get('/api/disk/usage', basicAuth, (req, res) => {
+  try {
+    res.json({ ok: true, ...diskCleanup.getUsage() });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// NOVO: limpeza de disco sob demanda (apaga só o que o Baileys recria + mídia antiga)
+app.post('/api/disk/cleanup', basicAuth, (req, res) => {
+  try {
+    const before = diskCleanup.getUsage();
+    const result = diskCleanup.runCleanup();
+    const after = diskCleanup.getUsage();
+    res.json({ ok: true, result, before, after });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
 // página simples (protegida se ADMIN_* definidos)
 app.get(['/','/admin'], basicAuth, async (req, res) => {
   const rows = await (async () => {
@@ -1219,6 +1241,45 @@ app.get(['/','/admin'], basicAuth, async (req, res) => {
       }
       location.reload();
     }
+    function fmtBytes(n){
+      const b = Number(n)||0;
+      if(b < 1024) return b+' B';
+      if(b < 1048576) return (b/1024).toFixed(1)+' KB';
+      if(b < 1073741824) return (b/1048576).toFixed(1)+' MB';
+      return (b/1073741824).toFixed(2)+' GB';
+    }
+    async function refreshDiskUsage(){
+      try{
+        const r = await fetch('/api/disk/usage');
+        const j = await r.json();
+        if(!j || !j.ok) return;
+        const box = document.getElementById('disk-usage');
+        if(!box) return;
+        const parts = (j.areas||[]).map(a => a.name+': '+fmtBytes(a.bytes)+' ('+a.files+' arq)');
+        let txt = 'Disco — ' + parts.join(' | ');
+        if(j.disk && j.disk.total){
+          const usado = j.disk.total - j.disk.available;
+          txt += ' || Disco total: '+fmtBytes(usado)+' / '+fmtBytes(j.disk.total)+' (livre '+fmtBytes(j.disk.available)+')';
+        }
+        box.textContent = txt;
+      }catch(_){}
+    }
+    async function limparDisco(){
+      if(!confirm('Limpar disco agora? Apaga só cache de sessão (o WhatsApp recria) e mídia antiga. Não desconecta os números.')) return;
+      try{
+        const r = await fetch('/api/disk/cleanup',{method:'POST'});
+        const j = await r.json();
+        if(j && j.ok){
+          const res = j.result || {};
+          alert('Pronto! Liberado: '+(res.totalHuman||'0')+' em '+(res.totalRemoved||0)+' arquivos.\\n(sessão: '+((res.session&&res.session.removed)||0)+' | mídia: '+((res.media&&res.media.removed)||0)+')');
+        }else{
+          alert('Erro ao limpar: '+((j&&j.error)||'desconhecido'));
+        }
+      }catch(e){
+        alert('Erro ao limpar disco: '+(e&&e.message||e));
+      }
+      refreshDiskUsage();
+    }
     function renderVivinoPanel(p){
       if(!p) return;
       const total = Number(p.totalEligible || 0);
@@ -1261,6 +1322,7 @@ app.get(['/','/admin'], basicAuth, async (req, res) => {
     }
     window.addEventListener('load', () => {
       refreshVivino();
+      refreshDiskUsage();
       setInterval(refreshVivino, 2000);
       setInterval(()=>location.reload(), 15000);
     });
@@ -1272,8 +1334,10 @@ app.get(['/','/admin'], basicAuth, async (req, res) => {
     </div>
     <div class="global-actions">
       <button onclick="doPost('/api/reconnect-all')">Reconectar Todos Desconectados</button>
+      <button class="danger" onclick="limparDisco()">🧹 Limpar disco agora</button>
       <a class="qr" href="/admin/vivino" target="_blank">Painel Vivino</a>
     </div>
+    <div class="summary" id="disk-usage">Disco: carregando…</div>
     <div class="card vivino-card">
       <div class="head">
         <div class="id">Vivino Worker</div>
@@ -1299,5 +1363,6 @@ app.listen(PORT, () => {
   startVivinoReviewsWorker().catch((e) => {
     console.error('[vivino-worker] falha ao iniciar:', e?.message || e);
   });
+  diskCleanup.startAutoCleanup();
 });
 
