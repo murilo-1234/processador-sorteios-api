@@ -25,8 +25,8 @@ GOOGLE_CREDENTIALS_PATH = os.getenv('GOOGLE_CREDENTIALS_PATH', 'credentials.json
 # CONFIGURAÇÕES MANYCHAT
 # ================================
 
-# Token da API Manychat (para verificações)
-MANYCHAT_API_TOKEN = "CHAVE_REMOVIDA"
+# Token da API Manychat (para verificações) — removido do código por segurança (2026-06-10); usar ENV se voltar a usar
+MANYCHAT_API_TOKEN = os.environ.get("MANYCHAT_API_TOKEN", "")
 
 # URLs das automações (CONFIGURAR COM AS URLs REAIS)
 AUTOMACOES_URLS = {
